@@ -1,0 +1,31 @@
+# Single-container Airflow 3.1 for the demo. Not a production topology.
+services:
+  airflow:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__PLUGINS_FOLDER: /opt/airflow/plugins
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://localhost:8080/execution/
+      PYTHONPATH: /opt/airflow
+      PTM_INCLUDE_DIR: /opt/airflow/include
+      PTM_DB: /opt/airflow/include/ptm.db
+      # 1 = no API key needed; the offline judge stands in for the LLM.
+      PTM_OFFLINE: "${PTM_OFFLINE:-1}"
+      PTM_LLM_CONN_ID: "${PTM_LLM_CONN_ID:-pydanticai_default}"
+      # Only read when PTM_OFFLINE=0.
+      AIRFLOW_CONN_PYDANTICAI_DEFAULT: "${AIRFLOW_CONN_PYDANTICAI_DEFAULT:-}"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./plugins:/opt/airflow/plugins
+      - ./include:/opt/airflow/include
+      - ./ptm:/opt/airflow/ptm
+      - airflow-home:/opt/airflow/logs
+    command: >
+      bash -c "python -m ptm.seed && exec airflow standalone"
+
+volumes:
+  airflow-home:

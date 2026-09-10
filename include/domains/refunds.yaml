@@ -1,0 +1,75 @@
+name: refunds
+label: gym membership cancellation refund
+impact_field: outstanding_balance_gbp
+impact_unit: "GBP"
+outcomes: [full_refund, partial_refund, no_refund]
+
+policies:
+  v1: policies/refunds/v1.md
+  v2: policies/refunds/v2.md
+
+case_template: |
+  Case ID:              {case_id}
+  Member:               {member}
+  Membership tier:      {tier}
+  Months elapsed:       {months_elapsed} of {contract_months}
+  Notice given (days):  {notice_days}
+  Stated reason:        {reason}
+  Distance moved (mi):  {distance_moved_miles}
+  Documentation:        {documentation}
+  Outstanding balance:  GBP {outstanding_balance_gbp}
+  Member's note:        {note}
+
+judge_instructions: |
+  - "partial_refund" means the final month is charged and the remainder
+    returned. Use it wherever the policy charges rather than forfeits.
+  - The membership tier shown is the tier ON THE DATE OF CANCELLATION, which
+    may differ from the member's tier today. Use only the value shown.
+
+review:
+  max_reviews: 8
+  below_confidence: 0.75
+  above_impact: 300
+  always_review_directions: [loosening]
+
+offline_rules:
+  v1:
+    - when: "months_elapsed < contract_months and reason == 'medical' and documentation == 'yes'"
+      outcome: full_refund
+      clause: "3.1"
+      because: "Documented medical reason waives the minimum-term forfeit."
+    - when: "months_elapsed < contract_months and reason == 'relocation' and documentation == 'yes' and distance_moved_miles > 25"
+      outcome: full_refund
+      clause: "3.2"
+      because: "Documented relocation beyond 25 miles waives the forfeit."
+    - when: "months_elapsed < contract_months"
+      outcome: no_refund
+      clause: "2.1"
+      because: "Cancellation inside the minimum term forfeits the balance."
+    - when: "notice_days < 30"
+      outcome: partial_refund
+      clause: "1.1"
+      because: "Short notice: the final month is charged, the remainder refunded."
+  v2:
+    - when: "months_elapsed < contract_months and reason == 'medical' and documentation == 'yes'"
+      outcome: full_refund
+      clause: "3.1"
+      because: "Documented medical reason waives the forfeit."
+    - when: "months_elapsed < contract_months and reason == 'relocation' and documentation == 'yes' and distance_moved_miles > 15"
+      outcome: full_refund
+      clause: "3.2"
+      because: "Documented relocation beyond the reduced 15-mile threshold waives the forfeit."
+    - when: "months_elapsed < contract_months and tier == 'premium'"
+      outcome: full_refund
+      clause: "5.1"
+      confidence: 0.7
+      because: "Premium-tier members are exempt from the minimum-term forfeit."
+    - when: "months_elapsed < contract_months"
+      outcome: no_refund
+      clause: "2.1"
+      because: "Cancellation inside the minimum term still forfeits the balance."
+    - when: "notice_days < 14"
+      outcome: partial_refund
+      clause: "1.1"
+      because: "Below the reduced 14-day notice threshold, the final month is charged."
+pit_field: tier

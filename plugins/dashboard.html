@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Policy Diff Explorer</title>
+<style>
+:root{--bg:#0f1115;--panel:#171a21;--line:#252a34;--fg:#e6e8ec;--dim:#8b93a1;
+--loose:#4ade80;--tight:#f87171;--warn:#fbbf24;--accent:#60a5fa}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
+select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
+main{padding:24px;max-width:1200px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.tile .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.tile .v{font-size:20px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr.row{cursor:pointer}tr.row:hover{background:#1c2029}
+.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+.detail td{background:#12151b;color:var(--dim);font-size:13px}
+pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
+.bad{color:var(--tight);font-weight:600}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}
+.empty{color:var(--dim);padding:16px}
+</style></head><body>
+<header>
+  <h1>Policy Diff Explorer</h1>
+  <select id=domain></select>
+  <select id=version></select>
+  <span id=label style="color:var(--dim)"></span>
+</header>
+<main>
+  <div class=tiles id=tiles></div>
+  <h2>Flipped decisions</h2>
+  <div id=flips></div>
+  <h2>Established precedent</h2>
+  <div id=precedents></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+// Absolute so the page works whether it is served at /ptm or /ptm/.
+const api = p => fetch('/ptm' + p).then(r => r.json());
+let DOMAINS = [];
+
+function money(u, n){ return (u ? u + ' ' : '') + Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+
+async function boot(){
+  DOMAINS = await api('/api/domains');
+  $('#domain').innerHTML = DOMAINS.map(d => `<option value="${d.name}">${d.name}</option>`).join('');
+  $('#domain').onchange = onDomain; $('#version').onchange = render;
+  onDomain();
+}
+function onDomain(){
+  const d = DOMAINS.find(x => x.name === $('#domain').value);
+  $('#version').innerHTML = d.policies.map(v => `<option${v==='v2'?' selected':''}>${v}</option>`).join('');
+  $('#label').textContent = d.label;
+  render();
+}
+
+async function render(){
+  const dom = $('#domain').value, ver = $('#version').value;
+  const d = DOMAINS.find(x => x.name === dom);
+  const [s, f, p] = await Promise.all([
+    api(`/api/summary/${dom}/${ver}`), api(`/api/flips/${dom}/${ver}`), api(`/api/precedents/${dom}`)]);
+
+  const loose = s.by_direction.find(x => x.direction === 'loosening') || {n:0,impact:0};
+  const tight = s.by_direction.find(x => x.direction === 'tightening') || {n:0,impact:0};
+  $('#tiles').innerHTML = [
+    ['Decisions replayed', s.cases.toLocaleString(), ''],
+    ['Outcomes that change', s.flips.toLocaleString(), s.flips ? 'warn' : ''],
+    ['More generous', `${loose.n} · ${money(s.impact_unit, loose.impact)}`, 'loose'],
+    ['More strict', `${tight.n} · ${money(s.impact_unit, tight.impact)}`, 'tight'],
+    ['Net cost', money(s.impact_unit, s.net_impact), s.net_impact > 0 ? 'loose' : 'tight'],
+    ['Precedents on file', s.precedents, ''],
+  ].map(([k,v,c]) => `<div class=tile><div class=k>${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+
+  $('#flips').innerHTML = !f.length ? '<div class=empty>No replay results yet — trigger or backfill the replay DAG.</div>' : `
+    <table><thead><tr><th>Case</th><th>Decided</th><th>Was</th><th>Becomes</th>
+    <th>Direction</th><th class=num>Impact</th><th class=num>Conf.</th><th>Precedent</th></tr></thead><tbody>
+    ${f.map((r,i) => `
+      <tr class=row onclick="toggle(${i})">
+        <td>${r.case_id}</td><td>${r.decided_at.slice(0,10)}</td>
+        <td><span class=pill>${r.actual_outcome}</span></td>
+        <td><span class=pill>${r.new_outcome}</span></td>
+        <td class="${r.direction==='loosening'?'loose':'tight'}">${r.direction}</td>
+        <td class=num>${money('', r.impact)}</td>
+        <td class=num>${Math.round(r.confidence*100)}%</td>
+        <td>${r.precedent ? (r.precedent === r.new_outcome
+             ? '<span class=loose>consistent</span>'
+             : `<span class=bad>VIOLATES → ${r.precedent}</span>`) : '—'}</td>
+      </tr>
+      <tr class=detail id=d${i} hidden><td colspan=8>
+        <pre>${esc(render_case(r.payload))}</pre>
+        <div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || '—')}</div>
+        <div style="margin-top:6px"><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div>
+      </td></tr>`).join('')}
+    </tbody></table>`;
+
+  $('#precedents').innerHTML = !p.length ? '<div class=empty>No precedents yet — run the adjudication DAG and answer the human-in-the-loop tasks.</div>' : `
+    <table><thead><tr><th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Note</th></tr></thead>
+    <tbody>${p.map(r => `<tr><td>${r.case_id}</td><td><span class=pill>${r.correct_outcome}</span></td>
+      <td>${esc(r.ruled_by)}</td><td>${r.established_at.slice(0,10)}</td><td>${esc(r.note||'')}</td></tr>`).join('')}
+    </tbody></table>`;
+}
+function render_case(p){ return Object.entries(p).map(([k,v]) => `${(k+':').padEnd(20)}${v}`).join('\n'); }
+function toggle(i){ const el = document.getElementById('d'+i); el.hidden = !el.hidden; }
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+boot();
+</script></body></html>

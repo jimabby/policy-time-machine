@@ -1,0 +1,89 @@
+name: expenses
+label: employee expense reimbursement
+impact_field: amount_gbp
+impact_unit: "GBP"
+
+# Ordered most generous -> most strict. This ordering is the only thing that
+# lets the engine call a flip "loosening" or "tightening" without knowing
+# anything about expenses.
+outcomes: [approve, partial, deny]
+
+policies:
+  v1: policies/expenses/v1.md
+  v2: policies/expenses/v2.md
+
+case_template: |
+  Claim ID:            {case_id}
+  Submitted by:        {submitted_by}
+  Employee grade:      {grade}
+  Category:            {category}
+  Amount:              GBP {amount_gbp}
+  Receipt on file:     {receipt}
+  Days notice given:   {days_notice}
+  Director approval:   {director_approval}
+  Alcohol included:    {alcohol}
+  Client-driven:       {client_driven}
+  Employee's note:     {note}
+
+judge_instructions: |
+  - "partial" means the claim is reimbursed only up to the applicable cap or
+    only for the compliant portion. Use it whenever the policy caps rather
+    than refuses.
+  - The employee's grade shown above is their grade ON THE DATE OF THE CLAIM.
+    It may not be their grade today. Use only the value shown.
+
+review:
+  max_reviews: 8
+  below_confidence: 0.75
+  above_impact: 400
+  always_review_directions: [loosening]
+
+# Fixtures for PTM_OFFLINE=1 so the demo runs with no API key. The real judge
+# reads the markdown policy instead; these are a stand-in for it.
+offline_rules:
+  v1:
+    - when: "amount_gbp > 500 and director_approval == 'no'"
+      outcome: deny
+      clause: "5.1"
+      because: "Claims above GBP 500 require prior director approval, which is absent."
+    - when: "category == 'travel' and days_notice < 7 and director_approval == 'no'"
+      outcome: deny
+      clause: "3.1"
+      because: "Travel booked inside 7 days requires prior written approval."
+    - when: "amount_gbp > 25 and receipt == 'no'"
+      outcome: deny
+      clause: "1.1"
+      because: "No receipt on file and the claim exceeds the GBP 25 receipt threshold."
+    - when: "category == 'meals' and amount_gbp > 40"
+      outcome: partial
+      clause: "2.1"
+      confidence: 0.95
+      because: "Meals are reimbursed up to the GBP 40 daily cap; the excess is not payable."
+    - when: "alcohol == 'yes'"
+      outcome: partial
+      clause: "4.1"
+      because: "Alcohol is excluded; the remainder of the claim is payable."
+  v2:
+    - when: "amount_gbp > 1000 and director_approval == 'no'"
+      outcome: deny
+      clause: "5.1"
+      because: "Claims above the raised GBP 1000 threshold still require director approval."
+    - when: "category == 'travel' and days_notice < 7 and director_approval == 'no' and client_driven == 'no'"
+      outcome: deny
+      clause: "3.1"
+      because: "Short-notice travel without a client-driven reason still requires prior approval."
+    - when: "amount_gbp > 75 and receipt == 'no' and grade < 3"
+      outcome: deny
+      clause: "1.1"
+      confidence: 0.7
+      because: "Above the raised GBP 75 receipt threshold, and the grade 3 exemption does not apply."
+    - when: "category == 'meals' and amount_gbp > 60"
+      outcome: partial
+      clause: "2.1"
+      confidence: 0.95
+      because: "Meals are reimbursed up to the raised GBP 60 daily cap."
+    - when: "alcohol == 'yes'"
+      outcome: partial
+      clause: "4.1"
+      because: "Alcohol remains excluded under the proposed policy."
+pit_field: grade

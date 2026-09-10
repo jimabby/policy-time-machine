@@ -1,0 +1,5 @@
+apache-airflow==3.1.0
+apache-airflow-providers-standard>=1.10.0
+apache-airflow-providers-common-ai>=0.8.0
+pydantic>=2.7
+PyYAML>=6.0
