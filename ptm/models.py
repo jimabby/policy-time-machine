@@ -50,6 +50,47 @@ class Flip(BaseModel):
     impact: float = 0.0
     payload: dict[str, Any] = Field(default_factory=dict)
     direction: Literal["loosening", "tightening", "lateral"] = "lateral"
+    #: Segment values as of the decision date, e.g. ``{"category": "travel",
+    #: "grade": "2"}``. Captured here because point-in-time facts are not part
+    #: of the case record and must never be re-derived from today's data.
+    segments: dict[str, str] = Field(default_factory=dict)
+    #: What the policy *currently in force* gives for this case, when a baseline
+    #: pass ran. Empty string means no baseline was judged.
+    baseline_outcome: str = ""
+    #: Why this case moved, in one bucket. See :func:`ptm.diff.attribute`.
+    attribution: str = ""
+
+
+class StabilityReport(BaseModel):
+    """How much of a measured flip rate is the judge being inconsistent.
+
+    A deterministic judge scores zero here. A real model does not, and a flip
+    rate quoted without this number is quoted without an error bar.
+    """
+
+    cases_sampled: int
+    samples_per_case: int
+    #: Cases where repeated judging of the *same* case disagreed with itself.
+    unstable_cases: int
+    #: unstable_cases / cases_sampled - the share of the flip rate that is noise.
+    disagreement_rate: float
+    #: Per-case detail, worst first, so an unstable case can be inspected.
+    unstable: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PrecedentConflict(BaseModel):
+    """Two human rulings that cannot both be right.
+
+    Precedent is the only durable output of this system, so it is also the only
+    thing that can quietly rot. Two reviewers answering materially identical
+    cases differently makes the regression suite self-contradictory, and nothing
+    else in the pipeline would notice.
+    """
+
+    signature: list[tuple[str, str]]
+    outcomes: dict[str, list[str]]
+    case_ids: list[str]
+    ruled_by: list[str]
 
 
 class Precedent(BaseModel):

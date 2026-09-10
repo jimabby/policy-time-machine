@@ -14,6 +14,10 @@ services:
       # 1 = no API key needed; the offline judge stands in for the LLM.
       PTM_OFFLINE: "${PTM_OFFLINE:-1}"
       PTM_LLM_CONN_ID: "${PTM_LLM_CONN_ID:-pydanticai_default}"
+      # Priced, not selected: this is the model the cost ledger quotes. The
+      # model actually called comes from the connection below.
+      PTM_JUDGE_MODEL: "${PTM_JUDGE_MODEL:-anthropic:claude-sonnet-5}"
+      PTM_PRICE: "${PTM_PRICE:-}"
       # Only read when PTM_OFFLINE=0.
       AIRFLOW_CONN_PYDANTICAI_DEFAULT: "${AIRFLOW_CONN_PYDANTICAI_DEFAULT:-}"
       _AIRFLOW_WWW_USER_USERNAME: admin

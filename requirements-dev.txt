@@ -1,0 +1,5 @@
+# Enough to run the engine, the lint and the test suite with no Airflow and no
+# API key. Airflow itself is only needed to run the DAGs; see requirements.txt.
+pydantic>=2.7
+PyYAML>=6.0
+pytest>=8.0

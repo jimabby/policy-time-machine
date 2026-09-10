@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    name: Engine (no Airflow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -r requirements-dev.txt
+
+      # The domain YAML must still implement the policies it cites. This is the
+      # check that catches an offline rule quietly no longer matching anything.
+      - name: Lint domain configuration
+        run: python -m ptm.lint
+        env:
+          PTM_INCLUDE_DIR: ./include
+
+      - name: Test suite
+        run: python -m pytest -q
+
+      # Proves the whole loop runs end to end with no Airflow and no API key,
+      # which is also how the demo is rehearsed.
+      - name: Whole loop end to end
+        run: |
+          python -m ptm.selftest
+          python -m ptm.selftest refunds v2
+          python -m ptm.pit_check
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+  dags:
+    name: DAGs parse under Airflow 3.1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Airflow 3.1 and providers
+        run: pip install -r requirements.txt pytest
+
+      # Both configurations, because the LLM-backed branch imports operators the
+      # offline branch never touches - so offline-only parsing proves half of it.
+      - name: Parse with the offline judge
+        run: python -m pytest tests/test_dags.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+
+      - name: Parse with the LLM judge
+        run: python -m pytest tests/test_dags.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "0"
+          PYTHONPATH: .

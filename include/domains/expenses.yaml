@@ -38,6 +38,17 @@ review:
   above_impact: 400
   always_review_directions: [loosening]
 
+# Who the change lands on. grade is the point-in-time fact, so this segment is
+# resolved as of each claim's own date - not as of today.
+segment_fields: [category, grade]
+
+# Two rulings on materially identical claims that disagree are a human
+# inconsistency, not a policy bug. Amount is banded so GBP 104 and GBP 111 count
+# as the same kind of claim; note and submitted_by are deliberately excluded.
+conflicts:
+  key: [category, receipt, director_approval, amount_gbp]
+  impact_band: 250
+
 # Fixtures for PTM_OFFLINE=1 so the demo runs with no API key. The real judge
 # reads the markdown policy instead; these are a stand-in for it.
 offline_rules:
@@ -86,4 +97,13 @@ offline_rules:
       outcome: partial
       clause: "4.1"
       because: "Alcohol remains excluded under the proposed policy."
+    # Placed last so the meals cap and the alcohol exclusion still bite for
+    # senior staff: the exemption is from receipts only. Without this rule the
+    # exemption shows up as an unattributed approval, which hides the single
+    # biggest driver of change in the whole proposal.
+    - when: "amount_gbp > 75 and receipt == 'no' and grade >= 3"
+      outcome: approve
+      clause: "6.1"
+      confidence: 0.9
+      because: "Grade 3+ is exempt from the receipt requirement in clause 1.1."
 pit_field: grade

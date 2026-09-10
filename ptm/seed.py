@@ -220,8 +220,23 @@ def _tier_as_of(facts, sid: str, when: datetime) -> str:
     return vals[-1] if vals else "standard"
 
 
+#: The fixture generator for each shipped domain. A domain added without an
+#: entry here is still fully supported by the engine - it just has to arrive
+#: with real cases loaded into the ``cases`` table instead of synthetic ones.
+SEEDERS = {"expenses": seed_expenses, "refunds": seed_refunds}
+
+
+def seed_domain(name: str) -> dict:
+    if name not in SEEDERS:
+        raise KeyError(
+            f"no synthetic fixture for domain {name!r}; have {sorted(SEEDERS)}. "
+            f"Load real cases into the 'cases' table instead."
+        )
+    return SEEDERS[name]()
+
+
 def seed_all() -> dict:
-    return {"expenses": seed_expenses(), "refunds": seed_refunds()}
+    return {name: seeder() for name, seeder in SEEDERS.items()}
 
 
 if __name__ == "__main__":
