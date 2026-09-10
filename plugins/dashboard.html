@@ -1,113 +1,12 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Policy Diff Explorer</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Policy Time Machine</title>
 <style>
-:root{--bg:#0f1115;--panel:#171a21;--line:#252a34;--fg:#e6e8ec;--dim:#8b93a1;
---loose:#4ade80;--tight:#f87171;--warn:#fbbf24;--accent:#60a5fa}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
-header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
-h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
-select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
-main{padding:24px;max-width:1200px}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.tile .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
-.tile .v{font-size:20px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line)}
-td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}
-tr.row{cursor:pointer}tr.row:hover{background:#1c2029}
-.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
-.num{font-variant-numeric:tabular-nums;text-align:right}
-.detail td{background:#12151b;color:var(--dim);font-size:13px}
-pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
-.bad{color:var(--tight);font-weight:600}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}
-.empty{color:var(--dim);padding:16px}
+:root{--bg:#0b1020;--panel:#121a2d;--line:#26324b;--fg:#eef3ff;--dim:#9ba8c3;--loose:#48d597;--tight:#ff7b89;--warn:#f9c75d;--accent:#77a7ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 12% -10%,#1e3a70 0,transparent 32rem),var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:18px max(24px,calc((100vw - 1200px)/2));border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0d1425dd;backdrop-filter:blur(12px);position:sticky;top:0;z-index:1}h1{font-size:16px;margin:0 8px 0 0;font-weight:700}.mark{color:var(--accent);font-size:18px}select,input{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:7px 10px;font:inherit}input{min-width:180px}.status{margin-left:auto;color:var(--dim);font-size:12px}main{padding:28px 24px;max-width:1248px;margin:auto}.hero{margin:0 0 22px;color:var(--dim);max-width:680px}.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}.tile{background:linear-gradient(145deg,#17223a,#11192c);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 24px #0000001c}.k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}.v{font-size:20px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}.loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line)}td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}tr.row{cursor:pointer}tr.row:hover{background:#1c2944}.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line)}.num{text-align:right;font-variant-numeric:tabular-nums}.detail td{background:#0e1526;color:var(--dim);font-size:13px}pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;color:var(--fg)}.bad{color:var(--tight);font-weight:600}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}.empty{color:var(--dim);padding:16px}.error{color:var(--tight);padding:16px;border:1px solid #ff7b8955;border-radius:10px;background:#ff7b8910}.reviewed{color:var(--dim);font-size:11px}@media(max-width:720px){main{padding:20px 14px}header{padding:14px}.status{margin-left:0}}
 </style></head><body>
-<header>
-  <h1>Policy Diff Explorer</h1>
-  <select id=domain></select>
-  <select id=version></select>
-  <span id=label style="color:var(--dim)"></span>
-</header>
-<main>
-  <div class=tiles id=tiles></div>
-  <h2>Flipped decisions</h2>
-  <div id=flips></div>
-  <h2>Established precedent</h2>
-  <div id=precedents></div>
-</main>
+<header><span class=mark>◷</span><h1>Policy Time Machine</h1><select id=domain aria-label="Domain"></select><select id=version aria-label="Policy version"></select><input id=search type=search placeholder="Filter case IDs" aria-label="Filter case IDs"><span id=label style="color:var(--dim)"></span><span class=status id=status></span></header>
+<main><p class=hero>Replay real decisions under a proposed rule, surface the meaningful changes, and retain human rulings as regression tests.</p><div class=tiles id=tiles></div><h2>Flipped decisions</h2><div id=flips></div><h2>Established precedent</h2><div id=precedents></div></main>
 <script>
-const $ = s => document.querySelector(s);
-// Absolute so the page works whether it is served at /ptm or /ptm/.
-const api = p => fetch('/ptm' + p).then(r => r.json());
-let DOMAINS = [];
-
-function money(u, n){ return (u ? u + ' ' : '') + Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
-
-async function boot(){
-  DOMAINS = await api('/api/domains');
-  $('#domain').innerHTML = DOMAINS.map(d => `<option value="${d.name}">${d.name}</option>`).join('');
-  $('#domain').onchange = onDomain; $('#version').onchange = render;
-  onDomain();
-}
-function onDomain(){
-  const d = DOMAINS.find(x => x.name === $('#domain').value);
-  $('#version').innerHTML = d.policies.map(v => `<option${v==='v2'?' selected':''}>${v}</option>`).join('');
-  $('#label').textContent = d.label;
-  render();
-}
-
-async function render(){
-  const dom = $('#domain').value, ver = $('#version').value;
-  const d = DOMAINS.find(x => x.name === dom);
-  const [s, f, p] = await Promise.all([
-    api(`/api/summary/${dom}/${ver}`), api(`/api/flips/${dom}/${ver}`), api(`/api/precedents/${dom}`)]);
-
-  const loose = s.by_direction.find(x => x.direction === 'loosening') || {n:0,impact:0};
-  const tight = s.by_direction.find(x => x.direction === 'tightening') || {n:0,impact:0};
-  $('#tiles').innerHTML = [
-    ['Decisions replayed', s.cases.toLocaleString(), ''],
-    ['Outcomes that change', s.flips.toLocaleString(), s.flips ? 'warn' : ''],
-    ['More generous', `${loose.n} · ${money(s.impact_unit, loose.impact)}`, 'loose'],
-    ['More strict', `${tight.n} · ${money(s.impact_unit, tight.impact)}`, 'tight'],
-    ['Net cost', money(s.impact_unit, s.net_impact), s.net_impact > 0 ? 'loose' : 'tight'],
-    ['Precedents on file', s.precedents, ''],
-  ].map(([k,v,c]) => `<div class=tile><div class=k>${k}</div><div class="v ${c}">${v}</div></div>`).join('');
-
-  $('#flips').innerHTML = !f.length ? '<div class=empty>No replay results yet — trigger or backfill the replay DAG.</div>' : `
-    <table><thead><tr><th>Case</th><th>Decided</th><th>Was</th><th>Becomes</th>
-    <th>Direction</th><th class=num>Impact</th><th class=num>Conf.</th><th>Precedent</th></tr></thead><tbody>
-    ${f.map((r,i) => `
-      <tr class=row onclick="toggle(${i})">
-        <td>${r.case_id}</td><td>${r.decided_at.slice(0,10)}</td>
-        <td><span class=pill>${r.actual_outcome}</span></td>
-        <td><span class=pill>${r.new_outcome}</span></td>
-        <td class="${r.direction==='loosening'?'loose':'tight'}">${r.direction}</td>
-        <td class=num>${money('', r.impact)}</td>
-        <td class=num>${Math.round(r.confidence*100)}%</td>
-        <td>${r.precedent ? (r.precedent === r.new_outcome
-             ? '<span class=loose>consistent</span>'
-             : `<span class=bad>VIOLATES → ${r.precedent}</span>`) : '—'}</td>
-      </tr>
-      <tr class=detail id=d${i} hidden><td colspan=8>
-        <pre>${esc(render_case(r.payload))}</pre>
-        <div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || '—')}</div>
-        <div style="margin-top:6px"><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div>
-      </td></tr>`).join('')}
-    </tbody></table>`;
-
-  $('#precedents').innerHTML = !p.length ? '<div class=empty>No precedents yet — run the adjudication DAG and answer the human-in-the-loop tasks.</div>' : `
-    <table><thead><tr><th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Note</th></tr></thead>
-    <tbody>${p.map(r => `<tr><td>${r.case_id}</td><td><span class=pill>${r.correct_outcome}</span></td>
-      <td>${esc(r.ruled_by)}</td><td>${r.established_at.slice(0,10)}</td><td>${esc(r.note||'')}</td></tr>`).join('')}
-    </tbody></table>`;
-}
-function render_case(p){ return Object.entries(p).map(([k,v]) => `${(k+':').padEnd(20)}${v}`).join('\n'); }
-function toggle(i){ const el = document.getElementById('d'+i); el.hidden = !el.hidden; }
-function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
-boot();
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])),money=(u,n)=>(u?u+' ':'')+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0});let DOMAINS=[];const api=async p=>{const r=await fetch('/ptm'+p);if(!r.ok)throw Error(r.status);return r.json()};function error(m){$('#tiles').innerHTML=`<div class=error>${esc(m)}</div>`;$('#flips').innerHTML=$('#precedents').innerHTML='';$('#status').textContent='Unavailable'}
+async function boot(){try{DOMAINS=await api('/api/domains')}catch(e){error('Could not load Policy Time Machine data. Start the Airflow demo, then refresh.');return}if(!DOMAINS.length){error('No policy domains are configured yet.');return}$('#domain').innerHTML=DOMAINS.map(d=>`<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');$('#domain').onchange=domain;$('#version').onchange=$('#search').oninput=render;domain()}function domain(){const d=DOMAINS.find(x=>x.name===$('#domain').value);$('#version').innerHTML=d.policies.map(v=>`<option${v==='v2'?' selected':''}>${esc(v)}</option>`).join('');$('#label').textContent=d.label;render()}
+async function render(){const d=$('#domain').value,v=$('#version').value;$('#status').textContent='Loading…';let s,f,p;try{[s,f,p]=await Promise.all([api(`/api/summary/${d}/${v}`),api(`/api/flips/${d}/${v}`),api(`/api/precedents/${d}`)])}catch(e){error('Could not load this replay. Please refresh or check the Airflow logs.');return}const q=$('#search').value.trim().toLowerCase(),rows=q?f.filter(r=>r.case_id.toLowerCase().includes(q)):f;$('#status').textContent=`${s.runs} run${s.runs===1?'':'s'} · ${rows.length}${rows.length===f.length?' flips':' shown'}`;const lo=s.by_direction.find(x=>x.direction==='loosening')||{n:0,impact:0},hi=s.by_direction.find(x=>x.direction==='tightening')||{n:0,impact:0};$('#tiles').innerHTML=[['Decisions replayed',s.cases.toLocaleString(),''],['Outcomes that change',s.flips.toLocaleString(),s.flips?'warn':''],['More generous',`${lo.n} · ${money(s.impact_unit,lo.impact)}`,'loose'],['More strict',`${hi.n} · ${money(s.impact_unit,hi.impact)}`,'tight'],['Net cost',money(s.impact_unit,s.net_impact),s.net_impact>0?'loose':'tight'],['Precedents on file',s.precedents,'']].map(([k,x,c])=>`<div class=tile><div class=k>${k}</div><div class="v ${c}">${x}</div></div>`).join('');$('#flips').innerHTML=!rows.length?`<div class=empty>${f.length?'No flipped cases match this filter.':'No replay results yet — trigger or backfill the replay DAG.'}</div>`:`<table><thead><tr><th>Case</th><th>Decided</th><th>Was</th><th>Becomes</th><th>Direction</th><th class=num>Impact</th><th class=num>Conf.</th><th>Precedent</th></tr></thead><tbody>${rows.map((r,i)=>`<tr class=row onclick="toggle(${i})"><td>${esc(r.case_id)}${r.reviewed?' <span class=reviewed>reviewed</span>':''}</td><td>${esc(r.decided_at.slice(0,10))}</td><td><span class=pill>${esc(r.actual_outcome)}</span></td><td><span class=pill>${esc(r.new_outcome)}</span></td><td class="${r.direction==='loosening'?'loose':'tight'}">${esc(r.direction)}</td><td class=num>${money('',r.impact)}</td><td class=num>${Math.round(r.confidence*100)}%</td><td>${r.precedent?(r.precedent===r.new_outcome?'<span class=loose>consistent</span>':`<span class=bad>VIOLATES → ${esc(r.precedent)}</span>`):'—'}</td></tr><tr class=detail id=d${i} hidden><td colspan=8><pre>${esc(Object.entries(r.payload).map(([k,x])=>`${(k+':').padEnd(20)}${x}`).join('\n'))}</pre><div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale||'—')}</div><div><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div></td></tr>`).join('')}</tbody></table>`;$('#precedents').innerHTML=!p.length?'<div class=empty>No precedents yet — run the adjudication DAG and answer the human-in-the-loop tasks.</div>':`<table><thead><tr><th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Note</th></tr></thead><tbody>${p.map(r=>`<tr><td>${esc(r.case_id)}</td><td><span class=pill>${esc(r.correct_outcome)}</span></td><td>${esc(r.ruled_by)}</td><td>${esc(r.established_at.slice(0,10))}</td><td>${esc(r.note||'')}</td></tr>`).join('')}</tbody></table>`}function toggle(i){const e=document.getElementById('d'+i);e.hidden=!e.hidden}boot();
 </script></body></html>

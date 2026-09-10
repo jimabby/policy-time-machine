@@ -25,12 +25,12 @@ This makes that question computable — and then makes the answer *stick*.
 
 ```
 replayed 600 decisions under policy v2
-  161 outcomes change (26.8%)
-  149 more generous  GBP 20,581
+  147 outcomes change (24.5%)
+  135 more generous  GBP 17,994
   12 more strict     GBP 5,980
-  net GBP 14,601
+  net GBP 12,014
 
-8 flips routed to a human out of 161
+8 flips routed to a human out of 147
 8 precedents established
 
 gate: policy v2 vs 8 precedents -> 3 violation(s)
@@ -51,7 +51,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | Airflow capability | What it does here |
 |---|---|
 | **Backfill** | Is the simulation engine. One `backfill create` fans out 24 monthly runs that replay two years of real decisions. |
-| **Data intervals** | Make the replay *honest*. Each run only sees cases inside its own window, and each case is hydrated with facts known on its decision date. **Skip this and 41 of 600 cases come out wrong** — see below. |
+| **Data intervals** | Make the replay *honest*. Each run only sees cases inside its own window, and each case is hydrated with facts known on its decision date. **Skip this and 39 of 600 cases come out wrong** — see below. |
 | **Dynamic task mapping** | One judge task per case, with concurrency capped so you don't melt the model endpoint. |
 | **Common AI provider** | `LLMOperator` with `output_type=Verdict`, so every verdict is typed, not parsed out of prose. `usage_limits` caps spend per task. The vendor lives in a connection — switching models never touches DAG code. |
 | **HITL operators** | `HITLOperator` deferred in the triggerer, holding no worker slot, asking a human for the *correct outcome* — not a yes/no. |
@@ -68,8 +68,8 @@ and you wrongly approve claims from before those promotions:
 
 ```
 $ python -m ptm.pit_check
-point-in-time replay : 161 flips
-naive replay         : wrong on 41 / 600 cases
+point-in-time replay : 147 flips
+naive replay         : wrong on 39 / 600 cases
 ```
 
 Every one of those 41 errors flatters the proposal. Airflow's data-interval
@@ -103,7 +103,7 @@ Three DAGs per domain, generated from `include/domains/*.yaml`:
 
 `select_for_review` is deliberately stingy: humans see a flip only if the
 judge was unsure, the money is large, or the change makes the organisation
-more permissive than it chose to be. 161 flips → 8 human decisions.
+more permissive than it chose to be. 147 flips → 8 human decisions.
 
 ---
 

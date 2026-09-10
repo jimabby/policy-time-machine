@@ -63,14 +63,14 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
         try:
             if eval(rule["when"], scope):  # noqa: S307 - local fixture, see docstring
                 return Verdict(
-                    outcome=rule["outcome"],
+                    outcome=domain.validate_outcome(rule["outcome"]),
                     rationale=rule.get("because", "Matched offline rule."),
                     confidence=float(rule.get("confidence", 0.9)),
                     policy_clause=str(rule.get("clause", "")),
                 )
         except Exception:  # a rule referencing a field this case lacks simply does not match
             continue
-    return Verdict(outcome=domain.outcomes[0], rationale="No rule matched; default outcome.", confidence=0.6)
+    return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]), rationale="No rule matched; default outcome.", confidence=0.6)
 
 
 def _coerce(v):

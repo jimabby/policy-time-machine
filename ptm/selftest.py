@@ -39,11 +39,10 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
             continue
         verdicts = {c.case_id: offline_verdict(c, domain, version) for c in cases}
         run_id = f"selftest__{lo:%Y-%m}"
-        store.save_verdicts(run_id, domain_name, version, verdicts)
         found = diff.flips(cases, verdicts, domain)
-        store.save_flips(run_id, domain_name, version, found)
         s = diff.summarise(found, len(cases), domain)
-        store.record_run(run_id, domain_name, version, "actual", len(cases), len(found), s["net_impact"])
+        store.save_replay(run_id, domain_name, version, "actual", len(cases), found,
+                          s["net_impact"], verdicts)
         total_cases += len(cases)
         all_flips += found
 
@@ -69,7 +68,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
             ruled_by="finance.lead", note="Adjudicated during selftest.",
             established_at=datetime.now(), established_by_run="selftest",
         ))
-    store.mark_reviewed([f.case_id for f in contested])
+    store.mark_reviewed(domain_name, version, [f.case_id for f in contested])
     print(f"\n{len(contested)} precedents established")
 
     # --- what precedent_gate_<domain> does ---------------------------------

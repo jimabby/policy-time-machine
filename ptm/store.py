@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS flips (
     reviewed       INTEGER DEFAULT 0,
     PRIMARY KEY (run_id, case_id)
 );
+CREATE INDEX IF NOT EXISTS flips_domain_policy_case ON flips (domain, policy_version, case_id);
+CREATE INDEX IF NOT EXISTS flips_review_queue ON flips (domain, policy_version, reviewed, impact DESC);
 
 -- The one durable artefact. Everything else can be recomputed.
 CREATE TABLE IF NOT EXISTS precedents (
@@ -100,12 +102,17 @@ def conn() -> Iterator[sqlite3.Connection]:
     try:
         yield c
         c.commit()
+    except Exception:
+        c.rollback()
+        raise
     finally:
         c.close()
 
 
 def init_db() -> None:
     with conn() as c:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA foreign_keys=ON")
         c.executescript(SCHEMA)
 
 
@@ -230,16 +237,63 @@ def query(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
 
 
 def flips_for_policy(domain: str, policy_version: str) -> list[dict]:
-    """Every flip found for a policy version, across all replay runs."""
+    """The current flip for each case and policy version.
+
+    Manual replays overlap backfills by design. Selecting the most recently
+    persisted result prevents those helpful spot-checks from creating duplicate
+    human-review tasks or inflated dashboard totals.
+    """
     return query(
         """SELECT f.*, c.payload, c.decided_at, c.actual_rationale
            FROM flips f JOIN cases c ON c.case_id = f.case_id
-           WHERE f.domain = ? AND f.policy_version = ?
+           JOIN (
+             SELECT case_id, MAX(rowid) AS latest_rowid FROM flips
+             WHERE domain = ? AND policy_version = ? GROUP BY case_id
+           ) latest ON latest.latest_rowid = f.rowid
            ORDER BY f.impact DESC""",
         (domain, policy_version),
     )
 
 
-def mark_reviewed(case_ids: list[str]) -> None:
+def mark_reviewed(domain: str, policy_version: str, case_ids: list[str]) -> None:
+    """Mark only the reviewed version of a case, never every policy run."""
+    if not case_ids:
+        return
     with conn() as c:
-        c.executemany("UPDATE flips SET reviewed = 1 WHERE case_id = ?", [(i,) for i in case_ids])
+        c.executemany(
+            "UPDATE flips SET reviewed = 1 WHERE domain = ? AND policy_version = ? AND case_id = ?",
+            [(domain, policy_version, case_id) for case_id in case_ids],
+        )
+
+
+def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
+                cases_replayed: int, flips: list[Flip], impact: float,
+                verdicts: dict[str, Verdict]) -> None:
+    """Persist one replay atomically, including an idempotent re-run cleanup."""
+    now = datetime.now().isoformat()
+    with conn() as c:
+        # Airflow retries use the same run id. Clear old rows first so a
+        # policy edit cannot leave a no-longer-flipped case visible in the UI.
+        c.execute("DELETE FROM verdicts WHERE run_id = ?", (run_id,))
+        c.execute("DELETE FROM flips WHERE run_id = ?", (run_id,))
+        c.executemany(
+            """INSERT INTO verdicts
+               (run_id, domain, policy_version, case_id, outcome, rationale, confidence, policy_clause, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [(run_id, domain, policy_version, case_id, v.outcome, v.rationale,
+              v.confidence, v.policy_clause, now) for case_id, v in verdicts.items()],
+        )
+        c.executemany(
+            """INSERT INTO flips
+               (run_id, domain, policy_version, case_id, actual_outcome, new_outcome,
+                direction, impact, confidence, rationale)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            [(run_id, domain, policy_version, f.case_id, f.actual_outcome, f.new_outcome,
+              f.direction, f.impact, f.confidence, f.rationale) for f in flips],
+        )
+        c.execute(
+            """INSERT OR REPLACE INTO runs
+               (run_id, domain, policy_version, baseline, started_at, cases_replayed, flips, impact)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (run_id, domain, policy_version, baseline, now, cases_replayed, len(flips), impact),
+        )

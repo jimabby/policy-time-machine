@@ -143,14 +143,18 @@ def build(domain_name: str) -> None:
             version = ctx["params"]["policy_version"]
             run_id = ctx["run_id"]
             cases = [_case(i) for i in items]
+            if len(verdicts) != len(cases):
+                raise AirflowFailException(
+                    f"Judge returned {len(verdicts)} verdicts for {len(cases)} cases; refusing partial replay."
+                )
             by_case = {c.case_id: _as_verdict(v) for c, v in zip(cases, verdicts)}
+            for verdict in by_case.values():
+                domain.validate_outcome(verdict.outcome)
 
-            store.save_verdicts(run_id, domain_name, version, by_case)
             found = diff.flips(cases, by_case, domain)
-            store.save_flips(run_id, domain_name, version, found)
             summary = diff.summarise(found, len(cases), domain)
-            store.record_run(run_id, domain_name, version, "actual",
-                             len(cases), len(found), summary["net_impact"])
+            store.save_replay(run_id, domain_name, version, "actual", len(cases),
+                              found, summary["net_impact"], by_case)
             return summary
 
         items = prepare()
@@ -256,7 +260,7 @@ def build(domain_name: str) -> None:
                     established_at=pendulum.now("UTC"), established_by_run=ctx["run_id"],
                 ))
                 saved.append(f["case_id"])
-            store.mark_reviewed(saved)
+            store.mark_reviewed(domain_name, ctx["params"]["policy_version"], saved)
             return {"precedents_recorded": len(saved), "case_ids": saved}
 
         record(flips, reviews.output)
@@ -315,7 +319,13 @@ def build(domain_name: str) -> None:
         def enforce(items: list[dict], verdicts: list, **ctx) -> dict:
             """Fail the run if the candidate policy reverses a human ruling."""
             version = ctx["params"]["policy_version"]
+            if len(verdicts) != len(items):
+                raise AirflowFailException(
+                    f"Judge returned {len(verdicts)} verdicts for {len(items)} precedents; refusing partial gate."
+                )
             by_case = {i["case_id"]: _as_verdict(v) for i, v in zip(items, verdicts)}
+            for verdict in by_case.values():
+                domain.validate_outcome(verdict.outcome)
             violations = diff.precedent_violations(by_case, store.load_precedents(domain_name))
             if violations:
                 lines = "\n".join(

@@ -17,7 +17,10 @@ from pydantic import BaseModel, Field
 
 INCLUDE_DIR = Path(os.environ.get("PTM_INCLUDE_DIR", "/opt/airflow/include"))
 DB_PATH = Path(os.environ.get("PTM_DB", str(INCLUDE_DIR / "ptm.db")))
-OFFLINE = os.environ.get("PTM_OFFLINE", "0") == "1"
+# The project is designed to be runnable at a booth with no credentials. The
+# compose file and .env.example agree with this default; setting 0 opts into a
+# real Common AI connection.
+OFFLINE = os.environ.get("PTM_OFFLINE", "1") == "1"
 LLM_CONN_ID = os.environ.get("PTM_LLM_CONN_ID", "pydanticai_default")
 
 
@@ -50,6 +53,14 @@ class DomainConfig(BaseModel):
     review: ReviewPolicy = Field(default_factory=ReviewPolicy)
     #: Fixtures for PTM_OFFLINE=1 only; the real judge never reads these.
     offline_rules: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+
+    def validate_outcome(self, outcome: str) -> str:
+        """Reject a judge response that is outside this domain's contract."""
+        if outcome not in self.outcomes:
+            raise ValueError(
+                f"invalid outcome {outcome!r} for {self.name!r}; expected one of {self.outcomes}"
+            )
+        return outcome
 
     def policy_text(self, version: str) -> str:
         if version not in self.policies:
