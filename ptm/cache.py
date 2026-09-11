@@ -55,14 +55,18 @@ def key(prompt: str, model: str) -> str:
     return digest.hexdigest()
 
 
-def lookup(keys: list[str]) -> dict[str, Verdict]:
-    """Cached verdicts by key, or nothing at all when the cache is off."""
+def lookup(keys: list[str], count: bool = True) -> dict[str, Verdict]:
+    """Cached verdicts by key, or nothing at all when the cache is off.
+
+    ``count=False`` leaves the hit counters alone, for a read that is deciding
+    what to judge rather than actually serving a verdict.
+    """
     if not ENABLED or not keys:
         return {}
     return {
         k: Verdict(outcome=row["outcome"], rationale=row["rationale"],
                    confidence=row["confidence"], policy_clause=row["policy_clause"] or "")
-        for k, row in store.cache_lookup(keys).items()
+        for k, row in store.cache_lookup(keys, count=count).items()
     }
 
 
@@ -83,7 +87,8 @@ def remember(domain: str, policy_version: str, model: str,
     ])
 
 
-def split(items: list[dict], key_field: str = "cache_key") -> tuple[list[dict], dict[str, Verdict]]:
+def split(items: list[dict], key_field: str = "cache_key",
+          count: bool = True) -> tuple[list[dict], dict[str, Verdict]]:
     """Divide items into the ones that must be judged and the ones already answered.
 
     Returns ``(misses, hits_by_case_id)``. Items with no key on them are always
@@ -91,7 +96,7 @@ def split(items: list[dict], key_field: str = "cache_key") -> tuple[list[dict], 
     one.
     """
     keys = [i[key_field] for i in items if i.get(key_field)]
-    cached = lookup(keys)
+    cached = lookup(keys, count=count)
     misses, hits = [], {}
     for item in items:
         k = item.get(key_field)

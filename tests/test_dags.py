@@ -92,6 +92,16 @@ class TestStatic:
         assert "cacheable=False" not in everything_else.split("def _ledger", 1)[1], \
             "only the stability fan-out opts out; the others must all be cached"
 
+    def test_nothing_tries_to_map_over_one_key_of_a_multiple_output_task(self):
+        """Airflow refuses it - *cannot map over XCom with custom key* - and it
+        refuses at DAG import, so the whole file fails to parse and every DAG in
+        it disappears. It is valid Python, so `py_compile` above says nothing;
+        only an Airflow-installed environment catches it, which is a slow place
+        to find out. A task whose output is expanded over returns a plain list.
+        """
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "multiple_outputs" not in source
+
     def test_the_proposer_can_be_run_without_it_writing_anything(self):
         """Proposing and adopting are separate acts, and the directory it writes
         into is the one a person is accountable for."""

@@ -162,23 +162,28 @@ def _add_ledgers(*ledgers: dict) -> dict:
     return total
 
 
-@task(multiple_outputs=True)
-def to_judge(items: list[dict], key_field: str = "cache_key") -> dict:
-    """Split a fan-out into what still needs judging and what is already answered.
+@task
+def to_judge(items: list[dict], key_field: str = "cache_key") -> list[dict]:
+    """The cases in a fan-out that nobody has answered yet.
+
+    A plain list, because that is what a mapped task can expand over: Airflow
+    refuses to map over one key of a multiple-output task. So the answers the
+    cache already holds are fetched again by :func:`merge` rather than returned
+    alongside the misses here - which also means this read must not count as a
+    hit, because ``merge`` is where a verdict is actually served.
 
     Defined once at module level and called by both the replay and the gate,
     because they have the same problem: the gate re-judges the same handful of
     precedent cases every time a ruling is recorded, and the candidate policy
     has usually not changed between two of those runs.
     """
-    misses, hits = cache.split(items, key_field)
+    misses, hits = cache.split(items, key_field, count=False)
     print(cache.describe(len(hits), len(misses)))
-    return {"judge": misses,
-            "cached": {case_id: v.model_dump() for case_id, v in hits.items()}}
+    return misses
 
 
 @task
-def merge(items: list[dict], misses: list[dict], cached: dict, fresh: list,
+def merge(items: list[dict], misses: list[dict], fresh: list,
           key_field: str = "cache_key", chars_field: str = "prompt_chars") -> dict:
     """Fresh verdicts for the cases judged, cached verdicts for the rest, in order.
 
@@ -204,13 +209,22 @@ def merge(items: list[dict], misses: list[dict], cached: dict, fresh: list,
             {case_id: (by_key[case_id][0], by_key[case_id][1], verdict)
              for case_id, verdict in judged.items() if by_key.get(case_id, ("",))[0]})
 
+    # Looked up here rather than carried from the task above, and after the
+    # fresh verdicts are stored: a case answered by a concurrent run in the
+    # meantime is a hit like any other, because the key is the prompt and the
+    # prompt is identical.
+    rest = [i for i in items if i["case_id"] not in judged]
+    cached = cache.lookup([i[key_field] for i in rest if i.get(key_field)])
+    by_case = {i["case_id"]: cached[i[key_field]] for i in rest
+               if i.get(key_field) and i[key_field] in cached}
+
     out, hits = [], []
     for item in items:
         case_id = item["case_id"]
         if case_id in judged:
             out.append(judged[case_id].model_dump())
-        elif case_id in cached:
-            out.append(cached[case_id])
+        elif case_id in by_case:
+            out.append(by_case[case_id].model_dump())
             hits.append(item)
         else:
             raise AirflowFailException(
@@ -470,9 +484,9 @@ def build(domain_name: str) -> None:
         # is for: most of the history is untouched by the edit and its verdicts
         # are still valid, because the key is the prompt and the prompt did not
         # change for those cases.
-        candidate_split = to_judge(items)
+        candidate_misses = to_judge(items)
         baseline_case_items = baseline_items(items)
-        baseline_split = to_judge.override(task_id="to_judge_baseline")(
+        baseline_misses = to_judge.override(task_id="to_judge_baseline")(
             baseline_case_items, "baseline_cache_key")
 
         if OFFLINE:
@@ -486,8 +500,8 @@ def build(domain_name: str) -> None:
                 version = (ctx["params"]["baseline_version"] or "").strip()
                 return offline_verdict(_case(item), domain, version).model_dump()
 
-            verdicts = judge_offline.expand(item=candidate_split["judge"])
-            baseline_verdicts = judge_baseline_offline.expand(item=baseline_split["judge"])
+            verdicts = judge_offline.expand(item=candidate_misses)
+            baseline_verdicts = judge_baseline_offline.expand(item=baseline_misses)
         else:
             verdicts = LLMOperator.partial(
                 task_id="judge",
@@ -498,7 +512,7 @@ def build(domain_name: str) -> None:
                 # every task rather than trusting the prompt.
                 usage_limits=UsageLimits(request_limit=3),
                 max_active_tis_per_dag=8,
-            ).expand(prompt=prompts(candidate_split["judge"])).output
+            ).expand(prompt=prompts(candidate_misses)).output
             baseline_verdicts = LLMOperator.partial(
                 task_id="judge_baseline",
                 llm_conn_id=LLM_CONN_ID,
@@ -506,14 +520,13 @@ def build(domain_name: str) -> None:
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
                 max_active_tis_per_dag=8,
-            ).expand(prompt=baseline_prompts(baseline_split["judge"])).output
+            ).expand(prompt=baseline_prompts(baseline_misses)).output
 
-        candidate = merge(items, candidate_split["judge"], candidate_split["cached"],
-                          verdicts)
+        candidate = merge(items, candidate_misses, verdicts)
         baseline_pass = merge.override(task_id="merge_baseline",
                                        trigger_rule="none_failed")(
-            baseline_case_items, baseline_split["judge"], baseline_split["cached"],
-            baseline_verdicts, "baseline_cache_key", "baseline_prompt_chars")
+            baseline_case_items, baseline_misses, baseline_verdicts,
+            "baseline_cache_key", "baseline_prompt_chars")
 
         @task(outlets=[flips_asset])
         def publish(summary: dict) -> dict:
@@ -736,9 +749,9 @@ def build(domain_name: str) -> None:
         # questions about the same handful of cases. Unless the candidate policy
         # changed between two runs, every one of those questions has an answer
         # on file already.
-        gate_split = to_judge.override(task_id="gate_to_judge")(cases)
+        gate_misses = to_judge.override(task_id="gate_to_judge")(cases)
         gate_baseline_case_items = gate_baseline_items(cases)
-        gate_baseline_split = to_judge.override(task_id="gate_to_judge_baseline")(
+        gate_baseline_misses = to_judge.override(task_id="gate_to_judge_baseline")(
             gate_baseline_case_items, "baseline_cache_key")
 
         if OFFLINE:
@@ -751,9 +764,9 @@ def build(domain_name: str) -> None:
                 version = (ctx["params"].get("baseline_version") or "").strip()
                 return offline_verdict(_case(item), domain, version).model_dump()
 
-            gate_verdicts = gate_judge_offline.expand(item=gate_split["judge"])
+            gate_verdicts = gate_judge_offline.expand(item=gate_misses)
             gate_baseline_verdicts = gate_baseline_offline.expand(
-                item=gate_baseline_split["judge"])
+                item=gate_baseline_misses)
         else:
             gate_verdicts = LLMOperator.partial(
                 task_id="gate_judge",
@@ -761,21 +774,20 @@ def build(domain_name: str) -> None:
                 system_prompt=SYSTEM_PROMPT,
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
-            ).expand(prompt=gate_prompts(gate_split["judge"])).output
+            ).expand(prompt=gate_prompts(gate_misses)).output
             gate_baseline_verdicts = LLMOperator.partial(
                 task_id="gate_judge_baseline",
                 llm_conn_id=LLM_CONN_ID,
                 system_prompt=SYSTEM_PROMPT,
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
-            ).expand(prompt=gate_baseline_prompts(gate_baseline_split["judge"])).output
+            ).expand(prompt=gate_baseline_prompts(gate_baseline_misses)).output
 
         gate_candidate = merge.override(task_id="gate_merge")(
-            cases, gate_split["judge"], gate_split["cached"], gate_verdicts)
+            cases, gate_misses, gate_verdicts)
         gate_baseline = merge.override(task_id="gate_merge_baseline",
                                        trigger_rule="none_failed")(
-            gate_baseline_case_items, gate_baseline_split["judge"],
-            gate_baseline_split["cached"], gate_baseline_verdicts,
+            gate_baseline_case_items, gate_baseline_misses, gate_baseline_verdicts,
             "baseline_cache_key", "baseline_prompt_chars")
 
         @task(trigger_rule="none_failed")

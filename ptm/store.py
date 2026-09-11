@@ -607,12 +607,16 @@ DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
 # Keyed on the hash of the prompt, so any change to the policy text, the case,
 # the rendering or the instructions misses. See ptm/cache.py.
 
-def cache_lookup(keys: list[str]) -> dict[str, dict]:
+def cache_lookup(keys: list[str], count: bool = True) -> dict[str, dict]:
     """Cached verdicts for the keys that have one, counting the hits.
 
     The hit counter is what makes the saving reportable rather than asserted,
     so the read writes. Chunked for SQLite's parameter ceiling like every other
     id lookup here.
+
+    ``count=False`` is for a read that only decides what to *do* - the planning
+    read that splits a fan-out looks the same keys up as the one that serves
+    them, and counting both would report every saving twice.
     """
     if not keys:
         return {}
@@ -628,7 +632,7 @@ def cache_lookup(keys: list[str]) -> dict[str, dict]:
                 tuple(chunk),
             ).fetchall():
                 found[row["cache_key"]] = dict(row)
-        if found:
+        if found and count:
             c.executemany(
                 "UPDATE verdict_cache SET hits = hits + 1, last_hit_at = ? WHERE cache_key = ?",
                 [(now, k) for k in found],
