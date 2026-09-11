@@ -105,30 +105,33 @@ class TestParses:
 
     def test_replay_is_schedulable_and_backfillable(self, dagbag):
         dag = dagbag.dags["replay_expenses"]
-        assert dag.schedule_interval == "@monthly"
+        assert dag.schedule == "@monthly"
         assert {"policy_version", "max_cases", "baseline_version"} <= set(dag.params)
 
     def test_adjudication_wakes_on_the_flips_asset(self, dagbag):
+        """Nothing polls; the replay emitting the asset is what starts this."""
         dag = dagbag.dags["adjudicate_expenses"]
-        assert "ptm://expenses/flips" in str(dag.timetable.summary)
+        assert [a.uri for a in dag.schedule] == ["ptm://expenses/flips"]
 
     def test_the_gate_wakes_on_the_precedents_asset(self, dagbag):
         dag = dagbag.dags["precedent_gate_expenses"]
-        assert "ptm://expenses/precedents" in str(dag.timetable.summary)
+        assert [a.uri for a in dag.schedule] == ["ptm://expenses/precedents"]
 
     def test_stability_is_manual_only(self, dagbag):
         """It costs real money per run, so it must not fire on a schedule."""
-        assert dagbag.dags["judge_stability_expenses"].schedule_interval is None
+        assert dagbag.dags["judge_stability_expenses"].schedule is None
 
     def test_stability_requires_at_least_two_samples(self, dagbag):
+        # dag.params resolves to plain values; get_param returns the Param
+        # itself, which is where the validation schema lives.
         params = dagbag.dags["judge_stability_expenses"].params
-        assert params["samples_per_case"].schema.get("minimum") == 2
+        assert params.get_param("samples_per_case").schema.get("minimum") == 2
 
     def test_stability_can_target_the_recorded_flips(self, dagbag):
         """The aggregate noise floor and per-flip confirmation are two
         questions sharing one fan-out."""
         params = dagbag.dags["judge_stability_expenses"].params
-        assert params["target"].schema.get("enum") == ["sample", "flips"]
+        assert params.get_param("target").schema.get("enum") == ["sample", "flips"]
 
     def test_the_gate_judges_the_policy_in_force_as_well(self, dagbag):
         """So a reversal the status quo already makes is not reported as the
