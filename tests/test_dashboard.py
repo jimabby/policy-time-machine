@@ -68,6 +68,15 @@ class Dashboard:
     def __getattr__(self, name):
         return getattr(self.page, name)
 
+    def text(self, selector: str) -> str:
+        """Panel text, lowercased.
+
+        ``text-transform: uppercase`` is a style, not content - inner_text
+        returns it uppercased and an assertion on the real wording would fail
+        for a page that is rendering perfectly.
+        """
+        return self.page.inner_text(selector).lower()
+
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -76,7 +85,44 @@ def free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def server(replayed):
+def adjudicated(replayed):
+    """A replay that has also been ruled on and confirmed.
+
+    Without this the page only ever renders its empty states - no precedent,
+    nothing re-judged - and the branches that draw a reversal or a flip that
+    would not reproduce go untested.
+    """
+    import datetime
+
+    from ptm import report, store
+    from ptm.models import FlipConfirmation, Precedent
+
+    flips = report.flips("expenses", "v2", limit=3)
+    agreed, reversed_, shaky = flips[0], flips[1], flips[2]
+
+    for row, outcome in ((agreed, agreed["new_outcome"]),
+                         (reversed_, reversed_["actual_outcome"])):
+        store.save_precedent(Precedent(
+            case_id=row["case_id"], domain="expenses", correct_outcome=outcome,
+            ruled_by="finance.lead", note="Ruled during the browser test.",
+            established_at=datetime.datetime(2026, 1, 1)))
+
+    store.save_flip_stability("expenses", "v2", [
+        FlipConfirmation(case_id=agreed["case_id"], samples=3,
+                         outcomes={agreed["new_outcome"]: 3},
+                         modal_outcome=agreed["new_outcome"], agreement=1.0,
+                         stable=True, recorded_outcome=agreed["new_outcome"]),
+        FlipConfirmation(case_id=shaky["case_id"], samples=3,
+                         outcomes={shaky["new_outcome"]: 2, shaky["actual_outcome"]: 1},
+                         modal_outcome=shaky["new_outcome"], agreement=0.667,
+                         stable=False, recorded_outcome=shaky["new_outcome"]),
+    ])
+    return {"agreed": agreed["case_id"], "reversed": reversed_["case_id"],
+            "shaky": shaky["case_id"]}
+
+
+@pytest.fixture(scope="module")
+def server(adjudicated):
     """The plugin app under /ptm, exactly where Airflow mounts it.
 
     The prefix is load-bearing: the page fetches "/ptm" + path, so serving it
@@ -137,13 +183,13 @@ class TestItRenders:
         assert "Policy Time Machine" in page.title()
 
     def test_the_status_line_reports_the_replay(self, page):
-        assert "run" in page.inner_text("#status")
+        assert "run" in page.text("#status")
 
     def test_every_panel_has_content(self, page):
         """An empty panel is the shape a broken renderer takes."""
         empty = []
         for panel in ("#tiles", "#clauses", "#segments", "#deviations", "#flips",
-                      "#precedents", "#stability", "#sweep"):
+                      "#precedents", "#conflicts", "#stability", "#sweep"):
             if not page.inner_text(panel).strip():
                 empty.append(panel)
         assert not empty, f"panels rendered nothing: {empty}"
@@ -152,62 +198,80 @@ class TestItRenders:
 @needs_browser
 class TestTheHeadline:
     def test_the_tiles_show_the_numbers_the_api_returned(self, page):
-        text = page.inner_text("#tiles")
+        text = page.text("#tiles")
         assert "600" in text, "decisions replayed"
         assert "147" in text, "outcomes that change"
 
     def test_the_deviation_tile_separates_what_the_policy_did_not_cause(self, page):
-        assert "Not this policy's doing" in page.inner_text("#tiles")
+        text = page.text("#tiles")
+        assert "not this policy's doing" in text
+        assert "38" in text and "109 caused by this policy" in text
 
-    def test_the_gate_tile_says_what_the_proposal_introduced(self, page):
-        text = page.inner_text("#tiles")
-        assert "Gate" in text
-        assert "introduced by this policy" in text or "no precedents" in text
+    def test_the_gate_tile_reports_the_reversal_and_who_caused_it(self, page):
+        text = page.text("#tiles")
+        assert "gate" in text
+        assert "reversed" in text
+        assert "introduced by this policy" in text
 
-    def test_the_confirmation_tile_is_present(self, page):
-        assert "Flips confirmed" in page.inner_text("#tiles")
+    def test_the_confirmation_tile_counts_what_held(self, page):
+        text = page.text("#tiles")
+        assert "flips confirmed" in text
+        assert "would not reproduce" in text, "one flip was seeded as unstable"
 
 
 @needs_browser
 class TestPanels:
     def test_clause_attribution_names_the_clause_and_the_deviation_bucket(self, page):
-        text = page.inner_text("#clauses")
+        text = page.text("#clauses")
         assert "clause 1.1 relaxed" in text
         assert "reviewer deviated from policy" in text
         assert "not caused by this policy" in text
 
     def test_blast_radius_shows_denominators(self, page):
-        text = page.inner_text("#segments")
+        text = page.text("#segments")
         assert "by category" in text and "by grade" in text
         assert "/" in text, "flips out of cases"
 
     def test_the_flip_table_has_the_confirmation_column(self, page):
-        headers = page.inner_text("#flips thead")
-        for column in ("Case", "Was", "Becomes", "Responsible for", "Confirmed",
-                       "Precedent"):
+        headers = page.text("#flips thead")
+        for column in ("case", "was", "becomes", "responsible for", "confirmed",
+                       "precedent"):
             assert column in headers, column
+
+    def test_the_flip_table_marks_what_reproduced_and_what_did_not(self, page):
+        text = page.text("#flips")
+        assert "reproduced" in text
+        assert "did not reproduce" in text
+
+    def test_a_flip_that_reverses_a_ruling_is_called_out(self, page):
+        assert "violates" in page.text("#flips")
+
+    def test_the_precedent_panel_lists_the_rulings(self, page):
+        text = page.text("#precedents")
+        assert "finance.lead" in text
+        assert "ruled during the browser test" in text
 
     def test_a_flip_row_expands_to_show_the_case(self, page):
         """The detail row's colspan has to match the header or it renders wrong."""
         page.click("#flips tr.row >> nth=0")
         detail = page.locator("#flips tr.detail >> nth=0")
         detail.wait_for(state="visible", timeout=5_000)
-        assert "Under the proposed policy" in detail.inner_text()
+        assert "under the proposed policy" in detail.inner_text().lower()
 
     def test_the_deviation_panel_explains_whose_problem_it_is(self, page):
-        text = page.inner_text("#deviations")
+        text = page.text("#deviations")
         assert "in force today" in text
-        assert "Both policies say" in text
+        assert "both policies say" in text
 
     def test_the_stability_panel_gives_the_error_bar_or_says_it_is_missing(self, page):
-        text = page.inner_text("#stability")
-        assert "judge" in text.lower() or "not measured" in text.lower()
+        text = page.text("#stability")
+        assert "judge" in text or "not measured" in text
 
 
 @needs_browser
 class TestTheSweep:
     def test_it_offers_the_dials_from_the_policy(self, page):
-        options = page.inner_text("#swdial")
+        options = page.text("#swdial")
         assert "clause 1.1" in options and "amount_gbp" in options
 
     def test_it_prefills_values_around_the_current_setting(self, page):
@@ -216,8 +280,7 @@ class TestTheSweep:
     def test_running_it_renders_the_curve(self, page):
         page.click("#swgo")
         page.wait_for_selector("#sweep table tbody tr", timeout=20_000)
-        text = page.inner_text("#sweep")
-        assert "current" in text
+        assert "current" in page.text("#sweep")
         assert page.locator("#sweep .spark i").count() > 1
         assert page.errors == []
 
@@ -239,9 +302,10 @@ class TestExportAndNavigation:
     def test_switching_domain_re_renders_against_the_other_domain(self, page):
         page.select_option("#domain", "refunds")
         page.wait_for_function(
-            "() => document.querySelector('#segments').innerText.includes('by tier')",
+            "() => document.querySelector('#segments').innerText.toLowerCase()"
+            ".includes('by tier')",
             timeout=15_000)
-        assert "gym membership" in page.inner_text("#label")
+        assert "gym membership" in page.text("#label")
         assert page.get_attribute("#dlcsv", "href") == "/ptm/api/export/refunds/v2.csv"
         assert page.errors == []
 
@@ -252,4 +316,4 @@ class TestExportAndNavigation:
             f"() => document.querySelectorAll('#flips tr.row').length < {before}",
             timeout=10_000)
         assert page.locator("#flips tr.row").count() >= 1
-        assert "shown" in page.inner_text("#status")
+        assert "shown" in page.text("#status")
