@@ -186,6 +186,47 @@ CREATE TABLE IF NOT EXISTS judge_samples (
     PRIMARY KEY (run_id, case_id, sample_idx)
 );
 
+-- One judged prompt, keyed by the hash of the prompt itself and the model that
+-- answered it. Editing one clause currently means re-judging every case at full
+-- price, which makes the edit-and-re-measure loop the project is built around
+-- the one thing nobody does twice. See ptm/cache.py for why the key is the
+-- prompt rather than (case, version).
+CREATE TABLE IF NOT EXISTS verdict_cache (
+    cache_key      TEXT PRIMARY KEY,
+    domain         TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    case_id        TEXT NOT NULL,
+    judge_model    TEXT NOT NULL,
+    outcome        TEXT NOT NULL,
+    rationale      TEXT NOT NULL,
+    confidence     REAL NOT NULL,
+    policy_clause  TEXT DEFAULT '',
+    prompt_chars   INTEGER DEFAULT 0,
+    created_at     TEXT NOT NULL,
+    hits           INTEGER DEFAULT 0,
+    last_hit_at    TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS verdict_cache_domain ON verdict_cache (domain, policy_version);
+
+-- A drafted policy amendment: the patch, the evidence that motivated it, and
+-- what checking it found. The markdown itself lives on disk under
+-- include/drafts/ so every DAG can judge it like any other version; this is the
+-- provenance, which is the part that must not be lost when someone opens the
+-- file six weeks later and asks who wrote it and why.
+CREATE TABLE IF NOT EXISTS policy_drafts (
+    domain         TEXT NOT NULL,
+    version        TEXT NOT NULL,
+    base_version   TEXT NOT NULL,
+    summary        TEXT DEFAULT '',
+    patch          TEXT NOT NULL,
+    evidence       TEXT DEFAULT '{}',
+    verification   TEXT DEFAULT '{}',
+    drafted_by     TEXT DEFAULT '',
+    created_at     TEXT NOT NULL,
+    created_by_run TEXT DEFAULT '',
+    PRIMARY KEY (domain, version)
+);
+
 CREATE TABLE IF NOT EXISTS stability_runs (
     run_id           TEXT PRIMARY KEY,
     domain           TEXT NOT NULL,
@@ -555,9 +596,127 @@ def flip_stability(domain: str, policy_version: str) -> dict[str, dict]:
 
 
 #: Everything derived from a domain's cases. Precedents are deliberately absent:
-#: they are the one durable artefact and survive a re-seed on purpose.
+#: they are the one durable artefact and survive a re-seed on purpose. The
+#: verdict cache goes: its keys are hashes of prompts built from the *old*
+#: cases, so after a re-seed not one of them can ever be hit again.
 DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
-                  "judge_samples", "stability_runs", "flip_stability")
+                  "judge_samples", "stability_runs", "flip_stability", "verdict_cache")
+
+
+# ------------------------------------------------------------- verdict cache
+# Keyed on the hash of the prompt, so any change to the policy text, the case,
+# the rendering or the instructions misses. See ptm/cache.py.
+
+def cache_lookup(keys: list[str]) -> dict[str, dict]:
+    """Cached verdicts for the keys that have one, counting the hits.
+
+    The hit counter is what makes the saving reportable rather than asserted,
+    so the read writes. Chunked for SQLite's parameter ceiling like every other
+    id lookup here.
+    """
+    if not keys:
+        return {}
+    wanted = list(dict.fromkeys(keys))
+    found: dict[str, dict] = {}
+    now = datetime.now().isoformat()
+    with conn() as c:
+        for i in range(0, len(wanted), _ID_CHUNK):
+            chunk = wanted[i:i + _ID_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            for row in c.execute(
+                f"SELECT * FROM verdict_cache WHERE cache_key IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall():
+                found[row["cache_key"]] = dict(row)
+        if found:
+            c.executemany(
+                "UPDATE verdict_cache SET hits = hits + 1, last_hit_at = ? WHERE cache_key = ?",
+                [(now, k) for k in found],
+            )
+    return found
+
+
+def cache_put(entries: list[dict]) -> int:
+    """Remember verdicts for next time. Entries are dicts, not models.
+
+    ``INSERT OR REPLACE`` rather than ``IGNORE``: the same key answered twice is
+    the same question answered twice, and keeping the newer answer means a
+    re-run after a model upgrade replaces the entry instead of being ignored by
+    its own cache.
+    """
+    if not entries:
+        return 0
+    now = datetime.now().isoformat()
+    with conn() as c:
+        c.executemany(
+            """INSERT OR REPLACE INTO verdict_cache
+               (cache_key, domain, policy_version, case_id, judge_model, outcome,
+                rationale, confidence, policy_clause, prompt_chars, created_at,
+                hits, last_hit_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,
+                       COALESCE((SELECT hits FROM verdict_cache WHERE cache_key = ?), 0), '')""",
+            [(e["cache_key"], e["domain"], e["policy_version"], e["case_id"],
+              e["judge_model"], e["outcome"], e["rationale"], e["confidence"],
+              e.get("policy_clause", ""), int(e.get("prompt_chars") or 0), now,
+              e["cache_key"]) for e in entries],
+        )
+    return len(entries)
+
+
+def cache_stats(domain: str, policy_version: str | None = None) -> dict:
+    """Entries, hits, and the prompt volume those hits did not have to re-send."""
+    where = "WHERE domain = ?" + (" AND policy_version = ?" if policy_version else "")
+    params: tuple = (domain,) if policy_version is None else (domain, policy_version)
+    row = query(
+        f"""SELECT COUNT(*) AS entries,
+                   COALESCE(SUM(hits), 0) AS hits,
+                   COALESCE(SUM(hits * prompt_chars), 0) AS hit_prompt_chars,
+                   COALESCE(SUM(prompt_chars), 0) AS stored_prompt_chars
+            FROM verdict_cache {where}""", params)[0]
+    models = query(
+        f"SELECT DISTINCT judge_model FROM verdict_cache {where} AND judge_model <> ''",
+        params)
+    row["models"] = sorted(m["judge_model"] for m in models)
+    return row
+
+
+def save_draft(domain: str, version: str, base_version: str, patch: dict,
+               evidence: dict | None = None, verification: dict | None = None,
+               drafted_by: str = "", run_id: str = "") -> None:
+    """Record a drafted amendment and where it came from.
+
+    Kept out of :data:`DERIVED_TABLES` deliberately. A draft is a written
+    document, not an aggregate: the markdown survives a re-seed on disk, and a
+    row deleted from under it would leave a policy version on the filesystem
+    that nothing can explain.
+    """
+    with conn() as c:
+        c.execute(
+            """INSERT OR REPLACE INTO policy_drafts
+               (domain, version, base_version, summary, patch, evidence, verification,
+                drafted_by, created_at, created_by_run)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (domain, version, base_version, patch.get("summary", ""), json.dumps(patch),
+             json.dumps(evidence or {}), json.dumps(verification or {}), drafted_by,
+             datetime.now().isoformat(), run_id),
+        )
+
+
+def drafts(domain: str) -> list[dict]:
+    rows = query("SELECT * FROM policy_drafts WHERE domain=? ORDER BY created_at DESC",
+                 (domain,))
+    for r in rows:
+        r["patch"] = json.loads(r["patch"])
+        r["evidence"] = json.loads(r["evidence"] or "{}")
+        r["verification"] = json.loads(r["verification"] or "{}")
+    return rows
+
+
+def cache_clear(domain: str | None = None) -> int:
+    with conn() as c:
+        if domain:
+            return c.execute("DELETE FROM verdict_cache WHERE domain = ?", (domain,)).rowcount
+        return c.execute("DELETE FROM verdict_cache").rowcount
 
 
 def clear_domain_results(domain: str) -> dict[str, int]:

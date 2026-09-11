@@ -26,6 +26,7 @@ import string
 import sys
 from dataclasses import dataclass
 
+from . import preflight
 from .config import DomainConfig, available_domains, load_domain
 from .judge import SAFE_BUILTINS, SAFE_NAMES
 
@@ -133,6 +134,23 @@ def check_domain(name: str) -> list[Problem]:
         warn("case_template", f"field(s) {shadowed} shadow the rule helpers of the same "
                               f"name; a 'when' expression calling one would silently never "
                               f"match")
+    # --- the disparity check's own configuration -------------------------
+    for field in domain.disparity.fields:
+        if field not in domain.segment_fields:
+            err("disparity.fields", f"{field!r} is not in segment_fields, so no blast "
+                                    f"radius row exists for it and it would never be "
+                                    f"compared")
+    if domain.disparity.gate not in {"warn", "fail"}:
+        err("disparity.gate", f"{domain.disparity.gate!r} is not 'warn' or 'fail'")
+    if domain.disparity.max_ratio <= 1:
+        err("disparity.max_ratio", f"{domain.disparity.max_ratio} means every segment "
+                                   f"moving at all is a finding, which is the same as "
+                                   f"having no check")
+    if domain.disparity.min_cases < 2:
+        warn("disparity.min_cases", f"{domain.disparity.min_cases} compares segments with "
+                                    f"almost no cases in them; one case out of one is a "
+                                    f"100% flip rate and no evidence at all")
+
     if not 0.0 <= domain.review.below_confidence <= 1.0:
         err("review", f"below_confidence {domain.review.below_confidence} is outside 0..1")
     if domain.review.max_reviews < 1:
@@ -153,6 +171,19 @@ def check_domain(name: str) -> list[Problem]:
         if not clauses_by_version[version]:
             warn(where, "declares no numbered clauses (expected lines like '1.1 ...'), "
                         "so clause attribution will report everything as unattributed")
+        if version in domain.draft_versions:
+            # Not a fault - drafts are meant to be here. Named because a lint
+            # that lists a machine's draft alongside approved policy without
+            # saying which is which is the one place this project could quietly
+            # launder one into the other.
+            warn(where, "is a drafted amendment from include/drafts/, written by "
+                        "ptm.proposal and approved by nobody. Replay and gate it like any "
+                        "candidate; delete it with ptm.proposal.discard when done with it.")
+        # The structural problems the real judge would hit, reported here so one
+        # command covers both halves of the drift. See ptm/preflight.py.
+        for finding in preflight.structural(domain, version):
+            (err if finding.severity == "error" else warn)(
+                where, f"[{finding.kind}] {finding.detail}")
 
     # --- the offline fixtures against those policies -----------------------
     for version, rules in sorted(domain.offline_rules.items()):

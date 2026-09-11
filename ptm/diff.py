@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from . import stats
 from .config import DomainConfig
 from .models import Case, Flip, Precedent, PrecedentConflict, Verdict
 
@@ -326,10 +327,18 @@ def summarise(flips_: list[Flip], total: int, domain: DomainConfig) -> dict:
     policy_driven = [f for f in flips_ if f.attribution != DEVIATION]
     driven_loose = [f for f in policy_driven if f.direction == "loosening"]
     driven_tight = [f for f in policy_driven if f.direction == "tightening"]
+    # The flip rate is a proportion measured on however many cases this run
+    # saw, and a capped or monthly run sees few. Quoting it bare invites a
+    # comparison between two months that differ by nothing but sample size, so
+    # it carries its own sampling band - which is a different error bar from the
+    # judge's noise floor and must not be confused with it. See ptm/stats.py.
+    band = stats.rate(len(flips_), total)
     return {
         "cases_replayed": total,
         "flips": len(flips_),
-        "flip_rate": round(len(flips_) / total, 4) if total else 0.0,
+        "flip_rate": band["rate"],
+        "flip_rate_lo": band["rate_lo"],
+        "flip_rate_hi": band["rate_hi"],
         "loosening": len(loosening),
         "tightening": len(tightening),
         "impact_unit": domain.impact_unit,

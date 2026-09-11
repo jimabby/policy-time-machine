@@ -105,6 +105,36 @@ def precedent_check(domain: str, version: str) -> dict:
     return found(report.precedent_check, domain, version)
 
 
+@app.get("/api/calibration/{domain}/{version}")
+def calibration(domain: str, version: str) -> dict:
+    """Is the judge right? Scored against the humans who ruled on the same cases."""
+    return found(report.calibration, domain, version)
+
+
+@app.get("/api/disparity/{domain}/{version}")
+def disparity(domain: str, version: str) -> dict:
+    """Segments the change lands on far harder than the rest of their field."""
+    return found(report.disparity, domain, version)
+
+
+@app.get("/api/preflight/{domain}/{version}")
+def preflight(domain: str, version: str) -> dict:
+    """Problems readable in the policy text itself, before a replay is paid for."""
+    return found(report.preflight, domain, version)
+
+
+@app.get("/api/rules/{domain}/{version}")
+def rule_agreement(domain: str, version: str) -> dict:
+    """Do the offline rules implement the policy? The number the sweep rests on."""
+    return found(report.rule_agreement, domain, version)
+
+
+@app.get("/api/drafts/{domain}")
+def drafts(domain: str) -> list[dict]:
+    """Amendments drafted by the proposal DAG, with the evidence behind each."""
+    return found(report.drafts, domain)
+
+
 @app.get("/api/thresholds/{domain}/{version}")
 def thresholds(domain: str, version: str) -> list[dict]:
     """The numeric dials in this version's offline rules that a sweep can move."""
@@ -145,7 +175,7 @@ def export_csv(domain: str, version: str) -> PlainTextResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
-    return (Path(__file__).parent / "dashboard.html").read_text()
+    return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 
 
 class PolicyTimeMachinePlugin(AirflowPlugin):

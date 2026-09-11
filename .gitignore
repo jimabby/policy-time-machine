@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 include/ptm.db
+# Drafted policy versions are generated output, like the database. Keep one
+# by moving it into include/policies/ and registering it in the domain YAML -
+# which is also the act of a person taking responsibility for it.
+include/drafts/
 logs/
 .env
 .pytest_cache/

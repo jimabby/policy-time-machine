@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep dev
+.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep dev preflight calibrate rules propose draft
 
 PY ?= .venv/bin/python
 ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
@@ -33,6 +33,9 @@ confirm:   ## Re-judge the biggest flips to check each one reproduces
 	docker compose exec airflow airflow dags trigger judge_stability_expenses \
 		--conf '{"target":"flips","sample_cases":25,"samples_per_case":3}'
 
+draft:     ## Have the proposal DAG write the next version of the policy
+	docker compose exec airflow airflow dags trigger propose_expenses
+
 dev:       ## Create the local venv used by test/lint/unit
 	python3 -m venv .venv && $(PY) -m pip install -q -r requirements-dev.txt
 
@@ -49,6 +52,21 @@ test: lint unit  ## Lint, test, then run the whole engine end to end with no Air
 cost:      ## Forecast what a full LLM-backed replay would cost
 	$(ENV) $(PY) -c "import json; from ptm import report; \
 		print(json.dumps(report.cost_report('expenses','v2')['forecast'], indent=2))"
+
+preflight: ## Read the policies for problems before paying to replay them
+	$(ENV) $(PY) -m ptm.preflight expenses
+	$(ENV) $(PY) -m ptm.preflight refunds
+
+calibrate: ## Score the judge against the humans who ruled on the same cases
+	$(ENV) $(PY) -m ptm.calibration expenses v2
+
+rules:     ## Do the offline rules agree with the judge they stand in for?
+	$(ENV) $(PY) -m ptm.rules expenses v2
+
+propose:   ## Draft the next version of the policy from the evidence (writes nothing)
+	$(ENV) $(PY) -m ptm.proposal expenses v2
+	@echo
+	@echo "add --write to draft it into include/drafts/ as a real policy version"
 
 sweep:     ## Ask what the threshold should be, not just which clause it is in
 	$(ENV) $(PY) -m ptm.sweep expenses v2

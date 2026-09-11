@@ -50,6 +50,22 @@ jobs:
           PTM_DB: ./include/ptm.db
           PTM_OFFLINE: "1"
 
+      # The checks that need no model and no key, run against the shipped
+      # fixture so a change that breaks one of them fails here rather than in
+      # front of an audience. The proposal step deliberately omits --write:
+      # proposing and adopting are separate acts, and CI does not adopt.
+      - name: Policy and judge checks
+        run: |
+          python -m ptm.preflight expenses
+          python -m ptm.preflight refunds
+          python -m ptm.rules expenses v2
+          python -m ptm.calibration expenses v2
+          python -m ptm.proposal expenses v2
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
   dags:
     name: DAGs parse under Airflow 3.1
     runs-on: ubuntu-latest

@@ -1,14 +1,18 @@
-"""Policy Time Machine - four DAGs per domain, generated from include/domains/*.yaml.
+"""Policy Time Machine - five DAGs per domain, generated from include/domains/*.yaml.
 
 Drop a new YAML in and Airflow grows a new set of DAGs on the next parse. The
 DAG code below contains no domain knowledge at all.
 
     replay_<domain>          @monthly, backfilled across history.
-                             Replays every real decision in its data interval
-                             under a proposed policy, point-in-time correct.
+                             Reads the policy before spending anything on it,
+                             then replays every real decision in its data
+                             interval under it, point-in-time correct.
                              Attributes every change to the clause that caused
-                             it, breaks the blast radius down by segment, and
-                             records what the judging cost. Emits the flips asset.
+                             it, breaks the blast radius down by segment, says
+                             which segments carry more of it than the rest of
+                             their field, and records what the judging cost -
+                             net of everything served from cache. Emits the
+                             flips asset.
 
     adjudicate_<domain>      Triggered by the flips asset. Puts the handful of
                              genuinely contested flips in front of a human via
@@ -25,7 +29,18 @@ DAG code below contains no domain knowledge at all.
     judge_stability_<domain> Manual. Judges the same cases repeatedly under the
                              same policy to measure how often the judge
                              contradicts itself - the error bar on every flip
-                             rate the other three DAGs report.
+                             rate the other DAGs report. Deliberately the one
+                             DAG that never reads the verdict cache: serving a
+                             repeat judgement from cache would report a judge
+                             that never contradicts itself, which is not a
+                             clean bill of health but a broken instrument.
+
+    propose_<domain>         Manual. Reads everything the pipeline measured and
+                             drafts the next version of the policy, then puts
+                             that draft through the regression suite that
+                             guards every other version. The only DAG here
+                             where a model writes rather than judges, and the
+                             gate at the end of it is why that is allowed.
 """
 
 from __future__ import annotations
@@ -34,10 +49,11 @@ import pendulum
 from airflow.exceptions import AirflowFailException
 from airflow.sdk import Asset, Param, dag, task
 
-from ptm import cost, diff, stability, store
+from ptm import (cache, calibration, cost, diff, disparity, preflight, proposal,
+                 rules, stability, store)
 from ptm.config import JUDGE_MODEL, LLM_CONN_ID, OFFLINE, available_domains, load_domain
 from ptm.judge import build_prompt, offline_verdict
-from ptm.models import Case, Precedent, Verdict
+from ptm.models import Case, PolicyPatch, Precedent, RuleSet, Verdict
 
 if not OFFLINE:
     from airflow.providers.common.ai.operators.llm import LLMOperator
@@ -53,6 +69,10 @@ SYSTEM_PROMPT = (
     "settle a case, you say so with low confidence rather than inventing a rule."
 )
 DEFAULTS = {"owner": "policy-time-machine", "retries": 1}
+#: What answered a prompt, for the cache key and the ledger. The offline judge
+#: is a different answerer from any model, and serving one's verdict as the
+#: other's would make a comparison between them agree with itself perfectly.
+JUDGE_ID = JUDGE_MODEL if not OFFLINE else "offline"
 
 
 def _as_verdict(raw) -> Verdict:
@@ -75,33 +95,49 @@ def _case(item: dict) -> Case:
     )
 
 
-def _item(case: Case, domain, version: str, baseline_version: str = "") -> dict:
+def _item(case: Case, domain, version: str, baseline_version: str = "",
+          cacheable: bool = True) -> dict:
     """One case as it travels through XCom.
 
     Note what is *absent*: the rendered prompt. Every prompt embeds the whole
     policy text, so carrying prompts here would duplicate the policy once per
     case through every downstream task - and the offline judge never reads them
-    at all. Only ``prompt_chars`` survives, because the cost ledger needs the
-    size and nothing needs the bytes.
+    at all. What survives is the *size*, which the cost ledger needs, and the
+    *hash*, which is how the cache recognises a question already answered. Both
+    are derived from the prompt here and neither is the prompt.
+
+    ``cacheable=False`` leaves the key off, which is how the stability fan-out
+    opts out: judging the same prompt repeatedly is the measurement, and serving
+    the second one from cache would report a judge with no noise floor.
     """
-    chars = len(build_prompt(case, domain, version))
-    if baseline_version:
-        # A baseline pass judges every case twice, and the ledger has to say so
-        # rather than quietly under-reporting half the bill.
-        chars += len(build_prompt(case, domain, baseline_version))
-    return {
+    prompt = build_prompt(case, domain, version)
+    item = {
         "case_id": case.case_id,
         "domain": case.domain,
         "decided_at": case.decided_at.isoformat(),
         "payload": case.payload,
         "actual_outcome": case.actual_outcome,
         "actual_rationale": case.actual_rationale,
-        "prompt_chars": chars,
+        "prompt_chars": len(prompt),
+        "baseline_prompt_chars": 0,
     }
+    if cacheable:
+        item["cache_key"] = cache.key(prompt, JUDGE_ID)
+    if baseline_version:
+        # A baseline pass judges every case twice. Its prompt is sized and keyed
+        # separately rather than added to the candidate's, because the two
+        # passes hit the cache independently: editing the candidate policy does
+        # not change the in-force one, so its half is served from cache and the
+        # ledger has to be able to say so.
+        baseline_prompt = build_prompt(case, domain, baseline_version)
+        item["baseline_prompt_chars"] = len(baseline_prompt)
+        if cacheable:
+            item["baseline_cache_key"] = cache.key(baseline_prompt, JUDGE_ID)
+    return item
 
 
-def _ledger(items: list[dict], version: str, baseline: bool = False) -> dict:
-    """Price the judging this run performed.
+def _ledger(items: list[dict], chars_field: str = "prompt_chars") -> dict:
+    """Price one pass over ``items`` - the cases actually sent to the judge.
 
     Offline the answer is genuinely zero, and the ledger says so rather than
     quoting a counterfactual as though money had moved. The forecast of what a
@@ -110,8 +146,80 @@ def _ledger(items: list[dict], version: str, baseline: bool = False) -> dict:
     """
     if OFFLINE:
         return cost.zero()
-    prompt_chars = sum(int(i.get("prompt_chars") or 0) for i in items)
-    return cost.estimate(prompt_chars, len(items) * (2 if baseline else 1), JUDGE_MODEL)
+    prompt_chars = sum(int(i.get(chars_field) or 0) for i in items)
+    return cost.estimate(prompt_chars, len(items), JUDGE_MODEL)
+
+
+def _add_ledgers(*ledgers: dict) -> dict:
+    """One bill from several passes. Offline they are all zero and stay zero."""
+    total = cost.zero(JUDGE_ID)
+    for ledger in ledgers:
+        for field in ("estimated_requests", "estimated_input_tokens",
+                      "estimated_output_tokens"):
+            total[field] += int(ledger.get(field) or 0)
+        total["estimated_cost_usd"] = round(
+            total["estimated_cost_usd"] + float(ledger.get("estimated_cost_usd") or 0), 4)
+    return total
+
+
+@task(multiple_outputs=True)
+def to_judge(items: list[dict], key_field: str = "cache_key") -> dict:
+    """Split a fan-out into what still needs judging and what is already answered.
+
+    Defined once at module level and called by both the replay and the gate,
+    because they have the same problem: the gate re-judges the same handful of
+    precedent cases every time a ruling is recorded, and the candidate policy
+    has usually not changed between two of those runs.
+    """
+    misses, hits = cache.split(items, key_field)
+    print(cache.describe(len(hits), len(misses)))
+    return {"judge": misses,
+            "cached": {case_id: v.model_dump() for case_id, v in hits.items()}}
+
+
+@task
+def merge(items: list[dict], misses: list[dict], cached: dict, fresh: list,
+          key_field: str = "cache_key", chars_field: str = "prompt_chars") -> dict:
+    """Fresh verdicts for the cases judged, cached verdicts for the rest, in order.
+
+    Restoring the one-to-one alignment between ``items`` and verdicts is the
+    whole job. Everything downstream zips the two positionally and refuses a
+    length mismatch, and that check is only meaningful if a cache hit puts a
+    verdict back exactly where the case it answers sits.
+    """
+    fresh = list(fresh or [])
+    if len(fresh) != len(misses):
+        raise AirflowFailException(
+            f"Judge returned {len(fresh)} verdict(s) for {len(misses)} case(s) sent to "
+            f"it; refusing to merge a partial pass with cached results.")
+    judged = {m["case_id"]: _as_verdict(v) for m, v in zip(misses, fresh)}
+
+    if judged:
+        version = _version_from_context(
+            "baseline_version" if key_field != "cache_key" else "policy_version")
+        by_key = {m["case_id"]: (m.get(key_field, ""), int(m.get(chars_field) or 0))
+                  for m in misses}
+        cache.remember(
+            items[0]["domain"] if items else "", version, JUDGE_ID,
+            {case_id: (by_key[case_id][0], by_key[case_id][1], verdict)
+             for case_id, verdict in judged.items() if by_key.get(case_id, ("",))[0]})
+
+    out, hits = [], []
+    for item in items:
+        case_id = item["case_id"]
+        if case_id in judged:
+            out.append(judged[case_id].model_dump())
+        elif case_id in cached:
+            out.append(cached[case_id])
+            hits.append(item)
+        else:
+            raise AirflowFailException(
+                f"{case_id} was neither judged nor found in the cache. A replay missing "
+                f"a verdict would report a case as unchanged, which is indistinguishable "
+                f"from a case the policy agrees with.")
+    return {"verdicts": out,
+            "ledger": _ledger(misses, chars_field),
+            **cache.saving(hits, JUDGE_ID, chars_field)}
 
 
 def build(domain_name: str) -> None:
@@ -144,12 +252,55 @@ def build(domain_name: str) -> None:
                 title="Policy version in force (blank to skip the baseline pass)",
                 description="Judging both sides doubles cost and is what makes clause "
                             "attribution possible. Blank diffs against recorded history only."),
+            # Reading the policy costs nothing and catches the problems that
+            # make a paid replay unusable rather than merely expensive.
+            "preflight": Param(
+                "warn", type="string", enum=["warn", "fail", "off"],
+                title="What to do about problems in the policy text",
+                description="'fail' refuses to spend a backfill on a policy whose clauses "
+                            "are duplicated, unnumbered or cross-referenced to nothing."),
+            "disparity_gate": Param(
+                "domain", type="string", enum=["domain", "warn", "fail", "off"],
+                title="What to do when the change lands on one segment far harder",
+                description="'domain' uses the setting in the domain YAML. 'fail' stops "
+                            "the run on a concentration that is both large and supported "
+                            "by the sample size."),
         },
         tags=["policy-time-machine", domain_name, "replay"],
         doc_md=f"Replay historical {domain.label} decisions under a proposed policy. "
                f"Backfill this DAG to simulate the whole of history.",
     )
     def replay():
+        @task
+        def read_the_policy(**ctx) -> dict:
+            """Check the policy is applicable before spending anything on it.
+
+            Structural only - clause numbering, cross-references, outcomes the
+            policy never mentions. It reads the shape of the document, not its
+            meaning, and it runs in milliseconds with no model and no network.
+
+            The failure it exists to prevent is not an expensive run, it is an
+            expensive run whose output nobody can use: a policy whose rules are
+            written as unnumbered prose produces six hundred verdicts attributed
+            to nothing, which costs the same as a good run and answers nothing.
+            """
+            version = ctx["params"]["policy_version"]
+            mode = (ctx["params"].get("preflight") or "warn").strip()
+            if mode == "off":
+                print("preflight skipped by parameter")
+                return {"findings": 0, "blocking": 0, "mode": mode}
+            findings = preflight.structural(domain, version)
+            print(preflight.describe(findings, version))
+            blocking = preflight.blocking(findings)
+            if blocking and mode == "fail":
+                raise AirflowFailException(
+                    f"policy {version} has {len(blocking)} blocking problem(s) and "
+                    f"preflight=fail. A replay would run and its results would not be "
+                    f"attributable:\n"
+                    + "\n".join(f"  - {f.detail}" for f in blocking))
+            return {"findings": len(findings), "blocking": len(blocking), "mode": mode,
+                    "detail": [f.model_dump(mode="json") for f in findings]}
+
         @task
         def prepare(**ctx) -> list[dict]:
             """Load this run's cases, as the world knew them at the time.
@@ -218,13 +369,19 @@ def build(domain_name: str) -> None:
             version = _version_from_context("baseline_version")
             return [build_prompt(_case(i), domain, version) for i in items]
 
-        @task
-        def reconcile(items: list[dict], verdicts: list, baseline_verdicts: list | None = None,
+        # none_failed, not all_success: with baseline_version blank the baseline
+        # fan-out expands to zero mapped instances and Airflow marks it skipped.
+        # Under the default rule that skips this task, and the replay silently
+        # produces nothing at all - for a configuration the README documents.
+        @task(trigger_rule="none_failed")
+        def reconcile(items: list[dict], candidate: dict, baseline_pass: dict | None = None,
                       **ctx) -> dict:
             version = ctx["params"]["policy_version"]
             baseline_version = (ctx["params"].get("baseline_version") or "").strip()
             run_id = ctx["run_id"]
             cases = [_case(i) for i in items]
+            verdicts = (candidate or {}).get("verdicts") or []
+            baseline_verdicts = (baseline_pass or {}).get("verdicts") or []
             if len(verdicts) != len(cases):
                 raise AirflowFailException(
                     f"Judge returned {len(verdicts)} verdicts for {len(cases)} cases; refusing partial replay."
@@ -247,7 +404,12 @@ def build(domain_name: str) -> None:
             found = diff.flips(cases, by_case, domain, baseline=baseline)
             summary = diff.summarise(found, len(cases), domain)
             segments = diff.segment_stats(cases, found, domain)
-            ledger = _ledger(items, version, baseline=baseline is not None)
+            ledger = _add_ledgers((candidate or {}).get("ledger") or {},
+                                  (baseline_pass or {}).get("ledger") or {})
+            cache_hits = (int((candidate or {}).get("cache_hits") or 0)
+                          + int((baseline_pass or {}).get("cache_hits") or 0))
+            cache_saved = round(float((candidate or {}).get("estimated_saved_usd") or 0)
+                                + float((baseline_pass or {}).get("estimated_saved_usd") or 0), 4)
             store.save_replay(run_id, domain_name, version, "actual", len(cases),
                               found, summary["net_impact"], by_case,
                               segments=segments,
@@ -268,12 +430,51 @@ def build(domain_name: str) -> None:
                 print(f"of {summary['flips']} changes, {summary['policy_driven_flips']} are caused "
                       f"by policy {version}; {summary['deviation_flips']} are cases where the "
                       f"recorded outcome never matched policy {baseline_version} either")
-            if ledger["estimated_cost_usd"]:
+            print(f"flip rate {summary['flip_rate']:.1%} "
+                  f"({summary['flip_rate_lo']:.1%}-{summary['flip_rate_hi']:.1%} at 95% on "
+                  f"{len(cases)} cases) - sampling error only, not the judge's noise floor")
+
+            # Who it lands on, asked rather than tabulated. This run's own cases
+            # are the sample, so a monthly backfill run sees one month; the
+            # pooled answer across every run is the one the dashboard shows.
+            findings = disparity.analyse(segments, domain)
+            print(disparity.describe(findings, domain))
+            mode = (ctx["params"].get("disparity_gate") or "domain").strip()
+            if mode == "domain":
+                mode = domain.disparity.gate
+            gating = disparity.gated(findings)
+            if gating and mode == "fail":
+                raise AirflowFailException(
+                    f"policy {version} lands on {len(gating)} segment(s) far harder than the "
+                    f"rest of their field, and disparity_gate=fail:\n"
+                    + "\n".join(
+                        f"  - {f.field}={f.value}: {f.flip_rate:.1%} of {f.cases} cases move "
+                        f"against {f.rest_flip_rate:.1%} of the other {f.rest_cases}"
+                        for f in gating))
+
+            if ledger["estimated_cost_usd"] or cache_hits:
                 print(f"judged by {ledger['judge_model']} for an estimated "
-                      f"USD {ledger['estimated_cost_usd']:.4f}")
-            return {**summary, **ledger, "segments": segments}
+                      f"USD {ledger['estimated_cost_usd']:.4f}"
+                      + (f"; {cache_hits} verdict(s) came from cache, saving an estimated "
+                         f"USD {cache_saved:.4f}" if cache_hits else ""))
+            return {**summary, **ledger, "segments": segments,
+                    "cache_hits": cache_hits, "estimated_saved_usd": cache_saved,
+                    "disparity": [f.model_dump(mode="json") for f in findings]}
 
         items = prepare()
+        read_the_policy() >> items
+
+        # Everything already answered is taken out of the fan-out here, so the
+        # judge below - offline or not - only ever sees cases nobody has asked
+        # about yet. The second measurement of an edited clause is the one this
+        # is for: most of the history is untouched by the edit and its verdicts
+        # are still valid, because the key is the prompt and the prompt did not
+        # change for those cases.
+        candidate_split = to_judge(items)
+        baseline_case_items = baseline_items(items)
+        baseline_split = to_judge.override(task_id="to_judge_baseline")(
+            baseline_case_items, "baseline_cache_key")
+
         if OFFLINE:
             @task(max_active_tis_per_dag=8)
             def judge_offline(item: dict, **ctx) -> dict:
@@ -285,8 +486,8 @@ def build(domain_name: str) -> None:
                 version = (ctx["params"]["baseline_version"] or "").strip()
                 return offline_verdict(_case(item), domain, version).model_dump()
 
-            verdicts = judge_offline.expand(item=items)
-            baseline_verdicts = judge_baseline_offline.expand(item=baseline_items(items))
+            verdicts = judge_offline.expand(item=candidate_split["judge"])
+            baseline_verdicts = judge_baseline_offline.expand(item=baseline_split["judge"])
         else:
             verdicts = LLMOperator.partial(
                 task_id="judge",
@@ -297,7 +498,7 @@ def build(domain_name: str) -> None:
                 # every task rather than trusting the prompt.
                 usage_limits=UsageLimits(request_limit=3),
                 max_active_tis_per_dag=8,
-            ).expand(prompt=prompts(items)).output
+            ).expand(prompt=prompts(candidate_split["judge"])).output
             baseline_verdicts = LLMOperator.partial(
                 task_id="judge_baseline",
                 llm_conn_id=LLM_CONN_ID,
@@ -305,14 +506,21 @@ def build(domain_name: str) -> None:
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
                 max_active_tis_per_dag=8,
-            ).expand(prompt=baseline_prompts(baseline_items(items))).output
+            ).expand(prompt=baseline_prompts(baseline_split["judge"])).output
+
+        candidate = merge(items, candidate_split["judge"], candidate_split["cached"],
+                          verdicts)
+        baseline_pass = merge.override(task_id="merge_baseline",
+                                       trigger_rule="none_failed")(
+            baseline_case_items, baseline_split["judge"], baseline_split["cached"],
+            baseline_verdicts, "baseline_cache_key", "baseline_prompt_chars")
 
         @task(outlets=[flips_asset])
         def publish(summary: dict) -> dict:
             """Emitting the asset is what wakes the adjudication DAG."""
             return summary
 
-        publish(reconcile(items, verdicts, baseline_verdicts))
+        publish(reconcile(items, candidate, baseline_pass))
 
     replay()
 
@@ -524,6 +732,15 @@ def build(domain_name: str) -> None:
             return [c.model_dump(mode="json") for c in found]
 
         cases = precedent_cases()
+        # The gate fires every time a ruling is recorded, and re-asks the same
+        # questions about the same handful of cases. Unless the candidate policy
+        # changed between two runs, every one of those questions has an answer
+        # on file already.
+        gate_split = to_judge.override(task_id="gate_to_judge")(cases)
+        gate_baseline_case_items = gate_baseline_items(cases)
+        gate_baseline_split = to_judge.override(task_id="gate_to_judge_baseline")(
+            gate_baseline_case_items, "baseline_cache_key")
+
         if OFFLINE:
             @task
             def gate_judge_offline(item: dict, **ctx) -> dict:
@@ -534,9 +751,9 @@ def build(domain_name: str) -> None:
                 version = (ctx["params"].get("baseline_version") or "").strip()
                 return offline_verdict(_case(item), domain, version).model_dump()
 
-            gate_verdicts = gate_judge_offline.expand(item=cases)
+            gate_verdicts = gate_judge_offline.expand(item=gate_split["judge"])
             gate_baseline_verdicts = gate_baseline_offline.expand(
-                item=gate_baseline_items(cases))
+                item=gate_baseline_split["judge"])
         else:
             gate_verdicts = LLMOperator.partial(
                 task_id="gate_judge",
@@ -544,20 +761,30 @@ def build(domain_name: str) -> None:
                 system_prompt=SYSTEM_PROMPT,
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
-            ).expand(prompt=gate_prompts(cases)).output
+            ).expand(prompt=gate_prompts(gate_split["judge"])).output
             gate_baseline_verdicts = LLMOperator.partial(
                 task_id="gate_judge_baseline",
                 llm_conn_id=LLM_CONN_ID,
                 system_prompt=SYSTEM_PROMPT,
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
-            ).expand(prompt=gate_baseline_prompts(gate_baseline_items(cases))).output
+            ).expand(prompt=gate_baseline_prompts(gate_baseline_split["judge"])).output
 
-        @task
-        def enforce(items: list[dict], verdicts: list, found_conflicts: list[dict],
-                    baseline_verdicts: list | None = None, **ctx) -> dict:
+        gate_candidate = merge.override(task_id="gate_merge")(
+            cases, gate_split["judge"], gate_split["cached"], gate_verdicts)
+        gate_baseline = merge.override(task_id="gate_merge_baseline",
+                                       trigger_rule="none_failed")(
+            gate_baseline_case_items, gate_baseline_split["judge"],
+            gate_baseline_split["cached"], gate_baseline_verdicts,
+            "baseline_cache_key", "baseline_prompt_chars")
+
+        @task(trigger_rule="none_failed")
+        def enforce(items: list[dict], candidate: dict, found_conflicts: list[dict],
+                    baseline_pass: dict | None = None, **ctx) -> dict:
             """Fail the run if the candidate policy reverses a human ruling."""
             version = ctx["params"]["policy_version"]
+            verdicts = (candidate or {}).get("verdicts") or []
+            baseline_verdicts = (baseline_pass or {}).get("verdicts") or []
             if len(verdicts) != len(items):
                 raise AirflowFailException(
                     f"Judge returned {len(verdicts)} verdicts for {len(items)} precedents; refusing partial gate."
@@ -570,6 +797,14 @@ def build(domain_name: str) -> None:
             # Stored so the dashboard can show the gate's answer without paying
             # to judge these cases all over again.
             store.save_verdicts(ctx["run_id"], domain_name, version, by_case)
+
+            # The gate asks whether the policy agrees with the humans. The same
+            # verdicts answer a question nothing else in this pipeline asks:
+            # whether the *judge* does. Stability says the judge repeats itself;
+            # only this says whether repeating itself is worth anything - and the
+            # confidence it reports is what routes the review budget.
+            print(calibration.describe(
+                calibration.score(domain, version, by_case, precedents)))
 
             # The same question asked of the policy already in force. Without
             # it, "this proposal reverses 3 rulings" reads as the proposal's
@@ -618,7 +853,7 @@ def build(domain_name: str) -> None:
                     "in_force_violations": len(pre_existing),
                     "precedent_conflicts": len(found_conflicts)}
 
-        enforce(cases, gate_verdicts, conflicts(), gate_baseline_verdicts)
+        enforce(cases, gate_candidate, conflicts(), gate_baseline)
 
     precedent_gate()
 
@@ -724,8 +959,14 @@ def build(domain_name: str) -> None:
                 recorded = {}
                 print(f"sampling {len(picked)} cases x {repeats} judgements under policy {version}")
 
+            # cacheable=False, and it is the only fan-out in this file that says
+            # so. Every row here is the same prompt as the row before it - that
+            # repetition *is* the measurement - and a cache would answer all of
+            # them with the first verdict and report a judge that never
+            # contradicts itself. That is not a wrong number, it is a number
+            # that says the instrument is working when it is switched off.
             return [
-                {**_item(c, domain, version), "sample_idx": i,
+                {**_item(c, domain, version, cacheable=False), "sample_idx": i,
                  "recorded_outcome": recorded.get(c.case_id, "")}
                 for c in picked for i in range(repeats)
             ]
@@ -773,7 +1014,7 @@ def build(domain_name: str) -> None:
 
             repeats = max(2, int(params["samples_per_case"]))
             result = stability.analyse(samples, repeats)
-            ledger = _ledger(rows, version)
+            ledger = _ledger(rows)
             store.save_stability(ctx["run_id"], domain_name, version,
                                  samples, result.model_dump(), ledger)
 
@@ -808,6 +1049,279 @@ def build(domain_name: str) -> None:
         report(rows, sampled)
 
     judge_stability()
+
+    # ---------------------------------------------------------------- propose
+    @dag(
+        dag_id=f"propose_{domain_name}",
+        schedule=None,
+        start_date=START,
+        catchup=False,
+        max_active_runs=1,
+        default_args=DEFAULTS,
+        params={
+            "policy_version": policy_param,
+            "publish": Param(
+                True, type="boolean", title="Write the draft to include/drafts/",
+                description="Off drafts and prints without creating a policy version. "
+                            "Proposing and adopting are separate acts."),
+        },
+        tags=["policy-time-machine", domain_name, "proposal"],
+        doc_md=(
+            "Draft the next version of the policy from everything the pipeline "
+            "measured, then put the draft through the regression suite.\n\n"
+            "This is the only DAG here where a model **writes** rather than judges, "
+            "and the last task is why that is allowed: the draft is re-judged "
+            "against every ruling a human has made, and a draft that reverses one "
+            "is reported as such however well it argues for itself.\n\n"
+            "The draft lands in `include/drafts/<domain>/` and is picked up as an "
+            "ordinary policy version on the next parse, so it can be replayed, "
+            "swept, compared and gated like any version somebody wrote by hand. "
+            "It is listed separately everywhere it appears - nothing here presents "
+            "a machine's draft as approved policy.\n\n"
+            "With `PTM_OFFLINE=1` the drafter is deterministic: it searches the "
+            "numeric thresholds for the setting that reverses the fewest rulings. "
+            "Cruder than a model, optimising exactly what the gate measures, and "
+            "therefore the floor a model-backed draft has to beat."
+        ),
+    )
+    def propose():
+        @task
+        def gather(**ctx) -> dict:
+            """Everything measured about the policy, as the drafter will see it."""
+            store.init_db()
+            version = ctx["params"]["policy_version"]
+            found = proposal.evidence(domain, version)
+            print(f"policy {version}: {found['flips']} of {found['cases']} decisions "
+                  f"change, {len(found['violations'])} human ruling(s) reversed, "
+                  f"{len(found['dials'])} numeric threshold(s) to consider")
+            if not found["cases"]:
+                raise AirflowFailException(
+                    f"nothing has been replayed under {domain_name}/{version}, so there "
+                    f"is no evidence to draft from. Run replay_{domain_name} first - a "
+                    f"draft argued from no measurements is the failure mode this whole "
+                    f"pipeline exists to prevent.")
+            return found
+
+        @task
+        def draft_prompts(found: dict, **ctx) -> list[str]:
+            """One prompt, as a one-element list, so the LLM branch maps over it."""
+            return [proposal.build_prompt(domain, ctx["params"]["policy_version"], found)]
+
+        found = gather()
+        if OFFLINE:
+            @task
+            def draft_offline(found: dict, **ctx) -> list[dict]:
+                patch = proposal.offline_patch(domain, ctx["params"]["policy_version"], found)
+                print(proposal.describe(patch))
+                return [patch.model_dump()]
+
+            patches = draft_offline(found)
+        else:
+            patches = LLMOperator.partial(
+                task_id="draft",
+                llm_conn_id=LLM_CONN_ID,
+                system_prompt=proposal.DRAFT_SYSTEM_PROMPT,
+                output_type=PolicyPatch,
+                usage_limits=UsageLimits(request_limit=3),
+            ).expand(prompt=draft_prompts(found)).output
+
+        @task
+        def compose(found: dict, patches: list, **ctx) -> dict:
+            """Turn the patch into a policy document, and name the version.
+
+            Refuses an empty patch rather than writing a version identical to the
+            one it came from. A draft that changes nothing would still be
+            replayed, gated and compared by whoever found it in the list, and
+            every one of those runs would cost money to reproduce a result
+            already on file.
+            """
+            version = ctx["params"]["policy_version"]
+            raw = list(patches or [])
+            if not raw:
+                raise AirflowFailException("the drafter returned nothing at all")
+            patch = raw[0] if isinstance(raw[0], PolicyPatch) else PolicyPatch(**raw[0])
+            if not patch.edits:
+                raise AirflowFailException(
+                    f"no amendment drafted: {patch.risks or patch.summary}. Nothing was "
+                    f"written, which is the right outcome when the evidence does not "
+                    f"support an edit.")
+            draft_version = proposal.next_version(proposal.reload_domain(domain_name), version)
+            markdown = proposal.apply_to_markdown(domain, version, patch, draft_version)
+            print(proposal.describe(patch))
+            return {"version": version, "draft_version": draft_version,
+                    "markdown": markdown, "patch": patch.model_dump(),
+                    # Derived mechanically from the edits, and only possible for
+                    # the threshold moves the offline proposer makes. A
+                    # model-drafted patch gets its rules written by the pass
+                    # below instead.
+                    "rules": proposal.rules_for(domain, version, patch, found) or []}
+
+        composed = compose(found, patches)
+
+        @task
+        def rule_prompts(composed: dict, **ctx) -> list[str]:
+            """Ask a model for the offline rules that implement the drafted text.
+
+            Not decoration. Without rules the draft cannot be swept, and an
+            offline replay of it would return the most generous outcome for every
+            case - a wildly permissive policy that nobody wrote.
+            """
+            return [rules.build_prompt(domain, ctx["params"]["policy_version"],
+                                       policy_text=composed["markdown"])]
+
+        if OFFLINE:
+            @task
+            def synthesise_offline(composed: dict) -> list[dict]:
+                """Offline the rules were derived from the edits; nothing to ask."""
+                return [{"rules": composed["rules"], "notes": "derived from the patch"}]
+
+            rulesets = synthesise_offline(composed)
+        else:
+            rulesets = LLMOperator.partial(
+                task_id="synthesise_rules",
+                llm_conn_id=LLM_CONN_ID,
+                system_prompt=rules.SYNTHESIS_SYSTEM_PROMPT,
+                output_type=RuleSet,
+                usage_limits=UsageLimits(request_limit=3),
+            ).expand(prompt=rule_prompts(composed)).output
+
+        @task
+        def write_draft(composed: dict, rulesets: list, **ctx) -> dict:
+            """Write the draft where every other DAG can already read it.
+
+            The rules are validated before they are written, with the same checks
+            the lint runs over hand-written ones. A generated rule reading a field
+            that does not exist never matches, and never matching is silent - the
+            exact failure ptm.lint was written for, from a far more prolific
+            source than a person editing YAML.
+            """
+            draft_version = composed["draft_version"]
+            raw = list(rulesets or [])
+            first = raw[0] if raw else {}
+            candidate = (first.get("rules") if isinstance(first, dict)
+                         else [r.model_dump() for r in first.rules])
+            candidate = [r if isinstance(r, dict) else r.model_dump() for r in (candidate or [])]
+
+            problems = rules.validate(candidate, domain, composed["version"]) if candidate else []
+            if problems:
+                for problem in problems:
+                    print(f"REJECTED {problem}")
+                print(f"{len(problems)} problem(s) in the generated rules; writing the "
+                      f"draft without them. It can still be judged by a model - only the "
+                      f"offline judge and the threshold sweep need rules.")
+                candidate = []
+
+            if not ctx["params"].get("publish"):
+                print(f"publish=false: {draft_version} was drafted and not written")
+                return {**composed, "written": False, "files": [], "offline_rules": 0}
+
+            written = proposal.materialise(domain_name, draft_version,
+                                           composed["markdown"], candidate or None)
+            print(f"wrote {', '.join(written['files'])}")
+            return {**composed, "written": True, **written}
+
+        written = write_draft(composed, rulesets)
+
+        @task
+        def verification_items(written: dict, **ctx) -> list[dict]:
+            """The precedent cases, to be judged under the draft.
+
+            Bounded on purpose. This asks the one question that fails a run -
+            does the draft reverse a ruling a human made - for the price of a
+            handful of judgements rather than a full replay. What the draft does
+            to the other cases still costs a replay, and the summary says so.
+            """
+            if not written.get("written"):
+                return []
+            precedents = store.load_precedents(domain_name)
+            if not precedents:
+                print("no human rulings on file; the draft cannot be checked against "
+                      "anything yet")
+                return []
+            ids = [p.case_id for p in precedents]
+            cases = store.load_cases(domain_name, until=pendulum.now("UTC"), case_ids=ids)
+            if len(cases) != len(ids):
+                raise AirflowFailException(
+                    f"{len(ids) - len(cases)} precedent(s) have no case on file, so the "
+                    f"draft would be reported as passing a check it did not run.")
+            # Reloaded rather than closed over. Every worker populated its
+            # domain cache while parsing this file - before the draft existed -
+            # so asking for the domain without clearing it hands back a config
+            # with no such version.
+            fresh = proposal.reload_domain(domain_name)
+            draft_version = written["draft_version"]
+            return [{**_item(c, fresh, draft_version), "policy_version": draft_version}
+                    for c in cases]
+
+        vitems = verification_items(written)
+
+        @task
+        def verification_prompts(items: list[dict]) -> list[str]:
+            fresh = proposal.reload_domain(domain_name)
+            return [build_prompt(_case(i), fresh, i["policy_version"]) for i in items]
+
+        if OFFLINE:
+            @task
+            def verify_offline(item: dict) -> dict:
+                # Reloaded per task: this process read the domain before the
+                # draft existed, so the version it is asked to judge is not in
+                # the config it has.
+                fresh = proposal.reload_domain(domain_name)
+                return offline_verdict(_case(item), fresh,
+                                       item["policy_version"]).model_dump()
+
+            vverdicts = verify_offline.expand(item=vitems)
+        else:
+            vverdicts = LLMOperator.partial(
+                task_id="verify_judge",
+                llm_conn_id=LLM_CONN_ID,
+                system_prompt=SYSTEM_PROMPT,
+                output_type=Verdict,
+                usage_limits=UsageLimits(request_limit=3),
+            ).expand(prompt=verification_prompts(vitems)).output
+
+        # Also none_failed: with publish=false there is nothing to verify, the
+        # fan-out is empty, and this task still has a report to make.
+        @task(trigger_rule="none_failed")
+        def record(written: dict, items: list[dict], verdicts: list, found: dict,
+                   **ctx) -> dict:
+            """Report what the draft does to the precedent set, and keep the provenance."""
+            patch = PolicyPatch(**written["patch"])
+            if not written.get("written"):
+                print(proposal.describe(patch))
+                return {"drafted": True, "written": False,
+                        "draft_version": written["draft_version"]}
+
+            verdicts = list(verdicts or [])
+            if len(verdicts) != len(items):
+                raise AirflowFailException(
+                    f"Judge returned {len(verdicts)} verdict(s) for {len(items)} precedent "
+                    f"case(s); refusing to report a check it did not complete.")
+            by_case = {i["case_id"]: _as_verdict(v) for i, v in zip(items, verdicts)}
+            for verdict in by_case.values():
+                domain.validate_outcome(verdict.outcome)
+
+            verification = proposal.verify(
+                domain_name, written["draft_version"], domain.in_force,
+                verdicts=by_case or None)
+            store.save_draft(domain_name, written["draft_version"], written["version"],
+                             written["patch"],
+                             evidence={k: v for k, v in found.items() if k != "curves"},
+                             verification=verification, drafted_by=JUDGE_ID,
+                             run_id=ctx["run_id"])
+            print(proposal.describe(patch, verification))
+            print(f"\n{written['draft_version']} is now a policy version of "
+                  f"{domain_name}. Replay it to find out what it does to the cases "
+                  f"nobody has ruled on.")
+            return {"drafted": True, "written": True,
+                    "draft_version": written["draft_version"],
+                    "reverses": len(verification.get("violations", [])),
+                    "fixed": len(verification.get("fixed", [])),
+                    "introduced": len(verification.get("introduced", []))}
+
+        record(written, vitems, vverdicts, found)
+
+    propose()
 
 
 def _version_from_context(param: str = "policy_version") -> str:

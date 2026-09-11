@@ -67,6 +67,30 @@ class ConflictPolicy(BaseModel):
     impact_band: float = 100.0
 
 
+class DisparityPolicy(BaseModel):
+    """When a change landing unevenly is worth stopping for.
+
+    Blast radius reports the rates; this decides which of them somebody has to
+    account for. See :mod:`ptm.disparity` for why the comparison is pooled and
+    why small buckets are excluded rather than reported quietly.
+    """
+
+    #: Segment fields to check. Empty means every field in ``segment_fields``.
+    fields: list[str] = Field(default_factory=list)
+    #: How many times the rest of its field a segment may move before it is a
+    #: finding. Also read the other way: a segment moving less than
+    #: ``1 / max_ratio`` is a group the change largely passes over.
+    max_ratio: float = 2.0
+    #: Below this, a segment is not compared at all. Nine of twelve cases is a
+    #: 75% rate and almost no evidence; publishing it as a finding is how a
+    #: panel stops being read.
+    min_cases: int = 30
+    #: ``warn`` prints and carries on. ``fail`` stops the replay when a
+    #: concentration is both large and statistically supported - for a domain
+    #: where shipping the rule first and explaining afterwards is not an option.
+    gate: str = "warn"
+
+
 class DomainConfig(BaseModel):
     name: str
     label: str
@@ -93,8 +117,15 @@ class DomainConfig(BaseModel):
     #: captured as of the decision date, not as of today.
     segment_fields: list[str] = Field(default_factory=list)
     conflicts: ConflictPolicy = Field(default_factory=ConflictPolicy)
+    #: Whether a change landing unevenly across segments is worth stopping for.
+    disparity: DisparityPolicy = Field(default_factory=DisparityPolicy)
     #: Fixtures for PTM_OFFLINE=1 only; the real judge never reads these.
     offline_rules: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    #: Versions that were drafted by :mod:`ptm.proposal` rather than written by
+    #: a person. Merged in from ``include/drafts/<domain>/`` at load time, and
+    #: kept as a separate list so nothing can present a machine's draft as an
+    #: approved policy - the dashboard and the lint both say which is which.
+    draft_versions: list[str] = Field(default_factory=list)
 
     def validate_outcome(self, outcome: str) -> str:
         """Reject a judge response that is outside this domain's contract."""
@@ -107,7 +138,11 @@ class DomainConfig(BaseModel):
     def policy_text(self, version: str) -> str:
         if version not in self.policies:
             raise KeyError(f"domain {self.name!r} has no policy version {version!r}; have {sorted(self.policies)}")
-        return (INCLUDE_DIR / self.policies[version]).read_text()
+        # Explicit encoding, not the platform default: policies are UTF-8 and
+        # contain typographic punctuation. Read as cp1252 on a Windows checkout
+        # they load without error and come back mojibake, which then reaches the
+        # judge's prompt and any draft written from them.
+        return (INCLUDE_DIR / self.policies[version]).read_text(encoding="utf-8")
 
     def render_case(self, payload: dict[str, Any]) -> str:
         """Render a case payload as text for the judge. Missing keys render empty."""
@@ -178,13 +213,49 @@ class _Blank(dict):
         return ""
 
 
+#: Where :mod:`ptm.proposal` writes drafted policy versions. Deliberately not
+#: ``policies/``: a draft a model wrote must never sit in the same folder as the
+#: text a person approved, and keeping them apart makes discarding every draft
+#: one delete rather than an audit.
+DRAFTS_DIR = "drafts"
+
+
+def merge_drafts(config: DomainConfig) -> DomainConfig:
+    """Register drafted versions found on disk as policy versions of this domain.
+
+    A draft is ``include/drafts/<domain>/<version>.md``, optionally beside a
+    ``<version>.rules.yaml`` holding the offline rules that let the
+    deterministic judge evaluate it. Merging them at load time is what makes a
+    drafted policy immediately replayable, gateable and sweepable by every DAG
+    and every endpoint, with no new code path - and without the proposer having
+    to rewrite the hand-maintained domain YAML, a file that is mostly comments
+    explaining decisions a person made.
+
+    A draft never shadows a declared version. If the YAML names it, the YAML
+    wins: that file is the one somebody is accountable for.
+    """
+    folder = INCLUDE_DIR / DRAFTS_DIR / config.name
+    if not folder.is_dir():
+        return config
+    for path in sorted(folder.glob("*.md")):
+        version = path.stem
+        if version in config.policies:
+            continue
+        config.policies[version] = f"{DRAFTS_DIR}/{config.name}/{path.name}"
+        config.draft_versions.append(version)
+        rules = path.with_suffix(".rules.yaml")
+        if rules.exists():
+            config.offline_rules[version] = yaml.safe_load(rules.read_text(encoding="utf-8")) or []
+    return config
+
+
 @lru_cache(maxsize=None)
 def load_domain(name: str) -> DomainConfig:
     path = INCLUDE_DIR / "domains" / f"{name}.yaml"
     if not path.exists():
         available = sorted(p.stem for p in (INCLUDE_DIR / "domains").glob("*.yaml"))
         raise FileNotFoundError(f"no domain config {name!r} at {path}; available: {available}")
-    return DomainConfig(**yaml.safe_load(path.read_text()))
+    return merge_drafts(DomainConfig(**yaml.safe_load(path.read_text(encoding="utf-8"))))
 
 
 def available_domains() -> list[str]:

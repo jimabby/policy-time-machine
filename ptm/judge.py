@@ -62,6 +62,12 @@ _SAFE: dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
 SAFE_NAMES: frozenset[str] = frozenset(SAFE_BUILTINS) | {"__builtins__"}
 
 
+#: The rationale a defaulted verdict carries. Named rather than inlined because
+#: :mod:`ptm.rules` has to tell "no rule matched" apart from "a rule chose the
+#: most generous outcome", and the two are otherwise identical on the wire.
+NO_RULE_RATIONALE = "No rule matched; default outcome."
+
+
 def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
     """Deterministic rule evaluation, used when PTM_OFFLINE=1.
 
@@ -85,7 +91,8 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
                 )
         except Exception:  # a rule referencing a field this case lacks simply does not match
             continue
-    return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]), rationale="No rule matched; default outcome.", confidence=0.6)
+    return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]),
+                   rationale=NO_RULE_RATIONALE, confidence=0.6)
 
 
 def _coerce(v):

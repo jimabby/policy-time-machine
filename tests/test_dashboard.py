@@ -214,8 +214,9 @@ class TestItRenders:
     def test_every_panel_has_content(self, page):
         """An empty panel is the shape a broken renderer takes."""
         empty = []
-        for panel in ("#tiles", "#clauses", "#segments", "#deviations", "#flips",
-                      "#precedents", "#conflicts", "#stability", "#sweep"):
+        for panel in ("#tiles", "#preflight", "#clauses", "#segments", "#disparity",
+                      "#deviations", "#flips", "#precedents", "#conflicts", "#stability",
+                      "#calibration", "#drafts", "#sweep", "#rules"):
             if not page.inner_text(panel).strip():
                 empty.append(panel)
         assert not empty, f"panels rendered nothing: {empty}"
@@ -292,6 +293,36 @@ class TestPanels:
     def test_the_stability_panel_gives_the_error_bar_or_says_it_is_missing(self, page):
         text = page.text("#stability")
         assert "judge" in text or "not measured" in text
+
+    def test_the_preflight_panel_reports_on_the_policy_itself(self, page):
+        """It finds one real thing in the shipped v2 - a clause defined only by
+        reference to v1 - so this panel is never the empty state here."""
+        text = page.text("#preflight")
+        assert "clause 7.1" in text
+        assert "unreachable" in text
+
+    def test_the_disparity_panel_names_the_segment_and_what_it_is_measured_against(self, page):
+        text = page.text("#disparity")
+        assert "meals" in text
+        assert "rest of field" in text
+        assert "question, not a verdict" in text, "it never calls a concentration unfair"
+
+    def test_the_calibration_panel_scores_the_judge_against_the_humans(self, page):
+        """Seeded with two rulings, one of which the policy reverses - so the
+        panel has both an agreement and a disagreement to render."""
+        text = page.text("#calibration")
+        assert "human ruling" in text
+        assert "confident by" in text
+        assert "floor on the judge's accuracy" in text
+
+    def test_the_rules_panel_says_the_offline_figure_measures_nothing(self, page):
+        """The verdicts it scores against were produced by these same rules. A
+        100% that does not say why is worse than no number."""
+        text = page.text("#rules")
+        assert "by construction" in text
+
+    def test_the_drafts_panel_has_an_empty_state_rather_than_a_blank(self, page):
+        assert "no drafts yet" in page.text("#drafts")
 
 
 @needs_browser

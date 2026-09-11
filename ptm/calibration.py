@@ -1,0 +1,195 @@
+"""Is the judge *right*? Scored against the humans who ruled.
+
+Everything else in this project measures the judge against itself.
+:mod:`ptm.stability` asks whether it reproduces its own verdicts; flip
+confirmation asks the same question of one flip. Both can come back perfect
+for a judge that is reliably, consistently wrong.
+
+The ground truth was there the whole time. Every precedent is a case a human
+looked at and settled, and every gate run stores what the judge said about
+those same cases. Scoring one against the other costs nothing and answers the
+question the whole pipeline rests on.
+
+Two things make it worth more than a single accuracy number:
+
+**The confidence field is load-bearing and has never been checked.**
+``review.below_confidence`` routes cases to humans on the judge's own claim
+about how sure it is. If a verdict claiming 0.9 is right no more often than one
+claiming 0.6, that routing is sorting cases at random and the review budget -
+the scarcest thing here - is being spent by a number that means nothing.
+
+**Accuracy here is a floor, not an estimate.** Precedents are the *contested*
+flips: low confidence, large money, or a loosening the organisation did not
+choose. Nobody adjudicates the easy ones. The judge's accuracy over all cases
+is higher than this, and anyone quoting this figure as overall accuracy is
+quoting it wrong.
+"""
+
+from __future__ import annotations
+
+import sys
+from collections import Counter
+
+from . import stats
+from .config import DomainConfig
+from .models import CalibrationBucket, CalibrationReport, Precedent, Verdict
+
+#: Confidence bands, ``lo <= c < hi`` with the last one closed at 1.0. Chosen to
+#: straddle the shipped ``below_confidence`` of 0.75 rather than to be pretty,
+#: because the point of the panel is whether that threshold separates anything.
+BANDS: list[tuple[float, float]] = [(0.0, 0.6), (0.6, 0.75), (0.75, 0.9), (0.9, 1.01)]
+
+
+def score(domain: DomainConfig, version: str, verdicts: dict[str, Verdict],
+          precedents: list[Precedent]) -> CalibrationReport:
+    """Score stored verdicts against human rulings on the same cases.
+
+    ``verdicts`` is the latest verdict per case under ``version`` - normally
+    whatever the precedent gate already stored, so this costs nothing to run.
+    A precedent with no verdict on file goes to ``unjudged``: counting it as
+    agreement would be the exact failure the gate exists to prevent, and
+    counting it as disagreement would punish the judge for not having run.
+    """
+    threshold = domain.review.below_confidence
+    scored: list[tuple[Precedent, Verdict, bool]] = []
+    unjudged: list[str] = []
+    for p in precedents:
+        v = verdicts.get(p.case_id)
+        if v is None:
+            unjudged.append(p.case_id)
+            continue
+        scored.append((p, v, v.outcome == p.correct_outcome))
+
+    judged = len(scored)
+    agreed = sum(1 for _, _, ok in scored if ok)
+    accuracy = agreed / judged if judged else 0.0
+    lo, hi = stats.wilson_interval(agreed, judged)
+    mean_confidence = (sum(v.confidence for _, v, _ in scored) / judged) if judged else 0.0
+
+    buckets: list[CalibrationBucket] = []
+    weighted_gap = 0.0
+    for band_lo, band_hi in BANDS:
+        group = [(v, ok) for _, v, ok in scored if band_lo <= v.confidence < band_hi]
+        if not group:
+            continue
+        n = len(group)
+        hits = sum(1 for _, ok in group if ok)
+        band_accuracy = hits / n
+        band_confidence = sum(v.confidence for v, _ in group) / n
+        buckets.append(CalibrationBucket(
+            lo=band_lo, hi=min(band_hi, 1.0), n=n, agreed=hits,
+            accuracy=round(band_accuracy, 4),
+            mean_confidence=round(band_confidence, 4),
+            gap=round(band_confidence - band_accuracy, 4),
+        ))
+        weighted_gap += (n / judged) * abs(band_confidence - band_accuracy)
+
+    # Where the judge goes wrong, not just how often. An error concentrated in
+    # one outcome is a prompt problem with a fix; error spread evenly across
+    # every pair is a judge that does not understand the policy.
+    wrong = Counter((p.correct_outcome, v.outcome) for p, v, ok in scored if not ok)
+    confusion = [
+        {"ruled": ruled, "judged": said, "n": n,
+         "case_ids": sorted(p.case_id for p, v, ok in scored
+                            if not ok and p.correct_outcome == ruled and v.outcome == said)}
+        for (ruled, said), n in wrong.most_common()
+    ]
+
+    below = [ok for _, v, ok in scored if v.confidence < threshold]
+    above = [ok for _, v, ok in scored if v.confidence >= threshold]
+    return CalibrationReport(
+        domain=domain.name,
+        policy_version=version,
+        judged=judged,
+        agreed=agreed,
+        accuracy=round(accuracy, 4),
+        accuracy_lo=round(lo, 4),
+        accuracy_hi=round(hi, 4),
+        mean_confidence=round(mean_confidence, 4),
+        overconfidence=round(mean_confidence - accuracy, 4),
+        expected_calibration_error=round(weighted_gap, 4),
+        buckets=buckets,
+        confusion=confusion,
+        review_threshold=threshold,
+        below_threshold=_side(below),
+        above_threshold=_side(above),
+        # Does the threshold the review policy routes on actually sort the
+        # cases? Two disjoint intervals, the right way round. Anything weaker
+        # and a four-case difference would be reported as a working rule.
+        threshold_separates=bool(
+            below and above
+            and sum(above) / len(above) > sum(below) / len(below)
+            and stats.separated(sum(above), len(above), sum(below), len(below))
+        ),
+        unjudged=unjudged,
+    )
+
+
+def _side(flags: list[bool]) -> dict:
+    n = len(flags)
+    hits = sum(flags)
+    lo, hi = stats.wilson_interval(hits, n)
+    return {"n": n, "agreed": hits, "accuracy": round(hits / n, 4) if n else 0.0,
+            "accuracy_lo": round(lo, 4), "accuracy_hi": round(hi, 4)}
+
+
+def describe(report: CalibrationReport) -> str:
+    """The report as the CLI and the DAG log print it."""
+    if not report.judged:
+        return ("no precedent has a stored verdict under policy "
+                f"{report.policy_version}; nothing to score the judge against")
+    band = stats.describe_rate({"rate": report.accuracy, "rate_lo": report.accuracy_lo,
+                                "rate_hi": report.accuracy_hi})
+    lines = [
+        f"judge vs {report.judged} human ruling(s) under policy {report.policy_version}",
+        f"  agreed on {report.agreed} of {report.judged}  -  {band}",
+        f"  mean confidence {report.mean_confidence:.0%}, "
+        f"{'over' if report.overconfidence > 0 else 'under'}confident by "
+        f"{abs(report.overconfidence):.0%} (ECE {report.expected_calibration_error:.0%})",
+    ]
+    for b in report.buckets:
+        lines.append(f"    claimed {b.lo:.0%}-{b.hi:.0%}: right {b.agreed}/{b.n} "
+                     f"({b.accuracy:.0%}), said {b.mean_confidence:.0%} "
+                     f"-> {'over' if b.gap > 0 else 'under'} by {abs(b.gap):.0%}")
+    if report.confusion:
+        lines.append("  where it goes wrong:")
+        for row in report.confusion[:5]:
+            lines.append(f"    human ruled '{row['ruled']}', judge said "
+                         f"'{row['judged']}'  x{row['n']}")
+    below, above = report.below_threshold, report.above_threshold
+    if below.get("n") and above.get("n"):
+        lines.append(
+            f"  the review threshold ({report.review_threshold:.0%}) "
+            + ("separates: " if report.threshold_separates else "does NOT separate: ")
+            + f"below it {below['accuracy']:.0%} right ({below['n']} cases), "
+              f"above it {above['accuracy']:.0%} right ({above['n']} cases)")
+        if not report.threshold_separates:
+            lines.append("    a confidence that does not predict correctness is routing "
+                         "the review budget at random")
+    if report.unjudged:
+        lines.append(f"  {len(report.unjudged)} precedent(s) had no verdict on file and "
+                     f"were not scored: {report.unjudged[:5]}")
+    lines.append("  precedents are the contested flips, so this is a floor on the "
+                 "judge's accuracy, not an estimate of it")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m ptm.calibration [domain] [version]``."""
+    args = list(argv if argv is not None else sys.argv[1:])
+    domain_name = args[0] if args else "expenses"
+    version = args[1] if len(args) > 1 else "v2"
+
+    from . import report as report_module
+
+    try:
+        result = report_module.calibration(domain_name, version)
+    except LookupError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+    print(result.get("hint") or describe(CalibrationReport(**result["report"])))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

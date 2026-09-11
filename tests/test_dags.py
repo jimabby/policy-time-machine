@@ -80,6 +80,25 @@ class TestStatic:
         assert "case_ids=ids" in source
         assert "if c.case_id in ids" not in source, "the filtered load is the truncating one"
 
+    def test_the_stability_fan_out_is_the_one_that_never_carries_a_cache_key(self):
+        """Judging the same prompt repeatedly *is* the stability measurement. A
+        cached answer would be served to every repeat and report a judge that
+        never contradicts itself - not a wrong number, a reassuring one."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        stability_dag = source.split("def judge_stability():", 1)[1]
+        everything_else = source.split("def judge_stability():", 1)[0]
+        assert "cacheable=False" in stability_dag
+        assert "cache_key" not in stability_dag
+        assert "cacheable=False" not in everything_else.split("def _ledger", 1)[1], \
+            "only the stability fan-out opts out; the others must all be cached"
+
+    def test_the_proposer_can_be_run_without_it_writing_anything(self):
+        """Proposing and adopting are separate acts, and the directory it writes
+        into is the one a person is accountable for."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert '"publish": Param(' in source
+        assert 'ctx["params"].get("publish")' in source
+
     def test_per_case_segments_are_persisted(self):
         """Summing the per-run aggregates counts a case once per run that saw
         it, and manual runs overlap backfills on purpose."""
@@ -96,17 +115,48 @@ class TestParses:
         assert not bag.import_errors, bag.import_errors
         return bag
 
-    def test_four_dags_per_domain(self, dagbag, seeded):
+    def test_five_dags_per_domain(self, dagbag, seeded):
         from ptm.config import available_domains
 
         for name in available_domains():
-            for prefix in ("replay", "adjudicate", "precedent_gate", "judge_stability"):
+            for prefix in ("replay", "adjudicate", "precedent_gate", "judge_stability",
+                           "propose"):
                 assert f"{prefix}_{name}" in dagbag.dags
 
     def test_replay_is_schedulable_and_backfillable(self, dagbag):
         dag = dagbag.dags["replay_expenses"]
         assert dag.schedule == "@monthly"
         assert {"policy_version", "max_cases", "baseline_version"} <= set(dag.params)
+
+    def test_replay_reads_the_policy_before_it_judges_anything(self, dagbag):
+        """Free, and it catches the problems that make a paid replay unusable
+        rather than merely expensive."""
+        dag = dagbag.dags["replay_expenses"]
+        assert "read_the_policy" in {t.task_id for t in dag.tasks}
+        assert dag.params.get_param("preflight").schema.get("enum") == ["warn", "fail", "off"]
+
+    def test_replay_can_be_made_to_stop_on_an_uneven_change(self, dagbag):
+        dag = dagbag.dags["replay_expenses"]
+        assert dag.params.get_param("disparity_gate").schema.get("enum") == \
+            ["domain", "warn", "fail", "off"]
+
+    def test_the_cache_sits_in_front_of_both_fan_outs_that_repeat_work(self, dagbag):
+        """The replay re-judges history after every policy edit; the gate
+        re-judges the same precedents every time a ruling is recorded."""
+        for dag_id, task_id in (("replay_expenses", "to_judge"),
+                                ("precedent_gate_expenses", "gate_to_judge")):
+            assert task_id in {t.task_id for t in dagbag.dags[dag_id].tasks}
+
+    def test_the_proposer_is_manual_only(self, dagbag):
+        """It writes a policy version and costs money. It must not fire on a
+        schedule."""
+        assert dagbag.dags["propose_expenses"].schedule is None
+
+    def test_the_proposer_ends_in_the_gate_rather_than_in_a_summary(self, dagbag):
+        """The whole reason a model is allowed to write here: the draft is
+        re-judged against every ruling a human has made."""
+        tasks = {t.task_id for t in dagbag.dags["propose_expenses"].tasks}
+        assert {"verification_items", "record"} <= tasks
 
     def test_adjudication_wakes_on_the_flips_asset(self, dagbag):
         """Nothing polls; the replay emitting the asset is what starts this."""
