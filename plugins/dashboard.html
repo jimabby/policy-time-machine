@@ -40,6 +40,15 @@ h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;
 .group table{border:0;background:none}
 .group td,.group th{padding:6px 0}
 .cmp{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;color:var(--dim)}
+.dl{margin-left:auto;display:flex;gap:8px}
+.dl a{color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;background:var(--panel)}
+.dl a:hover{border-color:var(--accent)}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}
+.unstable{color:var(--warn);font-size:11px}
+.spark{display:flex;align-items:flex-end;gap:3px;height:44px}
+.spark>i{display:block;flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-height:2px}
+.spark>i.cur{background:var(--warn)}
 @media(max-width:720px){main{padding:20px 14px}header{padding:14px}.status{margin-left:0}}
 </style></head><body>
 <header>
@@ -49,6 +58,7 @@ h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;
   <input id=search type=search placeholder="Filter case IDs" aria-label="Filter case IDs">
   <span id=label style="color:var(--dim)"></span>
   <span class=status id=status></span>
+  <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
 <main>
   <p class=hero>Replay real decisions under a proposed rule, attribute every change to the clause
@@ -60,6 +70,18 @@ h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;
 
   <h2>Blast radius <span class=note>how many cases in each segment actually move</span></h2>
   <div id=segments></div>
+
+  <h2>Where should the threshold be? <span class=note>re-runs the replay at each value, from the offline rules</span></h2>
+  <div class=cmp>
+    <select id=swdial aria-label="Threshold to sweep"></select>
+    <input id=swvalues aria-label="Values to try" placeholder="25,50,75,100,150">
+    <button id=swgo>Sweep</button>
+    <span id=swnote></span>
+  </div>
+  <div id=sweep></div>
+
+  <h2>Not this policy's doing <span class=note>recorded outcomes the rule already in force disagreed with</span></h2>
+  <div id=deviations></div>
 
   <h2>Compare policy versions <span class=note>did the edit help?</span></h2>
   <div class=cmp>
@@ -77,6 +99,9 @@ h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;
 
   <h2>Precedent conflicts <span class=note>rulings that contradict each other, not the policy</span></h2>
   <div id=conflicts></div>
+
+  <h2>Judge stability <span class=note>the error bar under every number above</span></h2>
+  <div id=stability></div>
 </main>
 <script>
 "use strict";
@@ -92,12 +117,14 @@ const api = async path => {
 };
 
 let DOMAINS = [];
-const PANELS = ["#tiles","#clauses","#segments","#compare","#flips","#precedents","#conflicts"];
+const PANELS = ["#tiles","#clauses","#segments","#sweep","#deviations","#compare",
+                "#flips","#precedents","#conflicts","#stability"];
 
 function fail(message) {
   $("#tiles").innerHTML = `<div class=error>${esc(message)}</div>`;
   PANELS.slice(1).forEach(id => { $(id).innerHTML = ""; });
   $("#cmpsummary").textContent = "";
+  $("#swnote").textContent = "";
   $("#status").textContent = "Unavailable";
 }
 
@@ -106,11 +133,12 @@ const table = (head, rows, empty) => rows.length
   : `<div class=empty>${esc(empty)}</div>`;
 
 // ---------------------------------------------------------------- tiles
-function renderTiles(summary, costs) {
+function renderTiles(summary, costs, gate) {
   const dir = d => summary.by_direction.find(x => x.direction === d) || {n: 0, impact: 0};
   const loose = dir("loosening"), tight = dir("tightening");
   const unit = summary.impact_unit;
   const stability = summary.stability;
+  const confirm = summary.flip_confirmation || {measured: 0, stable: 0, unstable: 0};
   const tiles = [
     ["Decisions replayed", num(summary.cases), "", `${summary.runs} run${summary.runs === 1 ? "" : "s"}`],
     ["Outcomes that change", num(summary.flips), summary.flips ? "warn" : "",
@@ -132,6 +160,24 @@ function renderTiles(summary, costs) {
       stability ? `${stability.cases_sampled} cases x ${stability.samples_per_case}` : "run the stability DAG"],
     ["Judging spend", costs ? `USD ${Number(costs.ledger.cost_usd).toFixed(2)}` : "-", "",
       costs ? `full replay forecast USD ${Number(costs.forecast.estimated_cost_usd).toFixed(2)}` : ""],
+    ["Flips confirmed", confirm.measured
+        ? `${num(confirm.stable)} / ${num(confirm.measured)}`
+        : "not measured",
+      confirm.unstable ? "warn" : "muted",
+      confirm.measured
+        ? (confirm.unstable
+            ? `${num(confirm.unstable)} would not reproduce - held back from review`
+            : "every re-judged flip reproduced")
+        : "run the stability DAG with target=flips"],
+    ["Gate", gate && gate.precedents
+        ? `${num(gate.violations.length)} reversed`
+        : "no precedents",
+      gate && gate.violations.length ? "tight" : "loose",
+      gate && gate.precedents
+        ? `${num(gate.introduced.length)} introduced by this policy; ` +
+          `${num(gate.in_force_violations.length)} by ${esc(gate.in_force)}, in force` +
+          (gate.unchecked.length ? ` - ${gate.unchecked.length} unchecked` : "")
+        : "adjudicate some flips first"],
   ];
   $("#tiles").innerHTML = tiles.map(([k, v, cls, sub]) =>
     `<div class=tile><div class=k>${k}</div><div class="v ${cls}">${v}</div>${
@@ -216,7 +262,7 @@ function renderFlips(rows, total, unit) {
   $("#flips").innerHTML = table(
     [{label: "Case"}, {label: "Decided"}, {label: "Was"}, {label: "Becomes"},
      {label: "Old policy"}, {label: "Responsible for"}, {label: "Impact", num: 1},
-     {label: "Conf.", num: 1}, {label: "Precedent"}],
+     {label: "Conf.", num: 1}, {label: "Confirmed"}, {label: "Precedent"}],
     rows.map((r, i) => `<tr class=row onclick="toggle(${i})">
       <td>${esc(r.case_id)}${r.reviewed ? " <span class=reviewed>reviewed</span>" : ""}</td>
       <td>${esc(r.decided_at.slice(0, 10))}</td>
@@ -226,12 +272,15 @@ function renderFlips(rows, total, unit) {
       <td class="${r.direction === "loosening" ? "loose" : "tight"}">${esc(r.attribution || r.policy_clause || "-")}</td>
       <td class=num>${num(r.impact)}</td>
       <td class=num>${Math.round(r.confidence * 100)}%</td>
+      <td>${r.stability === "stable" ? "<span class=loose>reproduced</span>"
+            : r.stability === "unstable" ? "<span class=unstable>did not reproduce</span>"
+            : "<span class=muted>&mdash;</span>"}</td>
       <td>${r.precedent
             ? (r.precedent === r.new_outcome
                 ? "<span class=loose>consistent</span>"
                 : `<span class=bad>VIOLATES &rarr; ${esc(r.precedent)}</span>`)
             : "&mdash;"}</td></tr>
-      <tr class=detail id=d${i} hidden><td colspan=9>
+      <tr class=detail id=d${i} hidden><td colspan=10>
         <pre>${esc(Object.entries(r.payload).map(([k, v]) => `${(k + ":").padEnd(20)}${v}`).join("\n"))}</pre>
         ${Object.keys(r.segments).length ? `<div><strong>Segments at decision time:</strong> ${
           esc(Object.entries(r.segments).map(([k, v]) => `${k}=${v}`).join(", "))}</div>` : ""}
@@ -268,13 +317,120 @@ function renderConflicts(rows) {
     "No contradictions among the rulings on file.");
 }
 
+// ----------------------------------------------------- threshold sweep
+function renderDials(dials) {
+  const select = $("#swdial");
+  if (!dials.length) {
+    select.innerHTML = `<option value="">no numeric dials in this version</option>`;
+    select.disabled = $("#swgo").disabled = true;
+    $("#sweep").innerHTML = `<div class=empty>This version's <code>offline_rules</code> compare
+      no fields against numbers, so there is nothing to sweep.</div>`;
+    return;
+  }
+  select.disabled = $("#swgo").disabled = false;
+  // Same field in two clauses is two different dials; label them as such.
+  select.innerHTML = dials.map(d =>
+    `<option value="${esc(d.clause)}|${esc(d.field)}">clause ${esc(d.clause || "-")} &middot; ${
+      esc(d.field)} (now ${esc(d.value)})</option>`).join("");
+  const first = dials[0].value;
+  $("#swvalues").value = [0.5, 0.75, 1, 1.5, 2]
+    .map(m => Math.round(first * m * 100) / 100).join(",");
+  $("#sweep").innerHTML = `<div class=empty>Pick a dial and press Sweep.</div>`;
+}
+
+async function runSweep() {
+  const domain = $("#domain").value, version = $("#version").value;
+  const [clause, field] = ($("#swdial").value || "|").split("|");
+  const values = $("#swvalues").value.trim();
+  if (!field || !values) { $("#swnote").textContent = "pick a dial and some values"; return; }
+  $("#swnote").textContent = "running...";
+  let result;
+  try {
+    result = await api(`/api/sweep/${domain}/${version}?field=${encodeURIComponent(field)}` +
+                       `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}`);
+  } catch (e) {
+    $("#swnote").textContent = "";
+    $("#sweep").innerHTML = `<div class=empty>That sweep could not be run. Values must be
+      comma-separated numbers, and the dial must exist in this version.</div>`;
+    return;
+  }
+  const unit = result.impact_unit;
+  const max = Math.max(1, ...result.points.map(p => p.flips));
+  $("#swnote").innerHTML = `<span class=muted>${num(result.cases)} cases &middot; from the
+    offline rules, not the markdown policy</span>`;
+  $("#sweep").innerHTML =
+    `<div class=spark>${result.points.map(p =>
+      `<i class="${p.is_current ? "cur" : ""}" style="height:${(p.flips / max * 100).toFixed(1)}%"
+        title="${esc(p.value)}: ${p.flips} flips"></i>`).join("")}</div>` +
+    table(
+      [{label: esc(result.field)}, {label: "Flips", num: 1}, {label: "Rate", num: 1},
+       {label: "More generous", num: 1}, {label: "More strict", num: 1},
+       {label: "Net", num: 1}, {label: "Caused by this policy", num: 1}],
+      result.points.map(p => `<tr${p.is_current ? ' class=warn' : ""}>
+        <td>${esc(p.value)}${p.is_current ? " <span class=sub>current</span>" : ""}</td>
+        <td class=num>${num(p.flips)}</td>
+        <td class=num>${pct(p.flip_rate)}</td>
+        <td class="num loose">${num(p.loosening)}</td>
+        <td class="num tight">${num(p.tightening)}</td>
+        <td class=num>${money(unit, p.net_impact)}</td>
+        <td class=num>${num(p.policy_driven_flips)}</td></tr>`),
+      "No points returned.");
+}
+
+// ------------------------------------------------------------ deviations
+function renderDeviations(result, unit) {
+  const note = result.count
+    ? `<p class=hero>${num(result.count)} recorded outcomes worth ${money(unit, result.total_impact)}
+       disagree with policy <strong>${esc(result.in_force)}</strong>, which is in force today.
+       The proposal did not cause these and is not measured by them - but somebody departed
+       from the rulebook they already had.</p>` : "";
+  $("#deviations").innerHTML = note + table(
+    [{label: "Case"}, {label: "Recorded"}, {label: "Both policies say"},
+     {label: "Impact", num: 1}, {label: "Conf.", num: 1}],
+    result.cases.map(r => `<tr>
+      <td>${esc(r.case_id)}</td>
+      <td><span class=pill>${esc(r.actual_outcome)}</span></td>
+      <td><span class=pill>${esc(r.new_outcome)}</span></td>
+      <td class=num>${num(r.impact)}</td>
+      <td class=num>${Math.round(r.confidence * 100)}%</td></tr>`),
+    "Every change here is attributable to the proposal - no reviewer deviations found.");
+}
+
+// ------------------------------------------------------- judge stability
+function renderStability(result, summary) {
+  if (!result.measured) {
+    $("#stability").innerHTML = `<div class=empty>${esc(result.hint ||
+      "Not measured.")} Without it, the flip rate above has no error bar.</div>`;
+    return;
+  }
+  const share = summary.flips && summary.cases
+    ? result.disagreement_rate / (summary.flips / summary.cases) : 0;
+  const cases = Object.entries(result.disagreeing_cases || {});
+  const reading = result.disagreement_rate === 0
+    ? `<p class=hero>The judge reproduced itself on every sampled case. If this ran offline the
+       judge is deterministic, so 0% measures nothing - it means the check is inert until you
+       point it at a real model.</p>`
+    : `<p class=hero>The judge contradicted itself on <strong>${pct(result.disagreement_rate)}</strong>
+       of sampled cases. Against the measured flip rate, up to <strong>${pct(share)}</strong> of the
+       change above could be the model rather than the policy.</p>`;
+  $("#stability").innerHTML = reading + table(
+    [{label: "Case"}, {label: "Verdicts it gave across repeats"}],
+    cases.map(([id, outcomes]) => `<tr>
+      <td>${esc(id)}</td>
+      <td class=bad>${esc(Object.entries(outcomes)
+        .map(([o, n]) => `${o} x${n}`).join("   "))}</td></tr>`),
+    `${result.cases_sampled} cases x ${result.samples_per_case} judgements, no disagreements.`);
+}
+
 // --------------------------------------------------------------- boot
 async function render() {
   const domain = $("#domain").value, version = $("#version").value;
   $("#status").textContent = "Loading...";
-  let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs;
+  let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
+      deviationRows, gate, stabilityDetail, dials;
   try {
-    [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs] =
+    [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
+     deviationRows, gate, stabilityDetail, dials] =
       await Promise.all([
         api(`/api/summary/${domain}/${version}`),
         api(`/api/flips/${domain}/${version}`),
@@ -283,6 +439,10 @@ async function render() {
         api(`/api/segments/${domain}/${version}`),
         api(`/api/conflicts/${domain}`),
         api(`/api/cost/${domain}/${version}`),
+        api(`/api/deviations/${domain}/${version}`),
+        api(`/api/precedent-check/${domain}/${version}`),
+        api(`/api/stability/${domain}/${version}`),
+        api(`/api/thresholds/${domain}/${version}`),
       ]);
   } catch (e) {
     fail("Could not load this replay. Please refresh or check the Airflow logs.");
@@ -294,12 +454,17 @@ async function render() {
     `${summary.runs} run${summary.runs === 1 ? "" : "s"} - ${shown.length}${
       shown.length === flipRows.length ? " flips" : " shown"}`;
 
-  renderTiles(summary, costs);
+  renderTiles(summary, costs, gate);
   renderClauses(clauseRows, summary.impact_unit, summary);
   renderSegments(segmentRows, summary.impact_unit);
+  renderDials(dials);
+  renderDeviations(deviationRows, summary.impact_unit);
   renderFlips(shown, flipRows.length, summary.impact_unit);
   renderPrecedents(precedentRows);
   renderConflicts(conflictRows);
+  renderStability(stabilityDetail, summary);
+  $("#dlcsv").href = `/ptm/api/export/${domain}/${version}.csv`;
+  $("#dljson").href = `/ptm/api/export/${domain}/${version}.json`;
   renderCompare();
 }
 
@@ -328,6 +493,8 @@ async function boot() {
   $("#version").onchange = render;
   $("#search").oninput = render;
   $("#cmpleft").onchange = $("#cmpright").onchange = renderCompare;
+  $("#swgo").onclick = runSweep;
+  $("#swvalues").onkeydown = e => { if (e.key === "Enter") runSweep(); };
   onDomainChange();
 }
 boot();

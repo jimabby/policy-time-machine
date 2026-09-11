@@ -256,3 +256,75 @@ class TestLintCatchesDrift:
         problems = check_domain("broken")
         assert problems and problems[0].level == "ERROR"
         assert "will not load" in str(problems[0])
+
+
+class TestConflictKeyAgainstTheStoredRecord:
+    """The check that used to be unreachable.
+
+    payload_fields is the rendered template *plus* the point-in-time fact, and
+    a pit_field missing from the template is already an error - so "in the
+    payload but not rendered" could never be true, and the warning it guarded
+    never fired for any domain. It is tested against pit_field directly now,
+    because the failure it describes is real: conflict detection reads the case
+    as filed, and the point-in-time fact is merged in per case, not stored.
+    """
+
+    def domain_keyed_on(self, expenses, key):
+        d = expenses.model_copy(deep=True)
+        d.conflicts.key = key
+        return d
+
+    def check(self, monkeypatch, domain):
+        import ptm.config as config
+        import ptm.lint as lint
+
+        monkeypatch.setattr(config, "load_domain", lambda name: domain)
+        monkeypatch.setattr(lint, "load_domain", lambda name: domain)
+        return [str(p) for p in check_domain("expenses")]
+
+    def test_rejects_the_point_in_time_fact_as_a_conflict_key(self, expenses, monkeypatch):
+        problems = self.check(monkeypatch, self.domain_keyed_on(expenses, ["category", "grade"]))
+        assert any("ERROR" in p and "conflicts.key" in p and "point-in-time" in p
+                   for p in problems), problems
+
+    def test_accepts_a_key_that_is_in_the_stored_record(self, expenses, monkeypatch):
+        problems = self.check(monkeypatch, self.domain_keyed_on(expenses, ["category", "receipt"]))
+        assert not any("conflicts.key" in p for p in problems), problems
+
+    def test_the_shipped_domains_pass_it(self):
+        """refunds used to key on tier, which is its pit_field."""
+        for name in ("expenses", "refunds"):
+            assert not [p for p in check_domain(name)
+                        if p.level == "ERROR"], f"{name} has lint errors"
+
+
+class TestHelperShadowing:
+    def test_warns_when_a_case_field_hides_a_rule_helper(self, expenses, monkeypatch):
+        """offline_verdict swallows exceptions, so a rule calling a shadowed
+        helper does not crash - it silently never matches."""
+        import ptm.config as config
+        import ptm.lint as lint
+
+        d = expenses.model_copy(deep=True)
+        d.case_template = d.case_template + "\n  Length: {len}"
+        monkeypatch.setattr(config, "load_domain", lambda name: d)
+        monkeypatch.setattr(lint, "load_domain", lambda name: d)
+        problems = [str(p) for p in check_domain("expenses")]
+        assert any("shadow the rule helpers" in p for p in problems), problems
+
+    def test_quiet_for_the_shipped_domains(self):
+        for name in ("expenses", "refunds"):
+            assert not [p for p in check_domain(name) if "shadow" in p.message]
+
+    def test_a_helper_call_is_not_reported_as_an_unknown_field(self, expenses, monkeypatch):
+        """The lint must know abs() is a helper, not a missing payload key."""
+        import ptm.config as config
+        import ptm.lint as lint
+
+        d = expenses.model_copy(deep=True)
+        d.offline_rules = {"v2": [{"when": "abs(amount_gbp) > 10", "outcome": "deny",
+                                   "clause": "1.1"}]}
+        monkeypatch.setattr(config, "load_domain", lambda name: d)
+        monkeypatch.setattr(lint, "load_domain", lambda name: d)
+        assert not [p for p in check_domain("expenses")
+                    if p.level == "ERROR" and "unknown field" in p.message]

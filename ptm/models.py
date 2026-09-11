@@ -59,6 +59,11 @@ class Flip(BaseModel):
     baseline_outcome: str = ""
     #: Why this case moved, in one bucket. See :func:`ptm.diff.attribute`.
     attribution: str = ""
+    #: Whether re-judging this exact case reproduced the same verdict:
+    #: ``"stable"``, ``"unstable"``, or ``""`` when it was never re-judged.
+    #: An unstable flip is the judge changing its mind, not the policy moving,
+    #: so it must not be handed to a human as though it were settled.
+    stability: str = ""
 
 
 class StabilityReport(BaseModel):
@@ -91,6 +96,28 @@ class PrecedentConflict(BaseModel):
     outcomes: dict[str, list[str]]
     case_ids: list[str]
     ruled_by: list[str]
+
+
+class FlipConfirmation(BaseModel):
+    """Whether one recorded flip survives being judged again.
+
+    :class:`StabilityReport` puts an error bar on a whole replay. This puts one
+    on a single flip, which is what the human queue actually needs: a flip the
+    judge will not reproduce is not a policy change and must not become
+    precedent.
+    """
+
+    case_id: str
+    samples: int
+    outcomes: dict[str, int]
+    modal_outcome: str
+    #: Share of samples that agreed with the modal outcome. 1.0 is unanimous.
+    agreement: float
+    #: True when every sample agreed *and* agreed with the recorded flip.
+    stable: bool
+    #: The outcome the replay recorded, for the case where re-judging is
+    #: self-consistent but lands somewhere else entirely.
+    recorded_outcome: str = ""
 
 
 class Precedent(BaseModel):

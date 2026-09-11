@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import json
 import random
+import sys
 from datetime import datetime, timedelta
 
 from .config import load_domain
 from .judge import offline_verdict
 from .models import Case
-from .store import conn, init_db
+from .store import clear_domain_results, conn, init_db
 
 NAMES = [
     "A. Okafor", "B. Lindqvist", "C. Mwangi", "D. Ferreira", "E. Nakamura",
@@ -226,18 +227,51 @@ def _tier_as_of(facts, sid: str, when: datetime) -> str:
 SEEDERS = {"expenses": seed_expenses, "refunds": seed_refunds}
 
 
-def seed_domain(name: str) -> dict:
+def case_count(name: str) -> int:
+    init_db()
+    with conn() as c:
+        return c.execute("SELECT COUNT(*) FROM cases WHERE domain = ?", (name,)).fetchone()[0]
+
+
+def seed_domain(name: str, force: bool = False) -> dict:
+    """Generate this domain's synthetic history.
+
+    Idempotent by default, and that matters operationally: the compose file
+    seeds on every container start, so a re-seed that always fired would throw
+    away the replay you ran before restarting. Existing cases mean there is
+    nothing to do.
+
+    ``force`` regenerates, and then also clears every *derived* result for the
+    domain. Aggregates computed against the old cases would otherwise survive
+    and join onto the new ones, so a changed fixture size would show up as a
+    dashboard quietly mixing two different histories. Precedents are kept:
+    they are the one durable artefact here and outlive the fixture on purpose.
+    """
     if name not in SEEDERS:
         raise KeyError(
             f"no synthetic fixture for domain {name!r}; have {sorted(SEEDERS)}. "
             f"Load real cases into the 'cases' table instead."
         )
+    existing = case_count(name)
+    if existing and not force:
+        return {"cases": existing, "skipped": "already seeded; pass force=True to regenerate"}
+    if existing:
+        clear_domain_results(name)
     return SEEDERS[name]()
 
 
-def seed_all() -> dict:
-    return {name: seeder() for name, seeder in SEEDERS.items()}
+def seed_all(force: bool = False) -> dict:
+    return {name: seed_domain(name, force=force) for name in SEEDERS}
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    force = "--force" in args
+    names = [a for a in args if not a.startswith("-")] or sorted(SEEDERS)
+    for name in names:
+        print(f"{name}: {seed_domain(name, force=force)}")
+    return 0
 
 
 if __name__ == "__main__":
-    print(seed_all())
+    raise SystemExit(main())

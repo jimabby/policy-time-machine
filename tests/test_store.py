@@ -263,3 +263,224 @@ class TestSchema:
         [case] = store.load_cases("expenses", until=datetime(2026, 9, 1))
         assert isinstance(case, Case)
         assert case.actual_rationale == "recorded"
+
+
+class TestLoadingBySpecificIds:
+    """The precedent gate needs *these* cases, not "some cases".
+
+    Loading everything and filtering is subject to the default limit, so past
+    that many cases the gate would judge a subset of the precedent set and
+    still report a pass. A regression suite that silently checks less than it
+    reports is worse than none.
+    """
+
+    def populate(self, n=30):
+        for i in range(n):
+            add_case(f"c{i:03d}", decided=f"2025-01-{i % 28 + 1:02d}T00:00:00")
+
+    def test_returns_exactly_the_requested_cases(self, fresh_db):
+        self.populate()
+        got = store.load_cases("expenses", until=datetime(2026, 1, 1),
+                               case_ids=["c003", "c017"])
+        assert sorted(c.case_id for c in got) == ["c003", "c017"]
+
+    def test_ignores_the_limit_that_would_have_truncated_them(self, fresh_db):
+        self.populate()
+        wanted = [f"c{i:03d}" for i in range(30)]
+        got = store.load_cases("expenses", until=datetime(2026, 1, 1),
+                               limit=5, case_ids=wanted)
+        assert len(got) == 30, "a limit must not silently shrink an explicit id set"
+
+    def test_a_missing_case_is_absent_rather_than_invented(self, fresh_db):
+        """The caller can then refuse, which is what the gate does."""
+        self.populate(3)
+        got = store.load_cases("expenses", until=datetime(2026, 1, 1),
+                               case_ids=["c000", "gone"])
+        assert [c.case_id for c in got] == ["c000"]
+
+    def test_handles_more_ids_than_sqlite_takes_parameters(self, fresh_db):
+        """SQLite caps bound parameters, so the id list has to be chunked."""
+        self.populate(0)
+        wanted = [f"c{i:04d}" for i in range(1200)]
+        for case_id in wanted:
+            add_case(case_id)
+        got = store.load_cases("expenses", until=datetime(2026, 1, 1), case_ids=wanted)
+        assert len(got) == 1200
+
+    def test_an_empty_id_list_returns_nothing_not_everything(self, fresh_db):
+        self.populate()
+        assert store.load_cases("expenses", until=datetime(2026, 1, 1), case_ids=[]) == []
+
+    def test_still_hydrates_point_in_time_facts(self, fresh_db):
+        add_case("c1", decided="2025-06-01T00:00:00")
+        with store.conn() as c:
+            c.executemany(
+                "INSERT INTO subject_facts VALUES (?,?,?,?)",
+                [("emp-1", "grade", "1", "2024-01-01T00:00:00"),
+                 ("emp-1", "grade", "3", "2025-09-01T00:00:00")])
+        [case] = store.load_cases("expenses", until=datetime(2026, 1, 1), case_ids=["c1"])
+        assert case.payload["grade"] == "1", "the later promotion must not leak backwards"
+
+
+class TestSegmentsAcrossOverlappingRuns:
+    """Manual replays overlap backfills on purpose, so the blast radius has to
+    collapse duplicates the way every other read model here does. Summing the
+    per-run aggregates counts a case once per run that saw it."""
+
+    def segments_for(self, case_ids, run_id, flips_=()):
+        store.save_replay(
+            run_id, "expenses", "v2", "actual", len(case_ids), list(flips_), 0.0,
+            {c: verdict() for c in case_ids}, ledger=cost.zero(),
+            segments=[{"field": "category", "value": "travel", "cases": len(case_ids),
+                       "flips": len(flips_), "loosening": len(flips_), "tightening": 0,
+                       "impact_loosening": 100.0 * len(flips_), "impact_tightening": 0.0}],
+            case_segments=[{"case_id": c, "field": "category", "value": "travel"}
+                           for c in case_ids])
+
+    def test_a_second_run_over_the_same_cases_does_not_double_the_denominator(self, fresh_db):
+        for case_id in ("c1", "c2", "c3"):
+            add_case(case_id)
+        self.segments_for(["c1", "c2", "c3"], "backfill", [flip("c1")])
+        [row] = store.segment_breakdown("expenses", "v2")
+        assert (row["cases"], row["flips"]) == (3, 1)
+
+        self.segments_for(["c1", "c2", "c3"], "manual", [flip("c1")])
+        [row] = store.segment_breakdown("expenses", "v2")
+        assert (row["cases"], row["flips"]) == (3, 1), "the manual run counted them twice"
+
+    def test_a_partially_overlapping_run_does_not_skew_the_rate(self, fresh_db):
+        """The damaging version: a capped manual run over a subset used to
+        inflate one segment's denominator but not another's."""
+        for case_id in ("c1", "c2", "c3", "c4"):
+            add_case(case_id)
+        self.segments_for(["c1", "c2", "c3", "c4"], "backfill", [flip("c1")])
+        self.segments_for(["c3", "c4"], "capped", [])
+        [row] = store.segment_breakdown("expenses", "v2")
+        assert row["cases"] == 4
+
+    def test_distinct_cases_still_accumulate(self, fresh_db):
+        """Deduplication must not turn a backfill's disjoint months into one."""
+        for case_id in ("c1", "c2"):
+            add_case(case_id)
+        self.segments_for(["c1"], "month-1")
+        self.segments_for(["c2"], "month-2")
+        [row] = store.segment_breakdown("expenses", "v2")
+        assert row["cases"] == 2
+
+    def test_falls_back_to_the_per_run_rows_for_an_older_database(self, fresh_db):
+        """A database written before case_segments existed still has to render."""
+        add_case()
+        save(segments=[{"field": "category", "value": "travel", "cases": 10, "flips": 1,
+                        "loosening": 1, "tightening": 0,
+                        "impact_loosening": 100.0, "impact_tightening": 0.0}])
+        assert not store.query("SELECT * FROM case_segments")
+        [row] = store.segment_breakdown("expenses", "v2")
+        assert row["cases"] == 10
+
+
+class TestClearingDerivedResults:
+    def test_drops_recomputable_rows_for_that_domain(self, fresh_db):
+        add_case()
+        save()
+        store.clear_domain_results("expenses")
+        assert store.query("SELECT COUNT(*) n FROM flips")[0]["n"] == 0
+        assert store.query("SELECT COUNT(*) n FROM runs")[0]["n"] == 0
+
+    def test_keeps_precedent_which_is_the_one_durable_artefact(self, fresh_db):
+        add_case()
+        save()
+        store.save_precedent(Precedent(
+            case_id="c1", domain="expenses", correct_outcome="approve",
+            ruled_by="a.human", established_at=datetime(2025, 1, 1)))
+        store.clear_domain_results("expenses")
+        assert len(store.load_precedents("expenses")) == 1
+
+    def test_leaves_another_domain_alone(self, fresh_db):
+        add_case()
+        save()
+        store.save_replay("r-other", "refunds", "v2", "actual", 1, [], 0.0, {},
+                          ledger=cost.zero())
+        store.clear_domain_results("expenses")
+        assert store.query("SELECT COUNT(*) n FROM runs WHERE domain='refunds'")[0]["n"] == 1
+
+
+class TestFlipStability:
+    def confirmation(self, case_id="c1", stable=True):
+        from ptm.models import FlipConfirmation
+
+        return FlipConfirmation(
+            case_id=case_id, samples=3,
+            outcomes={"approve": 3} if stable else {"approve": 2, "deny": 1},
+            modal_outcome="approve", agreement=1.0 if stable else 0.667,
+            stable=stable, recorded_outcome="approve")
+
+    def test_tags_the_flip_row_so_review_selection_can_see_it(self, fresh_db):
+        add_case()
+        save()
+        store.save_flip_stability("expenses", "v2", [self.confirmation(stable=False)])
+        [row] = store.query("SELECT stability FROM flips")
+        assert row["stability"] == "unstable"
+
+    def test_reads_back_what_the_judge_actually_said(self, fresh_db):
+        add_case()
+        save()
+        store.save_flip_stability("expenses", "v2", [self.confirmation(stable=False)])
+        measured = store.flip_stability("expenses", "v2")
+        assert measured["c1"]["outcomes"] == {"approve": 2, "deny": 1}
+        assert measured["c1"]["stable"] is False
+
+    def test_re_measuring_replaces_rather_than_accumulates(self, fresh_db):
+        add_case()
+        save()
+        store.save_flip_stability("expenses", "v2", [self.confirmation(stable=False)])
+        store.save_flip_stability("expenses", "v2", [self.confirmation(stable=True)])
+        measured = store.flip_stability("expenses", "v2")
+        assert len(measured) == 1 and measured["c1"]["stable"] is True
+
+
+class TestSeedingIsIdempotent:
+    """The compose file seeds on every container start. A re-seed that always
+    fired would throw away the replay you ran before restarting."""
+
+    def test_a_second_seed_is_a_no_op(self, fresh_db):
+        from ptm.seed import seed_domain
+
+        first = seed_domain("expenses")
+        second = seed_domain("expenses")
+        assert first["cases"] == 600
+        assert "skipped" in second and second["cases"] == 600
+
+    def test_existing_results_survive_a_restart(self, fresh_db):
+        from ptm.seed import seed_domain
+
+        seed_domain("expenses")
+        save(run_id="before-restart")
+        seed_domain("expenses")
+        assert store.query("SELECT COUNT(*) n FROM runs")[0]["n"] == 1
+
+    def test_forcing_a_reseed_clears_results_computed_against_the_old_cases(self, fresh_db):
+        """Aggregates joined onto a regenerated fixture would mix two histories."""
+        from ptm.seed import seed_domain
+
+        seed_domain("expenses")
+        save(run_id="stale")
+        seed_domain("expenses", force=True)
+        assert store.query("SELECT COUNT(*) n FROM runs")[0]["n"] == 0
+        assert store.query("SELECT COUNT(*) n FROM cases")[0]["n"] == 600
+
+    def test_forcing_a_reseed_keeps_precedent(self, fresh_db):
+        from ptm.seed import seed_domain
+
+        seed_domain("expenses")
+        store.save_precedent(Precedent(
+            case_id="exp-0001", domain="expenses", correct_outcome="approve",
+            ruled_by="a.human", established_at=datetime(2025, 1, 1)))
+        seed_domain("expenses", force=True)
+        assert len(store.load_precedents("expenses")) == 1
+
+    def test_the_cli_reports_what_it_did(self, fresh_db, capsys):
+        from ptm.seed import main
+
+        assert main(["expenses"]) == 0
+        assert main(["expenses"]) == 0
+        assert "skipped" in capsys.readouterr().out

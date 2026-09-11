@@ -209,3 +209,81 @@ class TestOfflineJudge:
         assert c.decided_at.date().isoformat() in prompt
         for outcome in expenses.outcomes:
             assert outcome in prompt
+
+
+class TestFlipConfirmation:
+    """An error bar on one flip, rather than on the whole replay.
+
+    The aggregate disagreement rate says how noisy the judge is. It does not
+    say whether *this* flip - the one a human is about to turn into permanent
+    precedent - is real.
+    """
+
+    def samples(self, case_id, *outcomes):
+        return [{"case_id": case_id, "sample_idx": i, "outcome": o, "confidence": 0.9}
+                for i, o in enumerate(outcomes)]
+
+    def test_a_flip_the_judge_repeats_is_confirmed(self):
+        [c] = stability.confirm(self.samples("c1", "approve", "approve", "approve"),
+                                {"c1": "approve"})
+        assert c.stable is True and c.agreement == 1.0
+
+    def test_a_flip_the_judge_will_not_repeat_is_not(self):
+        [c] = stability.confirm(self.samples("c1", "approve", "deny", "approve"),
+                                {"c1": "approve"})
+        assert c.stable is False
+        assert c.outcomes == {"approve": 2, "deny": 1}
+        assert c.modal_outcome == "approve"
+
+    def test_self_consistent_but_contradicting_the_replay_is_not_confirmation(self):
+        """A judge can be perfectly repeatable and still disagree with the run
+        that recorded the flip. Calling that confirmed would launder a
+        contradiction into a precedent."""
+        [c] = stability.confirm(self.samples("c1", "deny", "deny", "deny"),
+                                {"c1": "approve"})
+        assert c.stable is False
+        assert c.modal_outcome == "deny" and c.recorded_outcome == "approve"
+
+    def test_reports_the_least_trustworthy_first(self):
+        rows = stability.confirm(
+            self.samples("solid", "approve", "approve")
+            + self.samples("shaky", "approve", "deny"),
+            {"solid": "approve", "shaky": "approve"})
+        assert [c.case_id for c in rows] == ["shaky", "solid"]
+
+    def test_an_unrecorded_case_is_judged_on_self_consistency_alone(self):
+        [c] = stability.confirm(self.samples("c1", "deny", "deny"), {})
+        assert c.stable is True
+
+    def test_nothing_to_confirm_says_so(self):
+        assert "no flips re-judged" in stability.describe_confirmations([])
+
+    def test_describes_what_was_held_back(self):
+        rows = stability.confirm(self.samples("c1", "approve", "deny"), {"c1": "approve"})
+        text = stability.describe_confirmations(rows)
+        assert "1 did not" in text and "c1" in text
+        assert "held back from the human queue" in text
+
+    def test_describes_a_clean_pass(self):
+        rows = stability.confirm(self.samples("c1", "approve", "approve"), {"c1": "approve"})
+        assert "every flip reproduced" in stability.describe_confirmations(rows)
+
+
+class TestChoosingWhichFlipsToConfirm:
+    def flip(self, case_id, impact):
+        from ptm.models import Flip
+
+        return Flip(case_id=case_id, decided_at=datetime(2025, 1, 1),
+                    actual_outcome="deny", new_outcome="approve", rationale="r",
+                    confidence=0.9, policy_clause="1.1", impact=impact)
+
+    def test_spends_the_budget_on_the_flips_that_will_be_acted_on(self):
+        flips = [self.flip("small", 10), self.flip("big", 900), self.flip("mid", 100)]
+        assert [f.case_id for f in stability.flips_to_confirm(flips, 2)] == ["big", "mid"]
+
+    def test_zero_means_all_of_them(self):
+        flips = [self.flip("a", 1), self.flip("b", 2)]
+        assert len(stability.flips_to_confirm(flips, 0)) == 2
+
+    def test_asking_for_more_than_exist_is_not_an_error(self):
+        assert len(stability.flips_to_confirm([self.flip("a", 1)], 50)) == 1

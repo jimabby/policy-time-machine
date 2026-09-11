@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit stability cost dev
+.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep dev
 
 PY ?= .venv/bin/python
 ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
@@ -29,6 +29,10 @@ demo:      ## Replay two years of history through the backfill engine
 stability: ## Measure how often the judge contradicts itself
 	docker compose exec airflow airflow dags trigger judge_stability_expenses
 
+confirm:   ## Re-judge the biggest flips to check each one reproduces
+	docker compose exec airflow airflow dags trigger judge_stability_expenses \
+		--conf '{"target":"flips","sample_cases":25,"samples_per_case":3}'
+
 dev:       ## Create the local venv used by test/lint/unit
 	python3 -m venv .venv && $(PY) -m pip install -q -r requirements-dev.txt
 
@@ -45,3 +49,8 @@ test: lint unit  ## Lint, test, then run the whole engine end to end with no Air
 cost:      ## Forecast what a full LLM-backed replay would cost
 	$(ENV) $(PY) -c "import json; from ptm import report; \
 		print(json.dumps(report.cost_report('expenses','v2')['forecast'], indent=2))"
+
+sweep:     ## Ask what the threshold should be, not just which clause it is in
+	$(ENV) $(PY) -m ptm.sweep expenses v2
+	@echo
+	$(ENV) $(PY) -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250

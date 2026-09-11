@@ -38,6 +38,17 @@ class ReviewPolicy(BaseModel):
     below_confidence: float = 0.75
     above_impact: float = 0.0
     always_review_directions: list[str] = Field(default_factory=lambda: ["loosening"])
+    #: Cap on how many of ``max_reviews`` may go to flips the proposal did not
+    #: cause. A deviation - both policies agree, the recorded outcome did not -
+    #: is a finding about your reviewers, not about the rule being proposed, and
+    #: left uncapped the biggest of them crowd out the cases the proposal is
+    #: actually responsible for. They are still worth a few slots, because the
+    #: ruling settles a case the *current* policy already gets wrong.
+    max_deviation_reviews: int = 2
+    #: Whether to keep flips the judge would not reproduce out of the human
+    #: queue. Requires a confirmation pass (``judge_stability`` with
+    #: ``target=flips``); with no measurement on file nothing is excluded.
+    exclude_unstable: bool = True
 
 
 class ConflictPolicy(BaseModel):

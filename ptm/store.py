@@ -16,7 +16,7 @@ from typing import Any, Iterator
 
 from .config import DB_PATH
 from .diff import DEVIATION
-from .models import Case, Flip, Precedent, Verdict
+from .models import Case, Flip, FlipConfirmation, Precedent, Verdict
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -137,6 +137,41 @@ CREATE TABLE IF NOT EXISTS segment_stats (
 );
 CREATE INDEX IF NOT EXISTS segment_stats_lookup ON segment_stats (domain, policy_version, field);
 
+-- One row per (case, segment field), which is what makes the blast radius
+-- safe to read when runs overlap. segment_stats above is a faithful record of
+-- what *one run* saw, so summing it across a manual run that replays all of
+-- history on top of a backfill counts every case twice. Keying on the case
+-- instead means the newest run simply replaces its own rows, exactly like
+-- every other latest-row-wins read model here.
+CREATE TABLE IF NOT EXISTS case_segments (
+    domain         TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    case_id        TEXT NOT NULL,
+    field          TEXT NOT NULL,
+    value          TEXT NOT NULL,
+    run_id         TEXT NOT NULL,
+    PRIMARY KEY (domain, policy_version, case_id, field)
+);
+CREATE INDEX IF NOT EXISTS case_segments_lookup ON case_segments (domain, policy_version, field, value);
+
+-- Whether re-judging a recorded flip reproduced it. A flip the judge will not
+-- reproduce is the model changing its mind, not the policy moving, and must
+-- not reach a human as though it were settled - see ptm/stability.py.
+CREATE TABLE IF NOT EXISTS flip_stability (
+    domain           TEXT NOT NULL,
+    policy_version   TEXT NOT NULL,
+    case_id          TEXT NOT NULL,
+    samples          INTEGER NOT NULL,
+    outcomes         TEXT NOT NULL,
+    modal_outcome    TEXT NOT NULL,
+    recorded_outcome TEXT DEFAULT '',
+    agreement        REAL NOT NULL,
+    stable           INTEGER NOT NULL,
+    measured_at      TEXT NOT NULL,
+    run_id           TEXT DEFAULT '',
+    PRIMARY KEY (domain, policy_version, case_id)
+);
+
 -- Judge stability. One row per (case, sample) so the disagreement rate can be
 -- recomputed and audited rather than taken on trust.
 CREATE TABLE IF NOT EXISTS judge_samples (
@@ -179,6 +214,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("runs", "estimated_output_tokens", "INTEGER DEFAULT 0"),
     ("runs", "estimated_cost_usd", "REAL DEFAULT 0"),
     ("runs", "judge_model", "TEXT DEFAULT ''"),
+    ("flips", "stability", "TEXT DEFAULT ''"),
 ]
 
 
@@ -215,8 +251,13 @@ def _migrate(c: sqlite3.Connection) -> None:
             c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+#: SQLite's default parameter ceiling is 999, so an ``IN`` list is chunked.
+_ID_CHUNK = 400
+
+
 def load_cases(domain: str, until: datetime, limit: int = 10_000,
-               since: datetime | None = None, newest_first: bool = False) -> list[Case]:
+               since: datetime | None = None, newest_first: bool = False,
+               case_ids: list[str] | None = None) -> list[Case]:
     """Load cases decided in ``[since, until)``, hydrated point-in-time.
 
     Each case's payload is enriched only with facts about its subject that were
@@ -229,18 +270,35 @@ def load_cases(domain: str, until: datetime, limit: int = 10_000,
     the least representative one: slowly-changing facts have not changed yet, so
     a capped replay taken from the front of the period misses precisely the
     interactions a point-in-time engine exists to get right.
+
+    ``case_ids`` asks for exactly those cases and ignores ``limit`` entirely.
+    Callers that need a *specific* set - the precedent gate needs every case a
+    human has ruled on - must use it rather than loading everything and
+    filtering, because a default ``limit`` silently truncating the set would
+    make the regression suite check fewer precedents than exist and still pass.
     """
     order = "DESC" if newest_first else "ASC"
     with conn() as c:
-        rows = c.execute(
-            f"""
-            SELECT * FROM cases
-            WHERE domain = ? AND decided_at < ? AND decided_at >= ?
-            ORDER BY decided_at {order}
-            LIMIT ?
-            """,
-            (domain, until.isoformat(), (since or datetime.min).isoformat(), limit),
-        ).fetchall()
+        if case_ids is not None:
+            wanted = list(dict.fromkeys(case_ids))
+            rows = []
+            for i in range(0, len(wanted), _ID_CHUNK):
+                chunk = wanted[i:i + _ID_CHUNK]
+                placeholders = ",".join("?" * len(chunk))
+                rows += c.execute(
+                    f"SELECT * FROM cases WHERE domain = ? AND case_id IN ({placeholders})",
+                    (domain, *chunk),
+                ).fetchall()
+        else:
+            rows = c.execute(
+                f"""
+                SELECT * FROM cases
+                WHERE domain = ? AND decided_at < ? AND decided_at >= ?
+                ORDER BY decided_at {order}
+                LIMIT ?
+                """,
+                (domain, until.isoformat(), (since or datetime.min).isoformat(), limit),
+            ).fetchall()
 
         cases: list[Case] = []
         for row in rows:
@@ -364,7 +422,8 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
                 cases_replayed: int, flips: list[Flip], impact: float,
                 verdicts: dict[str, Verdict], segments: list[dict] | None = None,
                 ledger: dict | None = None, baseline_version: str = "",
-                baseline_verdicts: dict[str, Verdict] | None = None) -> None:
+                baseline_verdicts: dict[str, Verdict] | None = None,
+                case_segments: list[dict] | None = None) -> None:
     """Persist one replay atomically, including an idempotent re-run cleanup."""
     now = datetime.now().isoformat()
     ledger = ledger or {}
@@ -411,6 +470,16 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
               s["flips"], s["loosening"], s["tightening"],
               s["impact_loosening"], s["impact_tightening"]) for s in (segments or [])],
         )
+        # Keyed on the case, so a manual run that replays history a second time
+        # replaces these rows instead of adding a second copy of every case to
+        # the blast radius. See the case_segments comment in SCHEMA.
+        c.executemany(
+            """INSERT OR REPLACE INTO case_segments
+               (domain, policy_version, case_id, field, value, run_id)
+               VALUES (?,?,?,?,?,?)""",
+            [(domain, policy_version, r["case_id"], r["field"], r["value"], run_id)
+             for r in (case_segments or [])],
+        )
         c.execute(
             """INSERT OR REPLACE INTO runs
                (run_id, domain, policy_version, baseline, started_at, cases_replayed,
@@ -423,6 +492,87 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
              ledger.get("estimated_output_tokens", 0), ledger.get("estimated_cost_usd", 0.0),
              ledger.get("judge_model", "")),
         )
+
+
+def save_verdicts(run_id: str, domain: str, policy_version: str,
+                  verdicts: dict[str, Verdict]) -> None:
+    """Persist verdicts from a pass that is not a replay.
+
+    The precedent gate judges cases too, and storing what it found is what lets
+    the dashboard show the gate's answer without paying to re-judge it.
+    """
+    now = datetime.now().isoformat()
+    with conn() as c:
+        c.execute("DELETE FROM verdicts WHERE run_id = ?", (run_id,))
+        c.executemany(
+            """INSERT INTO verdicts
+               (run_id, domain, policy_version, case_id, outcome, rationale,
+                confidence, policy_clause, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [(run_id, domain, policy_version, case_id, v.outcome, v.rationale,
+              v.confidence, v.policy_clause, now) for case_id, v in verdicts.items()],
+        )
+
+
+def save_flip_stability(domain: str, policy_version: str,
+                        confirmations: list[FlipConfirmation], run_id: str = "") -> int:
+    """Record whether each re-judged flip reproduced, and tag the flip rows.
+
+    The tag on ``flips.stability`` is what keeps an unconfirmed flip out of the
+    human queue: a verdict the judge will not repeat is not a policy change and
+    must not be turned into permanent precedent.
+    """
+    if not confirmations:
+        return 0
+    now = datetime.now().isoformat()
+    with conn() as c:
+        c.executemany(
+            """INSERT OR REPLACE INTO flip_stability
+               (domain, policy_version, case_id, samples, outcomes, modal_outcome,
+                recorded_outcome, agreement, stable, measured_at, run_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            [(domain, policy_version, f.case_id, f.samples, json.dumps(f.outcomes),
+              f.modal_outcome, f.recorded_outcome, f.agreement, int(f.stable), now, run_id)
+             for f in confirmations],
+        )
+        c.executemany(
+            "UPDATE flips SET stability = ? WHERE domain = ? AND policy_version = ? AND case_id = ?",
+            [("stable" if f.stable else "unstable", domain, policy_version, f.case_id)
+             for f in confirmations],
+        )
+    return len(confirmations)
+
+
+def flip_stability(domain: str, policy_version: str) -> dict[str, dict]:
+    """Per-flip confirmation results, keyed by case id."""
+    rows = query(
+        "SELECT * FROM flip_stability WHERE domain=? AND policy_version=?",
+        (domain, policy_version))
+    for r in rows:
+        r["outcomes"] = json.loads(r["outcomes"])
+        r["stable"] = bool(r["stable"])
+    return {r["case_id"]: r for r in rows}
+
+
+#: Everything derived from a domain's cases. Precedents are deliberately absent:
+#: they are the one durable artefact and survive a re-seed on purpose.
+DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
+                  "judge_samples", "stability_runs", "flip_stability")
+
+
+def clear_domain_results(domain: str) -> dict[str, int]:
+    """Drop every recomputable result for a domain, keeping its precedents.
+
+    Re-seeding replaces the cases. Aggregates computed against the *old* cases
+    would otherwise survive and quietly join onto the new ones, so a changed
+    fixture size shows up as a dashboard that mixes two different histories.
+    """
+    cleared: dict[str, int] = {}
+    with conn() as c:
+        for table in DERIVED_TABLES:
+            cur = c.execute(f"DELETE FROM {table} WHERE domain = ?", (domain,))
+            cleared[table] = cur.rowcount
+    return cleared
 
 
 def save_stability(run_id: str, domain: str, policy_version: str, samples: list[dict],
@@ -490,7 +640,43 @@ def clause_breakdown(domain: str, policy_version: str) -> list[dict]:
 
 
 def segment_breakdown(domain: str, policy_version: str) -> list[dict]:
-    """Blast radius by segment, summed across every run of this policy."""
+    """Blast radius by segment, counting each case once however many runs saw it.
+
+    Manual replays overlap backfills by design, so the per-run ``segment_stats``
+    rows cannot simply be summed: a manual run that replays all of history on
+    top of a completed backfill would report 1,200 cases out of 600 and a
+    partial overlap would skew the flip *rate*, not just the totals. Counting
+    ``case_segments`` instead makes this collapse duplicates the same way every
+    other read model here does.
+    """
+    rows = query(
+        """SELECT s.field, s.value,
+                  COUNT(*) AS cases,
+                  COALESCE(SUM(f.case_id IS NOT NULL), 0) AS flips,
+                  COALESCE(SUM(f.direction = 'loosening'), 0) AS loosening,
+                  COALESCE(SUM(f.direction = 'tightening'), 0) AS tightening,
+                  COALESCE(SUM(CASE WHEN f.direction = 'loosening' THEN f.impact END), 0)
+                    AS impact_loosening,
+                  COALESCE(SUM(CASE WHEN f.direction = 'tightening' THEN f.impact END), 0)
+                    AS impact_tightening
+           FROM case_segments s
+           LEFT JOIN (
+             SELECT g.case_id, g.direction, g.impact FROM flips g
+             JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM flips
+                   WHERE domain=? AND policy_version=? GROUP BY case_id) latest
+               ON latest.latest_rowid = g.rowid
+           ) f ON f.case_id = s.case_id
+           WHERE s.domain=? AND s.policy_version=?
+           GROUP BY s.field, s.value
+           ORDER BY s.field, flips DESC""",
+        (domain, policy_version, domain, policy_version),
+    )
+    if rows:
+        return rows
+    # A database written before case_segments existed still has the per-run
+    # aggregates. Summing them is what this function used to do and is correct
+    # whenever runs do not overlap, which is the only state such a database can
+    # be read in - but re-run the replay to get the deduplicated answer.
     return query(
         """SELECT field, value,
                   SUM(cases) AS cases, SUM(flips) AS flips,

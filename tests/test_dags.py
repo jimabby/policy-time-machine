@@ -48,6 +48,27 @@ class TestStatic:
         assert '"prompt": build_prompt' not in source
         assert '"prompt_chars"' in source
 
+    def test_human_answers_are_never_zipped_against_a_short_list(self):
+        """``record`` runs on all_done so a failed review does not strand the
+        others - but a short response list zipped positionally against the full
+        flip list would file one reviewer's ruling against somebody else's
+        case. Precedent cannot be recomputed, so it has to refuse."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "if len(responses) != len(flips):" in source
+        assert "attribute a ruling to the wrong case" in source
+
+    def test_the_gate_loads_precedent_cases_by_id(self):
+        """Loading everything and filtering is subject to the default limit, so
+        past that many cases the gate would check a subset and still pass."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "case_ids=ids" in source
+        assert "if c.case_id in ids" not in source, "the filtered load is the truncating one"
+
+    def test_per_case_segments_are_persisted(self):
+        """Summing the per-run aggregates counts a case once per run that saw
+        it, and manual runs overlap backfills on purpose."""
+        assert "case_segments=diff.case_segment_rows" in DAG_FILE.read_text(encoding="utf-8")
+
 
 @needs_airflow
 class TestParses:
@@ -86,6 +107,26 @@ class TestParses:
     def test_stability_requires_at_least_two_samples(self, dagbag):
         params = dagbag.dags["judge_stability_expenses"].params
         assert params["samples_per_case"].schema.get("minimum") == 2
+
+    def test_stability_can_target_the_recorded_flips(self, dagbag):
+        """The aggregate noise floor and per-flip confirmation are two
+        questions sharing one fan-out."""
+        params = dagbag.dags["judge_stability_expenses"].params
+        assert params["target"].schema.get("enum") == ["sample", "flips"]
+
+    def test_the_gate_judges_the_policy_in_force_as_well(self, dagbag):
+        """So a reversal the status quo already makes is not reported as the
+        proposal's doing."""
+        dag = dagbag.dags["precedent_gate_expenses"]
+        assert "baseline_version" in dag.params
+        assert any("baseline" in t.task_id for t in dag.tasks), \
+            [t.task_id for t in dag.tasks]
+
+    def test_adjudication_reports_what_it_held_back(self, dagbag):
+        """A flip silently dropped from the queue looks exactly like a flip
+        that never happened."""
+        dag = dagbag.dags["adjudicate_expenses"]
+        assert "unconfirmed" in {t.task_id for t in dag.tasks}
 
     def test_every_task_belongs_to_a_domain_tagged_dag(self, dagbag):
         for dag_id, dag in dagbag.dags.items():

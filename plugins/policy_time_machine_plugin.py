@@ -20,7 +20,7 @@ from pathlib import Path
 
 from airflow.plugins_manager import AirflowPlugin
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from ptm import report
 
@@ -90,6 +90,57 @@ def conflicts(domain: str) -> list[dict]:
 @app.get("/api/precedents/{domain}")
 def precedents(domain: str) -> list[dict]:
     return found(report.precedents, domain)
+
+
+@app.get("/api/deviations/{domain}/{version}")
+def deviations(domain: str, version: str,
+               limit: int = Query(default=200, ge=1, le=500)) -> dict:
+    """Recorded outcomes the policy in force already disagreed with."""
+    return found(report.deviations, domain, version, limit)
+
+
+@app.get("/api/precedent-check/{domain}/{version}")
+def precedent_check(domain: str, version: str) -> dict:
+    """Which precedents this policy reverses, and which the status quo already does."""
+    return found(report.precedent_check, domain, version)
+
+
+@app.get("/api/thresholds/{domain}/{version}")
+def thresholds(domain: str, version: str) -> list[dict]:
+    """The numeric dials in this version's offline rules that a sweep can move."""
+    return found(report.thresholds, domain, version)
+
+
+@app.get("/api/sweep/{domain}/{version}")
+def sweep(domain: str, version: str,
+          field: str = Query(..., min_length=1, max_length=64),
+          values: str = Query(..., min_length=1, max_length=256),
+          clause: str = Query(default="", max_length=16)) -> dict:
+    """Re-run the replay at each candidate threshold. ``values`` is comma-separated."""
+    return found(report.sweep, domain, version, field, values, clause)
+
+
+@app.get("/api/export/{domain}/{version}.json")
+def export_json(domain: str, version: str) -> JSONResponse:
+    """Everything the Explorer shows, in one file, with the caveats attached."""
+    bundle = found(report.export_bundle, domain, version)
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition":
+                 f'attachment; filename="ptm-{domain}-{version}.json"'},
+    )
+
+
+@app.get("/api/export/{domain}/{version}.csv")
+def export_csv(domain: str, version: str) -> PlainTextResponse:
+    """The flip set as CSV, for the spreadsheet the decision gets argued in."""
+    body = found(report.flips_csv, domain, version)
+    return PlainTextResponse(
+        body,
+        media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="ptm-{domain}-{version}-flips.csv"'},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -37,6 +37,14 @@ review:
   below_confidence: 0.75
   above_impact: 400
   always_review_directions: [loosening]
+  # Deviations are the largest flips by money and would otherwise take the
+  # whole queue, leaving the proposal itself unreviewed. Two of the eight
+  # slots is enough to keep settling them without crowding it out.
+  max_deviation_reviews: 2
+  # Keep flips the judge would not reproduce out of the human queue. Needs a
+  # confirmation pass (judge_stability with target=flips); with nothing
+  # measured, nothing is excluded.
+  exclude_unstable: true
 
 # Who the change lands on. grade is the point-in-time fact, so this segment is
 # resolved as of each claim's own date - not as of today.

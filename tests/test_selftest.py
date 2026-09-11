@@ -42,7 +42,32 @@ class TestWholeLoop:
 
     def test_the_gate_catches_the_reversal(self, output):
         assert "GATE FAILS" in output
-        assert number_before(output, "violation(s)") == 3
+        assert number_before(output, "violation(s)") == 2
+
+    def test_the_gate_separates_what_the_proposal_introduced(self, output):
+        """A reversal the policy in force already makes is not v2's doing.
+
+        The fixture's reviewer sides with history on the big tightenings, and
+        every tightening in the human queue is a deviation - a case v1 decides
+        the same way v2 does. So v2 introduces nothing here, and saying so is
+        the difference between a gate that informs and one that just alarms.
+        """
+        assert "0 introduced by v2" in output
+        assert "every reversal is one policy v1 already makes" in output
+
+    def test_reserves_most_of_the_human_budget_for_the_proposal(self, output):
+        """Deviations are the biggest flips by money and would otherwise take
+        the whole queue, leaving the proposal itself unreviewed."""
+        match = re.search(r"\((\d+) caused by v2, (\d+) pre-existing deviations\)", output)
+        assert match, output
+        caused, deviations = int(match.group(1)), int(match.group(2))
+        assert caused + deviations == 8
+        assert deviations <= 2, "the deviation budget is capped at max_deviation_reviews"
+        assert caused >= 6
+
+    def test_reports_the_deviations_it_did_not_queue(self, output):
+        """Capping them in the queue must not mean hiding them."""
+        assert "38 recorded outcomes disagree with policy v1" in output
 
     def test_attributes_every_change_to_something(self, output):
         from ptm.diff import UNEXPLAINED
@@ -66,6 +91,27 @@ class TestWholeLoop:
 
     def test_measures_the_judge_noise_floor(self, output):
         assert "disagreement rate" in output
+
+    def test_segment_totals_match_the_headline(self, output):
+        """The blast radius denominators are the same 600 cases as the headline.
+
+        Runs overlap by design, and the pre-aggregated per-run rows cannot be
+        summed without counting a case once per run that saw it.
+        """
+        from ptm import report
+
+        summary = report.summary("expenses", "v2")
+        segments = report.segments("expenses", "v2")
+        for field in {r["field"] for r in segments}:
+            rows = [r for r in segments if r["field"] == field]
+            assert sum(r["cases"] for r in rows) == summary["cases"], field
+            assert sum(r["flips"] for r in rows) == summary["flips"], field
+
+    def test_confirms_flips_before_a_human_rules_on_them(self, output):
+        """An error bar on the whole replay does not say whether this flip is
+        real, and precedent is permanent."""
+        assert "re-judged 25 flips 3x each" in output
+        assert "25 reproduced, 0 did not" in output
 
     def test_is_ascii_only(self, output):
         """Windows consoles use cp1252, where a stray en dash aborts the demo."""

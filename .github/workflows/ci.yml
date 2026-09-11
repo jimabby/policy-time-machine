@@ -38,6 +38,18 @@ jobs:
           PTM_DB: ./include/ptm.db
           PTM_OFFLINE: "1"
 
+      # Attribution stops at "clause 1.1 moves 48 decisions". This is the step
+      # after it, and it runs here because it is pure computation over the
+      # shipped fixture - no model, no key, no bill.
+      - name: Threshold sweep
+        run: |
+          python -m ptm.sweep expenses v2
+          python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
   dags:
     name: DAGs parse under Airflow 3.1
     runs-on: ubuntu-latest

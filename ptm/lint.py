@@ -27,7 +27,7 @@ import sys
 from dataclasses import dataclass
 
 from .config import DomainConfig, available_domains, load_domain
-from .judge import _SAFE
+from .judge import SAFE_BUILTINS, SAFE_NAMES
 
 
 @dataclass
@@ -73,7 +73,7 @@ def _names_in(expression: str) -> set[str]:
     tree = ast.parse(expression, mode="eval")
     return {
         node.id for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id not in _SAFE
+        if isinstance(node, ast.Name) and node.id not in SAFE_NAMES
     }
 
 
@@ -113,11 +113,26 @@ def check_domain(name: str) -> list[Problem]:
         if field not in known:
             err("conflicts.key", f"{field!r} is not a case field; conflict detection would "
                                  f"never match two precedents")
-        elif field not in rendered:
-            # Conflict detection reads the stored case record, which never
-            # contains the hydrated point-in-time fact.
-            warn("conflicts.key", f"{field!r} is a point-in-time fact, not part of the case "
-                                  f"record, so it will read as 'unknown' for every precedent")
+        elif field == domain.pit_field:
+            # Tested against pit_field directly, not against the template. A
+            # pit_field absent from the template is already an error above, so
+            # a "in the payload but not rendered" test could never fire and
+            # this check silently passed every domain it was written to catch.
+            err("conflicts.key", f"{field!r} is the point-in-time fact, which load_cases "
+                                 f"merges in per case and which is not part of the stored "
+                                 f"case record. Conflict detection compares cases as filed, "
+                                 f"so this reads as 'unknown' for every precedent and "
+                                 f"coarsens every signature")
+
+    # A payload field named like a helper shadows it during name resolution, so
+    # a rule calling that helper silently stops working - and offline_verdict
+    # swallows the resulting exception, which is the failure mode this whole
+    # lint exists for.
+    shadowed = sorted(known & set(SAFE_BUILTINS))
+    if shadowed:
+        warn("case_template", f"field(s) {shadowed} shadow the rule helpers of the same "
+                              f"name; a 'when' expression calling one would silently never "
+                              f"match")
     if not 0.0 <= domain.review.below_confidence <= 1.0:
         err("review", f"below_confidence {domain.review.below_confidence} is outside 0..1")
     if domain.review.max_reviews < 1:

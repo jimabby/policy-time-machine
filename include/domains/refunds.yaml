@@ -31,12 +31,14 @@ review:
   below_confidence: 0.75
   above_impact: 300
   always_review_directions: [loosening]
+  max_deviation_reviews: 2
+  exclude_unstable: true
 
 # tier is the point-in-time fact here, captured as of the cancellation date.
 segment_fields: [reason, tier]
 
 conflicts:
-  key: [reason, documentation, tier, outstanding_balance_gbp]
+  key: [reason, documentation, contract_months, outstanding_balance_gbp]
   impact_band: 200
 
 offline_rules:

@@ -100,6 +100,25 @@ def select_for_review(flips_: list[Flip], domain: DomainConfig) -> list[Flip]:
     Humans are the scarcest resource in this system, so spend them on the
     cases where the judge was unsure, the money is large, or the change makes
     the organisation more permissive than it chose to be.
+
+    Two things then narrow that list further, and both exist because the
+    obvious ranking - straight by impact - spends the budget badly:
+
+    **Unconfirmed flips are dropped.** A flip the judge will not reproduce when
+    asked again is the model changing its mind, not the policy moving. Turning
+    one into permanent precedent writes noise into the only durable artefact
+    this system has. Flips are only excluded once something has actually
+    measured them (see :mod:`ptm.stability`); an unmeasured flip is not assumed
+    guilty.
+
+    **Deviations get a reserved minority of the slots, not the top of the
+    list.** A deviation is a case both policies decide the same way, so the
+    proposal did not cause it - it is a finding about the reviewers. They are
+    reliably the largest flips by money, so ranking on impact alone lets them
+    take most of the queue and the resulting precedents then fail the gate for
+    the candidate, which had nothing to do with them. They still deserve a
+    couple of slots, because the ruling settles a case the policy *already* in
+    force gets wrong.
     """
     r = domain.review
     candidates = [
@@ -108,8 +127,51 @@ def select_for_review(flips_: list[Flip], domain: DomainConfig) -> list[Flip]:
         or (r.above_impact and f.impact >= r.above_impact)
         or f.direction in r.always_review_directions
     ]
+    if r.exclude_unstable:
+        candidates = [f for f in candidates if f.stability != "unstable"]
     candidates.sort(key=lambda f: (-f.impact, f.confidence))
-    return candidates[: r.max_reviews]
+
+    driven = [f for f in candidates if f.attribution != DEVIATION]
+    deviating = [f for f in candidates if f.attribution == DEVIATION]
+    reserved = min(max(r.max_deviation_reviews, 0), len(deviating))
+
+    chosen = driven[: max(r.max_reviews - reserved, 0)]
+    chosen += deviating[: min(reserved, max(r.max_reviews - len(chosen), 0))]
+    # Deviations ran short of their reserve; hand the slot back rather than
+    # waste it. The cap is a ceiling on deviations, never a floor, so the
+    # backfill only ever comes from flips the proposal actually caused.
+    if len(chosen) < r.max_reviews:
+        taken = {f.case_id for f in chosen}
+        chosen += [f for f in driven if f.case_id not in taken][: r.max_reviews - len(chosen)]
+    chosen.sort(key=lambda f: (-f.impact, f.confidence))
+    return chosen
+
+
+def deviations(flips_: list[Flip]) -> list[Flip]:
+    """Flips both policies agree on: a reviewer-consistency finding.
+
+    These are not the proposal's doing and are reported separately from it, but
+    they are not noise either - each one is a decision the rulebook already in
+    force would have made differently.
+    """
+    return sorted((f for f in flips_ if f.attribution == DEVIATION),
+                  key=lambda f: -f.impact)
+
+
+def case_segment_rows(cases: list[Case], domain: DomainConfig) -> list[dict]:
+    """One row per (case, segment field), for :func:`ptm.store.save_replay`.
+
+    Recorded per case rather than pre-aggregated so overlapping runs replace
+    each other instead of both counting. Values come from the hydrated payload,
+    so a segment on a point-in-time fact is captured as of the decision date.
+    """
+    if not domain.segment_fields:
+        return []
+    return [
+        {"case_id": case.case_id, "field": field, "value": value}
+        for case in cases
+        for field, value in domain.segments_of(case.payload).items()
+    ]
 
 
 def precedent_violations(verdicts: dict[str, Verdict], precedents: list[Precedent]) -> list[dict]:

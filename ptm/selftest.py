@@ -29,7 +29,7 @@ def month_windows(start: datetime, end: datetime):
 
 
 def main(domain_name: str = "expenses", version: str = "v2") -> None:
-    print(f"seeding ... {seed_domain(domain_name)}")
+    print(f"seeding ... {seed_domain(domain_name, force=True)}")
     domain = load_domain(domain_name)
     unit = domain.impact_unit
     baseline_version = domain.in_force
@@ -56,6 +56,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
         store.save_replay(run_id, domain_name, version, "actual", len(cases), found,
                           s["net_impact"], verdicts,
                           segments=diff.segment_stats(cases, found, domain),
+                          case_segments=diff.case_segment_rows(cases, domain),
                           ledger=cost.zero(), baseline_version=baseline_version,
                           baseline_verdicts=baseline)
         total_cases += len(cases)
@@ -105,9 +106,34 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
           f"{forecast['estimated_cost_usd'] * 2:,.2f}, which is what buys the "
           f"attribution above.")
 
+    # --- confirm the flips before anyone rules on them ---------------------
+    # What judge_stability_<domain> does with target=flips. An error bar on the
+    # whole replay does not tell you whether *this* flip is real, and precedent
+    # is permanent - a verdict the judge will not repeat must not become one.
+    by_id = {c.case_id: c for c in all_cases}
+    top = stability.flips_to_confirm(all_flips, 25)
+    repeats = 3
+    confirm_samples = [
+        {"case_id": f.case_id, "sample_idx": i,
+         **offline_verdict(by_id[f.case_id], domain, version)
+         .model_dump(include={"outcome", "confidence"})}
+        for f in top for i in range(repeats)
+    ]
+    confirmations = stability.confirm(
+        confirm_samples, {f.case_id: f.new_outcome for f in top})
+    store.save_flip_stability(domain_name, version, confirmations)
+    tags = {c.case_id: ("stable" if c.stable else "unstable") for c in confirmations}
+    for f in all_flips:
+        f.stability = tags.get(f.case_id, "")
+    print()
+    print(stability.describe_confirmations(confirmations))
+
     # --- what adjudicate_<domain> does, with a human at the keyboard --------
     contested = diff.select_for_review(all_flips, domain)
-    print(f"\n{len(contested)} flips routed to a human out of {len(all_flips)}:")
+    sent_dev = [f for f in contested if f.attribution == diff.DEVIATION]
+    print(f"\n{len(contested)} flips routed to a human out of {len(all_flips)} "
+          f"({len(contested) - len(sent_dev)} caused by {version}, "
+          f"{len(sent_dev)} pre-existing deviations):")
     for f in contested:
         print(f"  {f.case_id}  {f.actual_outcome} -> {f.new_outcome}  "
               f"({f.direction}, {f.attribution or '-'}, {unit} {f.impact:,.0f}, "
@@ -124,6 +150,19 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     store.mark_reviewed(domain_name, version, [f.case_id for f in contested])
     print(f"\n{len(contested)} precedents established")
 
+    # --- the deviations, reported separately from the proposal -------------
+    dev = diff.deviations(all_flips)
+    if dev:
+        print(f"\nseparately: {len(dev)} recorded outcomes disagree with policy "
+              f"{baseline_version}, which is in force today. Not caused by {version}, "
+              f"but worth someone's attention:")
+        for f in dev[:5]:
+            print(f"  {f.case_id}  recorded {f.actual_outcome}, both policies say "
+                  f"{f.new_outcome}  ({unit} {f.impact:,.0f})")
+        if len(dev) > 5:
+            print(f"  ... and {len(dev) - 5} more, worth {unit} "
+                  f"{sum(f.impact for f in dev[5:]):,.0f} between them")
+
     # --- is the precedent set consistent with itself? ----------------------
     conflicts = diff.precedent_conflicts(store.precedents_with_payload(domain_name), domain)
     print(f"\nprecedent self-consistency: {len(conflicts)} conflict(s)")
@@ -134,16 +173,37 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
 
     # --- what precedent_gate_<domain> does ---------------------------------
     precedents = store.load_precedents(domain_name)
-    ids = {p.case_id for p in precedents}
-    cases = [c for c in store.load_cases(domain_name, until=datetime.now()) if c.case_id in ids]
+    ids = [p.case_id for p in precedents]
+    # By id, not "load everything and filter": a default limit truncating the
+    # set would make the gate check fewer precedents than exist and still pass.
+    cases = store.load_cases(domain_name, until=datetime.now(), case_ids=ids)
+    assert len(cases) == len(ids), "the gate would silently skip a precedent"
     verdicts = {c.case_id: offline_verdict(c, domain, version) for c in cases}
     violations = diff.precedent_violations(verdicts, precedents)
+    # The same question asked of the policy already in force: three violations
+    # means something very different when the status quo already has three.
+    in_force = {c.case_id: offline_verdict(c, domain, baseline_version) for c in cases}
+    pre_existing = {v["case_id"] for v in diff.precedent_violations(in_force, precedents)}
+    introduced = [v for v in violations if v["case_id"] not in pre_existing]
     print(f"\ngate: policy {version} vs {len(precedents)} precedents -> {len(violations)} violation(s)")
     for v in violations:
+        also = f"  (so does {baseline_version})" if v["case_id"] in pre_existing else ""
         print(f"  {v['case_id']}: {v['ruled_by']} ruled '{v['established_outcome']}', "
-              f"{version} gives '{v['proposed_outcome']}'")
-    print("\nGATE FAILS - policy would reverse a human ruling." if violations
-          else "\nGATE PASSES.")
+              f"{version} gives '{v['proposed_outcome']}'{also}")
+    print(f"  {len(introduced)} introduced by {version}; "
+          f"{len(violations) - len(introduced)} the policy in force ({baseline_version}) "
+          f"already reverses")
+    if not violations:
+        print("\nGATE PASSES.")
+    elif introduced:
+        print(f"\nGATE FAILS - {version} reverses {len(introduced)} human ruling(s) that "
+              f"{baseline_version} does not.")
+    else:
+        # Worth distinguishing. The proposal broke nothing the status quo had
+        # not broken already, and charging it for these would be the same
+        # mistake as charging it for the deviations above.
+        print(f"\nGATE FAILS - but every reversal is one policy {baseline_version} already "
+              f"makes. These rulings contradict the status quo, not {version} specifically.")
 
     # --- what judge_stability_<domain> does --------------------------------
     picked = stability.sample_cases(all_cases, 25)

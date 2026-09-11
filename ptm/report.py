@@ -11,10 +11,15 @@ into a 404. Nothing here writes.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+from datetime import datetime
 
 from . import cost, diff, store
+from . import sweep as sweep_engine
 from .config import JUDGE_MODEL, DomainConfig, available_domains, load_domain
+from .models import Flip, Verdict
 
 
 def _domain(name: str) -> DomainConfig:
@@ -90,6 +95,195 @@ def summary(domain: str, version: str) -> dict:
         "baseline_versions": sorted(b["baseline_version"] for b in baselines),
         "precedent_conflicts": len(conflicts(domain)),
         "stability": store.latest_stability(domain, version),
+        "flip_confirmation": confirmation_summary(domain, version),
+    }
+
+
+def confirmation_summary(domain: str, version: str) -> dict:
+    """How much of the flip set has been re-judged, and how much of it held.
+
+    Reported even when nothing has been measured, because "not measured" is the
+    honest answer and an absent field reads like a clean bill of health.
+    """
+    measured = store.flip_stability(domain, version)
+    if not measured:
+        return {"measured": 0, "stable": 0, "unstable": 0,
+                "hint": f"run judge_stability_{domain} with target=flips to put an error "
+                        f"bar on individual flips before a human rules on them"}
+    unstable = [r for r in measured.values() if not r["stable"]]
+    return {
+        "measured": len(measured),
+        "stable": len(measured) - len(unstable),
+        "unstable": len(unstable),
+        "unstable_cases": sorted(r["case_id"] for r in unstable),
+    }
+
+
+def _flip_models(domain: str, version: str) -> list[Flip]:
+    """The deduplicated flip rows as :class:`~ptm.models.Flip` objects."""
+    out = []
+    for r in store.flips_for_policy(domain, version):
+        out.append(Flip(
+            case_id=r["case_id"], decided_at=datetime.fromisoformat(r["decided_at"]),
+            actual_outcome=r["actual_outcome"], new_outcome=r["new_outcome"],
+            rationale=r["rationale"], confidence=r["confidence"],
+            policy_clause=r["policy_clause"] or "", impact=r["impact"],
+            payload=json.loads(r["payload"]), direction=r["direction"],
+            segments=json.loads(r["segments"] or "{}"),
+            attribution=r["attribution"] or "",
+            baseline_outcome=r["baseline_outcome"] or "",
+            stability=r.get("stability") or "",
+        ))
+    return out
+
+
+def deviations(domain: str, version: str, limit: int = 200) -> dict:
+    """Recorded outcomes that disagree with the policy already in force.
+
+    Separated from the proposal's own impact because they are a different
+    finding with a different owner: the proposal did not cause these, and the
+    rulebook already in force would not have produced them either - somebody
+    departed from it. Folding them into "the impact of v2" overstates v2;
+    dropping them loses a real and quantified problem.
+    """
+    config = _checked(domain, version)
+    rows = [f for f in _flip_models(domain, version) if f.attribution == diff.DEVIATION]
+    rows.sort(key=lambda f: -f.impact)
+    return {
+        "domain": domain,
+        "version": version,
+        "in_force": config.in_force,
+        "impact_unit": config.impact_unit,
+        "count": len(rows),
+        "total_impact": round(sum(f.impact for f in rows), 2),
+        "cases": [f.model_dump(mode="json", exclude={"payload"}) for f in rows[:limit]],
+    }
+
+
+def precedent_check(domain: str, version: str) -> dict:
+    """Which precedents this policy reverses - and which the status quo already does.
+
+    Read from stored verdicts rather than by re-judging, so it costs nothing.
+    A precedent with no verdict on file is reported as *unchecked* rather than
+    silently passing, which is the exact failure the gate exists to prevent.
+    """
+    config = _checked(domain, version)
+    precedents = store.load_precedents(domain)
+    if not precedents:
+        return {"precedents": 0, "checked": 0, "unchecked": [], "violations": [],
+                "in_force": config.in_force, "in_force_violations": [], "introduced": [],
+                "hint": "no precedents yet; run the adjudication DAG"}
+
+    wanted = {p.case_id for p in precedents}
+
+    def under(version_name: str):
+        stored = store.latest_verdicts(domain, version_name)
+        verdicts = {
+            case_id: Verdict(outcome=row["outcome"], rationale=row["rationale"],
+                             confidence=row["confidence"],
+                             policy_clause=row["policy_clause"] or "")
+            for case_id, row in stored.items() if case_id in wanted
+        }
+        missing = sorted(wanted - set(verdicts))
+        return diff.precedent_violations(verdicts, precedents), missing
+
+    found, unchecked = under(version)
+    in_force_found = found if config.in_force == version else under(config.in_force)[0]
+    pre_existing = {v["case_id"] for v in in_force_found}
+    return {
+        "precedents": len(precedents),
+        "checked": len(precedents) - len(unchecked),
+        "unchecked": unchecked,
+        "violations": found,
+        "in_force": config.in_force,
+        "in_force_violations": in_force_found,
+        # The honest headline: what this proposal is responsible for breaking.
+        "introduced": [v for v in found if v["case_id"] not in pre_existing],
+    }
+
+
+def thresholds(domain: str, version: str) -> list[dict]:
+    """The numeric dials a sweep can move in this version's offline rules."""
+    config = _checked(domain, version)
+    return sweep_engine.thresholds(config, version)
+
+
+def sweep(domain: str, version: str, field: str, values: list[float] | str,
+          clause: str = "") -> dict:
+    """Re-run the replay at each candidate threshold. See :mod:`ptm.sweep`.
+
+    ``values`` may be a list or the raw comma-separated string a query string
+    carries. Parsing it here rather than in the plugin is what keeps the plugin
+    to routing alone, and therefore keeps this endpoint covered by a test suite
+    that does not install FastAPI.
+    """
+    _checked(domain, version)
+    if isinstance(values, str):
+        try:
+            values = sweep_engine.parse_values(values)
+        except ValueError as exc:
+            raise LookupError(f"values must be comma-separated numbers: {exc}") from exc
+    if not values:
+        raise LookupError("a sweep needs at least one value")
+    if len(values) > 40:
+        raise LookupError(f"{len(values)} values is more than one sweep will run; cap is 40")
+    return sweep_engine.sweep(domain, version, field, values, clause=clause)
+
+
+FLIP_COLUMNS = ["case_id", "decided_at", "actual_outcome", "new_outcome",
+                "baseline_outcome", "direction", "attribution", "policy_clause",
+                "impact", "confidence", "stability", "reviewed", "precedent",
+                "rationale", "actual_rationale"]
+
+
+def flips_csv(domain: str, version: str, limit: int = 5000) -> str:
+    """The flip set as CSV, for the spreadsheet the decision gets argued in."""
+    config = _checked(domain, version)
+    rows = flips(domain, version, limit=limit)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=[*FLIP_COLUMNS, *config.segment_fields],
+                            extrasaction="ignore", lineterminator="\n")
+    writer.writeheader()
+    for r in rows:
+        writer.writerow({**r, **{f: r["segments"].get(f, "") for f in config.segment_fields}})
+    return buffer.getvalue()
+
+
+def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
+    """Everything the Diff Explorer shows, in one downloadable object.
+
+    A policy decision is argued about away from the dashboard, so the numbers
+    have to be able to leave it - together, and with the caveats attached
+    rather than stripped off by whoever pastes them into a slide.
+    """
+    config = _checked(domain, version)
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "domain": domain,
+        "label": config.label,
+        "policy_version": version,
+        "in_force": config.in_force,
+        "impact_unit": config.impact_unit,
+        "summary": summary(domain, version),
+        "clauses": clauses(domain, version),
+        "segments": segments(domain, version),
+        "deviations": deviations(domain, version),
+        "precedent_check": precedent_check(domain, version),
+        "conflicts": conflicts(domain),
+        "precedents": precedents(domain),
+        "cost": cost_report(domain, version),
+        "stability": stability(domain, version),
+        "flips": flips(domain, version, limit=limit),
+        "caveats": [
+            "Impact is the value of the cases whose outcome changes, not a cash-flow "
+            "forecast.",
+            "Cost figures are estimated from prompt size at a fixed 4 characters per "
+            "token, not read back from the vendor.",
+            "Flips attributed to " + diff.DEVIATION + " are cases the policy already in "
+            "force decided differently too, and are not caused by this proposal.",
+            "A flip rate quoted without the judge stability figure is quoted without an "
+            "error bar.",
+        ],
     }
 
 
@@ -98,7 +292,7 @@ def flips(domain: str, version: str, limit: int = 200) -> list[dict]:
     rows = store.query(
         """SELECT f.case_id, f.actual_outcome, f.new_outcome, f.direction, f.impact,
                   f.confidence, f.rationale, f.reviewed, f.policy_clause, f.attribution,
-                  f.baseline_outcome, f.segments, c.decided_at, c.payload,
+                  f.baseline_outcome, f.segments, f.stability, c.decided_at, c.payload,
                   c.actual_rationale,
                   (SELECT correct_outcome FROM precedents p
                     WHERE p.case_id = f.case_id AND p.domain = f.domain) AS precedent

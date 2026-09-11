@@ -224,3 +224,113 @@ class TestAggregations:
         summary = diff.summarise([], 0, expenses)
         assert summary["flip_rate"] == 0.0
         assert summary["flips"] == 0
+
+
+class TestReviewBudget:
+    """Who gets the scarcest resource in the system.
+
+    Deviations are reliably the largest flips by money, so ranking on impact
+    alone hands them most of the queue - and the precedents that come back then
+    fail the gate for a candidate that had nothing to do with them.
+    """
+
+    def flip(self, case_id, impact, attribution="clause 1.1", stability="",
+             direction="loosening"):
+        return diff.Flip(case_id=case_id, decided_at=datetime(2025, 1, 1),
+                         actual_outcome="deny", new_outcome="approve", rationale="r",
+                         confidence=0.9, policy_clause="1.1", impact=impact,
+                         direction=direction, attribution=attribution,
+                         stability=stability)
+
+    def domain_with(self, expenses, **review):
+        d = expenses.model_copy(deep=True)
+        for key, value in review.items():
+            setattr(d.review, key, value)
+        return d
+
+    def test_deviations_do_not_take_the_whole_queue(self, expenses):
+        """The exact failure: the three biggest flips are all deviations."""
+        flips = [self.flip(f"dev{i}", 10_000 - i, attribution=diff.DEVIATION)
+                 for i in range(8)]
+        flips += [self.flip(f"pol{i}", 100 - i) for i in range(8)]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=8))
+        sent_deviations = [f for f in chosen if f.attribution == diff.DEVIATION]
+        assert len(chosen) == 8
+        assert len(sent_deviations) == expenses.review.max_deviation_reviews
+
+    def test_deviations_still_get_their_reserved_slots(self, expenses):
+        """Capping them is not the same as hiding them: a deviation ruling
+        settles a case the policy already in force gets wrong."""
+        flips = [self.flip(f"pol{i}", 1000 - i) for i in range(20)]
+        flips += [self.flip("dev0", 5, attribution=diff.DEVIATION)]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=8))
+        assert "dev0" in {f.case_id for f in chosen}
+
+    def test_the_budget_is_filled_even_when_one_side_runs_short(self, expenses):
+        flips = [self.flip(f"pol{i}", 1000 - i) for i in range(8)]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=8))
+        assert len(chosen) == 8
+
+    def test_a_zero_cap_keeps_deviations_out_entirely(self, expenses):
+        flips = [self.flip(f"dev{i}", 10_000, attribution=diff.DEVIATION) for i in range(3)]
+        flips += [self.flip(f"pol{i}", 10 - i) for i in range(3)]
+        chosen = diff.select_for_review(
+            flips, self.domain_with(expenses, max_reviews=8, max_deviation_reviews=0))
+        assert all(f.attribution != diff.DEVIATION for f in chosen)
+
+    def test_an_unconfirmed_flip_never_reaches_a_human(self, expenses):
+        """Precedent is permanent; a verdict the judge will not reproduce must
+        not be written into it."""
+        flips = [self.flip("shaky", 9_999, stability="unstable"),
+                 self.flip("solid", 10, stability="stable")]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=8))
+        assert [f.case_id for f in chosen] == ["solid"]
+
+    def test_an_unmeasured_flip_is_not_assumed_guilty(self, expenses):
+        flips = [self.flip("never_measured", 500, stability="")]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=8))
+        assert [f.case_id for f in chosen] == ["never_measured"]
+
+    def test_the_exclusion_can_be_turned_off(self, expenses):
+        flips = [self.flip("shaky", 9_999, stability="unstable")]
+        chosen = diff.select_for_review(
+            flips, self.domain_with(expenses, exclude_unstable=False))
+        assert [f.case_id for f in chosen] == ["shaky"]
+
+    def test_still_returns_the_highest_impact_first(self, expenses):
+        flips = [self.flip("a", 10), self.flip("b", 900), self.flip("c", 50)]
+        chosen = diff.select_for_review(flips, self.domain_with(expenses, max_reviews=3))
+        assert [f.case_id for f in chosen] == ["b", "c", "a"]
+
+
+class TestDeviationReport:
+    def test_lists_only_flips_both_policies_agree_on(self, replayed):
+        rows = diff.deviations(replayed["flips"])
+        assert rows, "the fixture seeds reviewer deviation on purpose"
+        assert all(f.attribution == diff.DEVIATION for f in rows)
+
+    def test_is_ordered_by_money(self, replayed):
+        impacts = [f.impact for f in diff.deviations(replayed["flips"])]
+        assert impacts == sorted(impacts, reverse=True)
+
+    def test_and_the_rest_are_the_proposal_s_own(self, replayed):
+        total = len(replayed["flips"])
+        assert len(diff.deviations(replayed["flips"])) < total
+
+
+class TestCaseSegmentRows:
+    def test_one_row_per_case_and_field(self, replayed):
+        rows = diff.case_segment_rows(replayed["cases"], replayed["domain"])
+        expected = len(replayed["cases"]) * len(replayed["domain"].segment_fields)
+        assert len(rows) == expected
+
+    def test_captures_the_point_in_time_value(self, replayed):
+        """Segments on a slowly-changing fact are as of the decision date."""
+        rows = diff.case_segment_rows(replayed["cases"], replayed["domain"])
+        grades = {r["value"] for r in rows if r["field"] == "grade"}
+        assert len(grades) > 1, "the fixture promotes people mid-period"
+
+    def test_empty_without_declared_fields(self, replayed):
+        bare = replayed["domain"].model_copy(deep=True)
+        bare.segment_fields = []
+        assert diff.case_segment_rows(replayed["cases"], bare) == []

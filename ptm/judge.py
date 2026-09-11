@@ -8,6 +8,9 @@ gives up.
 
 from __future__ import annotations
 
+import builtins
+from typing import Any
+
 from .config import DomainConfig
 from .models import Case, Verdict
 
@@ -45,7 +48,18 @@ def build_prompt(case: Case, domain: DomainConfig, version: str) -> str:
     )
 
 
-_SAFE = {"__builtins__": {}, "abs": abs, "len": len, "min": min, "max": max, "float": float, "int": int, "str": str}
+#: Helpers a rule may call. They live in ``__builtins__`` rather than as
+#: top-level globals so the payload merged in below cannot *replace* them by
+#: accident - though a payload field of the same name still shadows one during
+#: name resolution, which is why :mod:`ptm.lint` warns about the collision.
+SAFE_BUILTINS: dict[str, Any] = {
+    name: getattr(builtins, name)
+    for name in ("abs", "len", "min", "max", "float", "int", "str", "round", "sum")
+}
+_SAFE: dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
+#: Every name an expression may use without it being a payload field. Exported
+#: for the lint, which must not report a helper call as an unknown field.
+SAFE_NAMES: frozenset[str] = frozenset(SAFE_BUILTINS) | {"__builtins__"}
 
 
 def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
@@ -53,8 +67,9 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
 
     Rules come from the domain YAML's ``offline_rules`` block; the first
     matching rule wins, otherwise the domain's first (most generous) outcome.
-    Expressions are evaluated with no builtins - this is a local demo fixture,
-    not a sandbox, so only ever point it at YAML you wrote yourself.
+    Expressions are evaluated against :data:`SAFE_BUILTINS` and nothing else -
+    this is a local demo fixture, not a sandbox, so only ever point it at YAML
+    you wrote yourself.
     """
     rules = domain.offline_rules.get(version, [])
     scope = dict(_SAFE)

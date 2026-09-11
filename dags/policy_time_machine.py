@@ -250,7 +250,14 @@ def build(domain_name: str) -> None:
             ledger = _ledger(items, version, baseline=baseline is not None)
             store.save_replay(run_id, domain_name, version, "actual", len(cases),
                               found, summary["net_impact"], by_case,
-                              segments=segments, ledger=ledger,
+                              segments=segments,
+                              # Per case as well as pre-aggregated. Manual runs
+                              # overlap backfills by design, and only the
+                              # per-case rows can be deduplicated afterwards -
+                              # summing the aggregates counts a case once per
+                              # run that saw it.
+                              case_segments=diff.case_segment_rows(cases, domain),
+                              ledger=ledger,
                               baseline_version=baseline_version if baseline else "",
                               baseline_verdicts=baseline)
 
@@ -338,10 +345,29 @@ def build(domain_name: str) -> None:
                     segments=_json.loads(r["segments"] or "{}"),
                     attribution=r["attribution"] or "",
                     baseline_outcome=r["baseline_outcome"] or "",
+                    stability=r.get("stability") or "",
                 )
                 for r in rows if not r["reviewed"]
             ]
             return [f.model_dump(mode="json") for f in diff.select_for_review(flips, domain)]
+
+        @task
+        def unconfirmed(**ctx) -> list[dict]:
+            """Flips a confirmation pass could not reproduce, reported not queued.
+
+            Keeping them out of the queue is only half the job; saying so is
+            the other half, because a flip silently dropped looks exactly like
+            a flip that never happened.
+            """
+            version = ctx["params"]["policy_version"]
+            measured = store.flip_stability(domain_name, version)
+            shaky = [r for r in measured.values() if not r["stable"]]
+            for r in sorted(shaky, key=lambda r: r["agreement"]):
+                print(f"held back {r['case_id']}: re-judging gave {r['outcomes']}, "
+                      f"the replay recorded '{r['recorded_outcome']}'")
+            print(f"{len(shaky)} flip(s) held back as unconfirmed out of "
+                  f"{len(measured)} measured")
+            return [dict(r) for r in shaky]
 
         @task
         def subjects(flips: list[dict]) -> list[str]:
@@ -369,6 +395,7 @@ def build(domain_name: str) -> None:
             return out
 
         flips = contested()
+        held_back = unconfirmed()
 
         reviews = HITLOperator.partial(
             task_id="review",
@@ -378,10 +405,26 @@ def build(domain_name: str) -> None:
         ).expand(subject=subjects(flips), body=bodies(flips))
 
         @task(outlets=[precedents_asset], trigger_rule="all_done")
-        def record(flips: list[dict], responses: list, **ctx) -> dict:
-            """Turn human answers into precedent. This is the only durable output."""
+        def record(flips: list[dict], responses: list, held_back: list[dict],
+                   **ctx) -> dict:
+            """Turn human answers into precedent. This is the only durable output.
+
+            ``all_done`` lets this run even when a review task failed or timed
+            out - but a short response list would then be zipped against the
+            full flip list positionally and file one reviewer's ruling against
+            somebody else's case. Precedent is the only thing here that cannot
+            be recomputed, so a mismatch refuses rather than guesses.
+            """
+            responses = list(responses or [])
+            if len(responses) != len(flips):
+                raise AirflowFailException(
+                    f"{len(responses)} review response(s) for {len(flips)} contested "
+                    f"flip(s). Responses are matched to cases by position, so recording "
+                    f"a partial set would attribute a ruling to the wrong case. Re-run "
+                    f"the failed review task(s) instead."
+                )
             saved = []
-            for f, resp in zip(flips, responses or []):
+            for f, resp in zip(flips, responses):
                 chosen = (resp or {}).get("chosen_options") or []
                 if not chosen:
                     continue
@@ -393,9 +436,10 @@ def build(domain_name: str) -> None:
                 ))
                 saved.append(f["case_id"])
             store.mark_reviewed(domain_name, ctx["params"]["policy_version"], saved)
-            return {"precedents_recorded": len(saved), "case_ids": saved}
+            return {"precedents_recorded": len(saved), "case_ids": saved,
+                    "held_back_unconfirmed": len(held_back)}
 
-        record(flips, reviews.output)
+        record(flips, reviews.output, held_back)
 
     adjudicate()
 
@@ -406,18 +450,53 @@ def build(domain_name: str) -> None:
         start_date=START,
         catchup=False,
         default_args=DEFAULTS,
-        params={"policy_version": policy_param},
+        params={
+            "policy_version": policy_param,
+            "baseline_version": Param(
+                domain.in_force, type=["string", "null"],
+                title="Policy in force (blank to skip)",
+                description="Judged alongside the candidate so a reversal the status quo "
+                            "already makes is not reported as this proposal's doing."),
+        },
         tags=["policy-time-machine", domain_name, "regression"],
         doc_md="Fails if the candidate policy would reverse a ruling a human already made.",
     )
     def precedent_gate():
         @task
         def precedent_cases(**ctx) -> list[dict]:
+            """Every case a human has ruled on - by id, and all of them.
+
+            Loading the whole history and filtering would be subject to
+            ``load_cases``'s default limit, so past that many cases the gate
+            would quietly judge a subset of the precedent set and pass. A
+            regression suite that silently checks less than it reports is
+            worse than no regression suite, so a missing case fails the run.
+            """
             version = ctx["params"]["policy_version"]
+            baseline_version = (ctx["params"].get("baseline_version") or "").strip()
             precedents = store.load_precedents(domain_name)
-            ids = {p.case_id for p in precedents}
-            cases = [c for c in store.load_cases(domain_name, until=pendulum.now("UTC")) if c.case_id in ids]
-            return [_item(c, domain, version) for c in cases]
+            ids = [p.case_id for p in precedents]
+            cases = store.load_cases(domain_name, until=pendulum.now("UTC"), case_ids=ids)
+            missing = sorted(set(ids) - {c.case_id for c in cases})
+            if missing:
+                raise AirflowFailException(
+                    f"{len(missing)} precedent(s) have no case on file and cannot be "
+                    f"re-judged: {missing[:10]}. The gate refuses to report a pass it "
+                    f"did not actually check."
+                )
+            print(f"re-judging all {len(cases)} precedent case(s) under policy {version}"
+                  + (f", and under {baseline_version} for comparison" if baseline_version else ""))
+            return [_item(c, domain, version, baseline_version) for c in cases]
+
+        @task
+        def gate_baseline_items(items: list[dict], **ctx) -> list[dict]:
+            """The same precedent cases under the policy in force, or none of them."""
+            return items if (ctx["params"].get("baseline_version") or "").strip() else []
+
+        @task
+        def gate_baseline_prompts(items: list[dict]) -> list[str]:
+            version = _version_from_context("baseline_version")
+            return [build_prompt(_case(i), domain, version) for i in items]
 
         @task
         def gate_prompts(items: list[dict]) -> list[str]:
@@ -450,7 +529,14 @@ def build(domain_name: str) -> None:
             def gate_judge_offline(item: dict, **ctx) -> dict:
                 return offline_verdict(_case(item), domain, ctx["params"]["policy_version"]).model_dump()
 
+            @task
+            def gate_baseline_offline(item: dict, **ctx) -> dict:
+                version = (ctx["params"].get("baseline_version") or "").strip()
+                return offline_verdict(_case(item), domain, version).model_dump()
+
             gate_verdicts = gate_judge_offline.expand(item=cases)
+            gate_baseline_verdicts = gate_baseline_offline.expand(
+                item=gate_baseline_items(cases))
         else:
             gate_verdicts = LLMOperator.partial(
                 task_id="gate_judge",
@@ -459,9 +545,17 @@ def build(domain_name: str) -> None:
                 output_type=Verdict,
                 usage_limits=UsageLimits(request_limit=3),
             ).expand(prompt=gate_prompts(cases)).output
+            gate_baseline_verdicts = LLMOperator.partial(
+                task_id="gate_judge_baseline",
+                llm_conn_id=LLM_CONN_ID,
+                system_prompt=SYSTEM_PROMPT,
+                output_type=Verdict,
+                usage_limits=UsageLimits(request_limit=3),
+            ).expand(prompt=gate_baseline_prompts(gate_baseline_items(cases))).output
 
         @task
-        def enforce(items: list[dict], verdicts: list, found_conflicts: list[dict], **ctx) -> dict:
+        def enforce(items: list[dict], verdicts: list, found_conflicts: list[dict],
+                    baseline_verdicts: list | None = None, **ctx) -> dict:
             """Fail the run if the candidate policy reverses a human ruling."""
             version = ctx["params"]["policy_version"]
             if len(verdicts) != len(items):
@@ -471,24 +565,60 @@ def build(domain_name: str) -> None:
             by_case = {i["case_id"]: _as_verdict(v) for i, v in zip(items, verdicts)}
             for verdict in by_case.values():
                 domain.validate_outcome(verdict.outcome)
-            violations = diff.precedent_violations(by_case, store.load_precedents(domain_name))
+            precedents = store.load_precedents(domain_name)
+            violations = diff.precedent_violations(by_case, precedents)
+            # Stored so the dashboard can show the gate's answer without paying
+            # to judge these cases all over again.
+            store.save_verdicts(ctx["run_id"], domain_name, version, by_case)
+
+            # The same question asked of the policy already in force. Without
+            # it, "this proposal reverses 3 rulings" reads as the proposal's
+            # fault even when the status quo reverses the same 3.
+            baseline_version = (ctx["params"].get("baseline_version") or "").strip()
+            pre_existing: set[str] = set()
+            if baseline_version and baseline_verdicts:
+                if len(baseline_verdicts) != len(items):
+                    raise AirflowFailException(
+                        f"Baseline judge returned {len(baseline_verdicts)} verdicts for "
+                        f"{len(items)} precedents; refusing to separate pre-existing "
+                        f"reversals from a partial baseline."
+                    )
+                base = {i["case_id"]: _as_verdict(v) for i, v in zip(items, baseline_verdicts)}
+                for verdict in base.values():
+                    domain.validate_outcome(verdict.outcome)
+                store.save_verdicts(ctx["run_id"] + store.BASELINE_RUN_SUFFIX,
+                                    domain_name, baseline_version, base)
+                pre_existing = {v["case_id"]
+                                for v in diff.precedent_violations(base, precedents)}
+                print(f"policy {baseline_version}, in force today, reverses "
+                      f"{len(pre_existing)} of the same {len(precedents)} precedent(s)")
+
             if violations:
+                introduced = [v for v in violations if v["case_id"] not in pre_existing]
                 lines = "\n".join(
                     f"  - {v['case_id']}: {v['ruled_by']} ruled '{v['established_outcome']}' on "
                     f"{v['established_at']}, policy {version} gives '{v['proposed_outcome']}'"
+                    + ("   (policy " + baseline_version + " reverses it too)"
+                       if v["case_id"] in pre_existing else "")
                     for v in violations
                 )
                 hint = ("\nNote: the precedent set also contains "
                         f"{len(found_conflicts)} internal conflict(s), so some violation here may "
                         "be unavoidable until two humans agree with each other."
                         ) if found_conflicts else ""
+                if pre_existing:
+                    hint += (f"\n{len(introduced)} of these are introduced by {version}; "
+                             f"{len(violations) - len(introduced)} are reversals the policy "
+                             f"in force already makes, so fixing them is a separate job "
+                             f"from this proposal.")
                 raise AirflowFailException(
                     f"Policy {version} reverses {len(violations)} established precedent(s):\n{lines}{hint}"
                 )
             return {"precedents_checked": len(by_case), "violations": 0,
+                    "in_force_violations": len(pre_existing),
                     "precedent_conflicts": len(found_conflicts)}
 
-        enforce(cases, gate_verdicts, conflicts())
+        enforce(cases, gate_verdicts, conflicts(), gate_baseline_verdicts)
 
     precedent_gate()
 
@@ -501,8 +631,20 @@ def build(domain_name: str) -> None:
         default_args=DEFAULTS,
         params={
             "policy_version": policy_param,
+            # Two questions share one fan-out. "sample" asks how noisy the
+            # judge is in general; "flips" asks whether the specific verdicts
+            # this policy is about to be judged on actually reproduce - which
+            # is the one the human queue depends on.
+            "target": Param("sample", type="string", enum=["sample", "flips"],
+                            title="What to re-judge",
+                            description="sample: cases spread across the period, for the "
+                                        "judge's overall noise floor. flips: the recorded "
+                                        "flips for this policy, to confirm each one before "
+                                        "a human is asked to rule on it."),
             "sample_cases": Param(25, type="integer", title="Cases to sample",
-                                  description="Spread across the whole period, deterministically."),
+                                  description="Spread across the whole period, deterministically. "
+                                              "With target=flips, the number of highest-impact "
+                                              "flips to confirm (0 = all of them)."),
             "samples_per_case": Param(3, type="integer", minimum=2,
                                       title="Times to judge each case"),
             "seed": Param(7, type="integer", title="Sampling seed",
@@ -527,20 +669,64 @@ def build(domain_name: str) -> None:
     def judge_stability():
         @task
         def units(**ctx) -> list[dict]:
-            """One row per (case, repeat): the fan-out this DAG measures."""
+            """One row per (case, repeat): the fan-out this DAG measures.
+
+            With ``target=flips`` the rows are the recorded flips for this
+            policy rather than a spread of history, and the point changes with
+            them: not "how noisy is this judge" but "will this particular
+            verdict survive being asked again". A flip that will not is the
+            model changing its mind, and turning one into permanent precedent
+            writes noise into the only durable artefact this system has.
+            """
             store.init_db()
             params = ctx["params"]
             version = params["policy_version"]
             repeats = max(2, int(params["samples_per_case"]))
-            cases = store.load_cases(domain_name, until=pendulum.now("UTC"))
-            if not cases:
-                raise AirflowFailException(
-                    f"no {domain_name} cases to sample; seed the history first")
-            picked = stability.sample_cases(cases, int(params["sample_cases"]),
-                                            seed=int(params["seed"]))
-            print(f"sampling {len(picked)} cases x {repeats} judgements under policy {version}")
+            target = (params.get("target") or "sample").strip()
+            wanted = int(params["sample_cases"])
+
+            if target == "flips":
+                rows = store.flips_for_policy(domain_name, version)
+                if not rows:
+                    raise AirflowFailException(
+                        f"no recorded flips for {domain_name}/{version} to confirm; "
+                        f"run replay_{domain_name} first")
+                import json as _json
+                flips = [
+                    diff.Flip(
+                        case_id=r["case_id"], decided_at=pendulum.parse(r["decided_at"]),
+                        actual_outcome=r["actual_outcome"], new_outcome=r["new_outcome"],
+                        rationale=r["rationale"], confidence=r["confidence"],
+                        policy_clause=r["policy_clause"] or "", impact=r["impact"],
+                        payload=_json.loads(r["payload"]), direction=r["direction"],
+                    )
+                    for r in rows
+                ]
+                chosen = stability.flips_to_confirm(flips, wanted)
+                ids = [f.case_id for f in chosen]
+                # By id, so the confirmation set is exactly the flips selected
+                # rather than whatever a default limit happened to keep.
+                picked = store.load_cases(domain_name, until=pendulum.now("UTC"),
+                                          case_ids=ids)
+                if len(picked) != len(ids):
+                    raise AirflowFailException(
+                        f"{len(ids) - len(picked)} flipped case(s) could not be loaded; "
+                        f"refusing to report a confirmation pass over a subset.")
+                recorded = {f.case_id: f.new_outcome for f in chosen}
+                print(f"confirming {len(picked)} recorded flips x {repeats} judgements "
+                      f"under policy {version}")
+            else:
+                cases = store.load_cases(domain_name, until=pendulum.now("UTC"))
+                if not cases:
+                    raise AirflowFailException(
+                        f"no {domain_name} cases to sample; seed the history first")
+                picked = stability.sample_cases(cases, wanted, seed=int(params["seed"]))
+                recorded = {}
+                print(f"sampling {len(picked)} cases x {repeats} judgements under policy {version}")
+
             return [
-                {**_item(c, domain, version), "sample_idx": i}
+                {**_item(c, domain, version), "sample_idx": i,
+                 "recorded_outcome": recorded.get(c.case_id, "")}
                 for c in picked for i in range(repeats)
             ]
 
@@ -591,6 +777,14 @@ def build(domain_name: str) -> None:
             store.save_stability(ctx["run_id"], domain_name, version,
                                  samples, result.model_dump(), ledger)
 
+            confirmed = 0
+            if (params.get("target") or "sample").strip() == "flips":
+                recorded = {r["case_id"]: r.get("recorded_outcome", "") for r in rows}
+                confirmations = stability.confirm(samples, recorded)
+                confirmed = store.save_flip_stability(domain_name, version, confirmations,
+                                                      run_id=ctx["run_id"])
+                print(stability.describe_confirmations(confirmations))
+
             print(stability.describe(result))
             for row in result.unstable[:10]:
                 print(f"  {row['case_id']}: {row['outcomes']} "
@@ -607,7 +801,9 @@ def build(domain_name: str) -> None:
                     f"cases, above the {ceiling:.1%} ceiling. Flip rates measured with this "
                     f"judge are not trustworthy enough to act on."
                 )
-            return {**result.model_dump(exclude={"unstable"}), **ledger}
+            return {**result.model_dump(exclude={"unstable"}), **ledger,
+                    "target": (params.get("target") or "sample").strip(),
+                    "flips_confirmed": confirmed}
 
         report(rows, sampled)
 

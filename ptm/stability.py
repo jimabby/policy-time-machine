@@ -22,7 +22,7 @@ from __future__ import annotations
 import random
 from collections import Counter
 
-from .models import Case, StabilityReport
+from .models import Case, Flip, FlipConfirmation, StabilityReport
 
 
 def sample_cases(cases: list[Case], n: int, seed: int = 7) -> list[Case]:
@@ -45,6 +45,72 @@ def sample_cases(cases: list[Case], n: int, seed: int = 7) -> list[Case]:
         lo, hi = int(i * step), max(int(i * step) + 1, int((i + 1) * step))
         picked.append(ordered[rng.randrange(lo, min(hi, len(ordered)))])
     return picked
+
+
+def flips_to_confirm(flips_: list[Flip], n: int) -> list[Flip]:
+    """The flips worth paying to re-judge: the ones that will be acted on.
+
+    Ordered by money at stake, because a flip nobody will ever look at does not
+    need an error bar. ``n <= 0`` means all of them.
+    """
+    ordered = sorted(flips_, key=lambda f: (-f.impact, f.case_id))
+    return ordered if n <= 0 else ordered[:n]
+
+
+def confirm(samples: list[dict], recorded: dict[str, str]) -> list[FlipConfirmation]:
+    """Did re-judging reproduce each recorded flip?
+
+    ``samples`` are the same ``case_id``/``outcome``/``confidence`` dicts
+    :func:`analyse` consumes; ``recorded`` maps a case to the outcome the replay
+    filed for it.
+
+    A flip counts as stable only when every sample agrees *and* agrees with what
+    was recorded. The second half matters: a judge can be perfectly
+    self-consistent on re-judging and still land somewhere other than the run
+    that produced the flip, and treating that as confirmation would launder a
+    contradiction into a precedent.
+    """
+    by_case: dict[str, list[dict]] = {}
+    for s in samples:
+        by_case.setdefault(s["case_id"], []).append(s)
+
+    out: list[FlipConfirmation] = []
+    for case_id, group in sorted(by_case.items()):
+        outcomes = Counter(s["outcome"] for s in group)
+        modal, modal_n = outcomes.most_common(1)[0]
+        was = recorded.get(case_id, "")
+        out.append(FlipConfirmation(
+            case_id=case_id,
+            samples=len(group),
+            outcomes=dict(outcomes),
+            modal_outcome=modal,
+            agreement=round(modal_n / len(group), 3),
+            stable=len(outcomes) == 1 and (not was or modal == was),
+            recorded_outcome=was,
+        ))
+    # Least agreement first: the flips you can trust least, first.
+    out.sort(key=lambda c: (c.stable, c.agreement, c.case_id))
+    return out
+
+
+def describe_confirmations(confirmations: list[FlipConfirmation]) -> str:
+    """A reading of a confirmation pass, for logs and the DAG's return."""
+    if not confirmations:
+        return "no flips re-judged; nothing to confirm."
+    bad = [c for c in confirmations if not c.stable]
+    lines = [f"re-judged {len(confirmations)} flips "
+             f"{confirmations[0].samples}x each under the same policy",
+             f"  {len(confirmations) - len(bad)} reproduced, {len(bad)} did not"]
+    if bad:
+        lines.append("  the ones that did not are the judge changing its mind, not the "
+                     "policy moving, and are held back from the human queue:")
+        for c in bad[:10]:
+            detail = ", ".join(f"{o}x{n}" for o, n in sorted(c.outcomes.items()))
+            recorded = f", recorded '{c.recorded_outcome}'" if c.recorded_outcome else ""
+            lines.append(f"    {c.case_id}: {detail}{recorded}")
+    else:
+        lines.append("  every flip reproduced; the queue is safe to act on.")
+    return "\n".join(lines)
 
 
 def analyse(samples: list[dict], samples_per_case: int) -> StabilityReport:
