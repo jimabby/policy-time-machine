@@ -283,7 +283,7 @@ No Airflow, no API key, whole loop in about a second:
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest
-make test      # lint + 316 tests + the whole loop end to end
+make test      # lint + 316 engine tests + the whole loop end to end
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
 ```
@@ -358,7 +358,7 @@ ptm/cost.py                     what a replay costs, and will cost
 ptm/lint.py                     domain YAML vs the policies it claims to implement
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
-tests/                          316 tests; only the 10 DAG-parse ones need Airflow
+tests/                          383 tests; the engine's 316 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 ```
 
@@ -378,9 +378,16 @@ Built and run against `apache/airflow:3.1.0` with
 `apache-airflow-providers-standard`. Confirmed in-container:
 
 - all eight DAGs parse with **zero import errors**, in both offline and
-  LLM-backed configurations — [CI checks both](.github/workflows/ci.yml);
+  LLM-backed configurations — [CI checks both](.github/workflows/ci.yml), and
+  fails if it cannot (`PTM_REQUIRE_AIRFLOW`), because a DAG job that quietly
+  skips its own tests is worse than no DAG job;
 - the plugin registers (`airflow plugins` lists its FastAPI app and external
-  view) and serves at `/ptm/`;
+  view) and serves at `/ptm/`. Its routes are driven through `TestClient`, and
+  the list of URLs to check is extracted from `dashboard.html` rather than
+  restated, so a renderer calling a new endpoint is covered without anyone
+  remembering to add it;
+- the Diff Explorer is loaded in Chromium against the real API and fails on any
+  console error or any panel that renders nothing;
 - `airflow dags test replay_expenses` completes and persists verdicts, flips
   and a run summary.
 
