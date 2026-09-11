@@ -89,3 +89,40 @@ jobs:
           PTM_OFFLINE: "0"
           PYTHONPATH: .
           PTM_REQUIRE_AIRFLOW: "1"
+
+      # The plugin is meant to be nothing but routing, which is why the read
+      # models are covered without a web framework. Status codes, query bounds,
+      # download headers and the exact URLs the page asks for only exist here.
+      - name: Plugin routes
+        run: python -m pytest tests/test_plugin.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+          PTM_REQUIRE_PLUGIN: "1"
+
+  dashboard:
+    name: Diff Explorer renders in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Airflow, the plugin's dependencies and Playwright
+        run: |
+          pip install -r requirements.txt pytest playwright
+          playwright install --with-deps chromium
+
+      # Every other job proves the data is right. None of them proves the page
+      # renders it - a renderer reading a field the API no longer returns
+      # leaves the suite green and the dashboard blank.
+      - name: Load the dashboard and click through it
+        run: python -m pytest tests/test_dashboard.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+          PTM_REQUIRE_BROWSER: "1"
