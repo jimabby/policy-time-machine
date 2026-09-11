@@ -61,6 +61,15 @@ jobs:
       - name: Install Airflow 3.1 and providers
         run: pip install -r requirements.txt pytest
 
+      # Proves the install actually produced an importable Airflow. Without
+      # this the DAG-parse tests below just skip, and the job reports success
+      # having run none of them.
+      - name: Airflow imports
+        run: |
+          python -c "import airflow; print('airflow', airflow.__version__)"
+          python -c "import airflow.sdk; print('airflow.sdk ok')"
+          python -c "from airflow.providers.standard.operators.hitl import HITLOperator; print('HITLOperator ok')"
+
       # Both configurations, because the LLM-backed branch imports operators the
       # offline branch never touches - so offline-only parsing proves half of it.
       - name: Parse with the offline judge
@@ -70,6 +79,7 @@ jobs:
           PTM_DB: ./include/ptm.db
           PTM_OFFLINE: "1"
           PYTHONPATH: .
+          PTM_REQUIRE_AIRFLOW: "1"
 
       - name: Parse with the LLM judge
         run: python -m pytest tests/test_dags.py -q
@@ -78,3 +88,4 @@ jobs:
           PTM_DB: ./include/ptm.db
           PTM_OFFLINE: "0"
           PYTHONPATH: .
+          PTM_REQUIRE_AIRFLOW: "1"

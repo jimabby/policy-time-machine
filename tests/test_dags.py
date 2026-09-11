@@ -7,6 +7,7 @@ what backs the README's claim of zero import errors.
 
 from __future__ import annotations
 
+import os
 import pathlib
 
 import pytest
@@ -14,13 +15,28 @@ import pytest
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DAG_FILE = REPO / "dags" / "policy_time_machine.py"
 
-has_airflow = True
+#: Why Airflow could not be imported, if it could not. Kept rather than
+#: discarded: a bare "not installed" skip is what let the CI job whose entire
+#: purpose is running these tests report success without ever running one.
+airflow_import_error: str | None = None
 try:  # pragma: no cover - depends on the environment
     import airflow  # noqa: F401
-except ImportError:  # pragma: no cover
-    has_airflow = False
+except Exception as exc:  # pragma: no cover - any failure means we cannot parse
+    airflow_import_error = f"{type(exc).__name__}: {exc}"
 
-needs_airflow = pytest.mark.skipif(not has_airflow, reason="Airflow is not installed")
+has_airflow = airflow_import_error is None
+
+# Locally, Airflow is a heavy optional dependency and skipping is right. In the
+# job that installs it on purpose, a skip is a false pass - so CI sets this and
+# the skip becomes a failure that says why.
+if not has_airflow and os.environ.get("PTM_REQUIRE_AIRFLOW") == "1":  # pragma: no cover
+    raise RuntimeError(
+        "PTM_REQUIRE_AIRFLOW=1 but Airflow could not be imported, so the DAG-parse "
+        f"tests would have silently skipped. Import failed with: {airflow_import_error}"
+    )
+
+needs_airflow = pytest.mark.skipif(
+    not has_airflow, reason=f"Airflow could not be imported ({airflow_import_error})")
 
 
 class TestStatic:
