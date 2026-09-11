@@ -43,6 +43,27 @@ needs_browser = pytest.mark.skipif(
     not available, reason=f"Airflow, FastAPI and Playwright are needed ({import_error})")
 
 
+def replay_domain(domain_name: str, version: str) -> None:
+    """A full point-in-time replay, the way conftest does it for expenses."""
+    import datetime
+
+    from ptm import cost, diff, store
+    from ptm.config import load_domain
+    from ptm.judge import offline_verdict
+
+    domain = load_domain(domain_name)
+    cases = store.load_cases(domain_name, until=datetime.datetime(2026, 9, 1))
+    candidate = {c.case_id: offline_verdict(c, domain, version) for c in cases}
+    baseline = {c.case_id: offline_verdict(c, domain, domain.in_force) for c in cases}
+    flips = diff.flips(cases, candidate, domain, baseline=baseline)
+    store.save_replay(
+        f"browsertest__{domain_name}", domain_name, version, "actual", len(cases), flips,
+        diff.summarise(flips, len(cases), domain)["net_impact"], candidate,
+        segments=diff.segment_stats(cases, flips, domain),
+        case_segments=diff.case_segment_rows(cases, domain),
+        ledger=cost.zero(), baseline_version=domain.in_force, baseline_verdicts=baseline)
+
+
 def load_plugin():
     """Import the plugin by path - ``plugins/`` is a DAGs-folder sibling, not a package."""
     import importlib.util
@@ -96,6 +117,11 @@ def adjudicated(replayed):
 
     from ptm import report, store
     from ptm.models import FlipConfirmation, Precedent
+
+    # The other domain is replayed too: switching to it is the demo's closing
+    # move, and a domain with no results exercises the empty states rather than
+    # the rendering this is here to check.
+    replay_domain("refunds", "v2")
 
     flips = report.flips("expenses", "v2", limit=3)
     agreed, reversed_, shaky = flips[0], flips[1], flips[2]
@@ -298,6 +324,19 @@ class TestExportAndNavigation:
     def test_the_download_links_point_at_the_export_routes(self, page):
         assert page.get_attribute("#dlcsv", "href") == "/ptm/api/export/expenses/v2.csv"
         assert page.get_attribute("#dljson", "href") == "/ptm/api/export/expenses/v2.json"
+
+    def test_an_unreplayed_version_says_so_rather_than_blaming_the_config(self, page):
+        """The panel has two empty states and they are not interchangeable:
+        telling someone their segment_fields are missing sends them to edit a
+        YAML file that is already correct."""
+        page.select_option("#version", "v1")
+        page.wait_for_function(
+            "() => document.querySelector('#segments').innerText"
+            ".toLowerCase().includes('no replay results')",
+            timeout=15_000)
+        text = page.text("#segments")
+        assert "declares no" not in text
+        assert "category" in text and "grade" in text, "it still names the segments"
 
     def test_switching_domain_re_renders_against_the_other_domain(self, page):
         page.select_option("#domain", "refunds")

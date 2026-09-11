@@ -209,9 +209,17 @@ function renderClauses(rows, unit, summary) {
 }
 
 // ------------------------------------------------------ blast radius
-function renderSegments(rows, unit) {
-  if (!rows.length) {
+function renderSegments(rows, unit, declared) {
+  // Two different reasons for an empty panel, and saying the wrong one sends
+  // someone to edit a YAML file that is already correct.
+  if (!declared.length) {
     $("#segments").innerHTML = `<div class=empty>This domain declares no <code>segment_fields</code>.</div>`;
+    return;
+  }
+  if (!rows.length) {
+    $("#segments").innerHTML = `<div class=empty>No replay results for this policy version yet
+      &mdash; run or backfill the replay DAG. This domain segments by
+      <code>${declared.map(esc).join("</code>, <code>")}</code>.</div>`;
     return;
   }
   const fields = [...new Set(rows.map(r => r.field))];
@@ -456,7 +464,8 @@ async function render() {
 
   renderTiles(summary, costs, gate);
   renderClauses(clauseRows, summary.impact_unit, summary);
-  renderSegments(segmentRows, summary.impact_unit);
+  renderSegments(segmentRows, summary.impact_unit,
+                 (DOMAINS.find(d => d.name === domain) || {}).segment_fields || []);
   renderDials(dials);
   renderDeviations(deviationRows, summary.impact_unit);
   renderFlips(shown, flipRows.length, summary.impact_unit);
