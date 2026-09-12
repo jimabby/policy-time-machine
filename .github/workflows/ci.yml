@@ -41,16 +41,15 @@ jobs:
       # Attribution stops at "clause 1.1 moves 48 decisions". This is the step
       # after it, and it runs here because it is pure computation over the
       # shipped fixture - no model, no key, no bill.
+      # The step after the curve. A single sweep holds every other threshold
+      # still and never says so, which is the assumption a reader inherits
+      # without noticing - the joint form is the one that shows whether it
+      # survives. Both in one step, so the env block cannot drift away from a
+      # command the way it did when this was split.
       - name: Threshold sweep
         run: |
           python -m ptm.sweep expenses v2
           python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
-
-      # The step after the curve. A single sweep holds every other threshold
-      # still and never says so, which is the assumption a reader inherits
-      # without noticing - this is the one that shows whether it survives.
-      - name: Two thresholds at once
-        run: |
           python -m ptm.sweep expenses v2 --joint \
             1.1:amount_gbp=25,50,75,100,150 3.1:days_notice=3,7,14,21
         env:
