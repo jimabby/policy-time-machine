@@ -6,6 +6,9 @@ Four questions, in the order a policy owner actually asks them:
 2. Which clause changed it? :func:`attribute` / :func:`clause_attribution`
 3. Who does it hit?         :func:`segment_stats`
 4. Does it reverse a ruling a human already made? :func:`precedent_violations`
+
+And one the gate has to ask about its own oracle before trusting it: is a ruling
+still about the sentence it was made about? :func:`stale_precedents`.
 """
 
 from __future__ import annotations
@@ -200,6 +203,81 @@ def precedent_violations(verdicts: dict[str, Verdict], precedents: list[Preceden
     return violations
 
 
+def stale_precedents(precedents: list[Precedent], domain: DomainConfig,
+                     version: str) -> list[dict]:
+    """Rulings made about a clause that has since been rewritten.
+
+    Precedent is permanent, which is the point and also the risk. A reviewer
+    ruled on one case, under one candidate policy, against one clause of it. If
+    that clause now reads differently, the ruling is still a fact about the case
+    but it is no longer a fact about *this* policy's treatment of it - and the
+    gate, which knows only the outcome, will hold every future version to it
+    exactly as hard as to a ruling made this morning.
+
+    This is a warning and deliberately not a gate. Nothing here says the ruling
+    is wrong: a reviewer who said "deny" may well say "deny" again about the
+    rewritten clause. It says the ruling has not been re-confirmed since the
+    text it was about changed, which is a thing a person should decide rather
+    than a thing a run should fail on.
+
+    Precedents recorded before the circumstances were captured carry no
+    ``policy_version`` and are reported as unknown rather than as fresh -
+    silence about them would read as a clean bill of health.
+    """
+    out: list[dict] = []
+    for p in precedents:
+        if not p.policy_version:
+            out.append({
+                "case_id": p.case_id, "ruled_by": p.ruled_by,
+                "established_at": p.established_at.date().isoformat(),
+                "reason": "unknown", "ruled_under": "", "clause": p.judged_clause,
+                "detail": "recorded before the ruling's circumstances were captured, so "
+                          "there is no way to tell what policy text it was about",
+            })
+            continue
+        if p.policy_version == version:
+            continue
+        if p.policy_version not in domain.policies:
+            out.append({
+                "case_id": p.case_id, "ruled_by": p.ruled_by,
+                "established_at": p.established_at.date().isoformat(),
+                "reason": "version_gone", "ruled_under": p.policy_version,
+                "clause": p.judged_clause,
+                "detail": f"ruled under policy {p.policy_version}, which no longer exists, "
+                          f"so what the reviewer was shown cannot be recovered",
+            })
+            continue
+        if not p.judged_clause:
+            continue
+        was = domain.clause_text(p.policy_version, p.judged_clause)
+        now = domain.clause_text(version, p.judged_clause)
+        if was and now and was != now:
+            out.append({
+                "case_id": p.case_id, "ruled_by": p.ruled_by,
+                "established_at": p.established_at.date().isoformat(),
+                "reason": "clause_changed", "ruled_under": p.policy_version,
+                "clause": p.judged_clause, "was": was, "now": now,
+                "detail": f"ruled against clause {p.judged_clause} of policy "
+                          f"{p.policy_version}; that clause reads differently in {version}",
+            })
+    out.sort(key=lambda r: (r["reason"], r["case_id"]))
+    return out
+
+
+def describe_stale(stale: list[dict], version: str) -> str:
+    """The staleness warning as the gate and the dashboard print it."""
+    if not stale:
+        return f"every ruling on file was made about policy {version}'s text as it stands"
+    lines = [f"{len(stale)} ruling(s) may no longer be about the policy they were made "
+             f"about, and are still enforced as though they were:"]
+    for row in stale:
+        lines.append(f"  {row['case_id']} ({row['ruled_by']}, {row['established_at']}): "
+                     f"{row['detail']}")
+    lines.append("  re-adjudicating one of these is how it stops being a guess; nothing "
+                 "here fails a run, because whether a ruling still holds is a person's call.")
+    return "\n".join(lines)
+
+
 def precedent_conflicts(rows: list[dict], domain: DomainConfig) -> list[PrecedentConflict]:
     """Human rulings that contradict each other rather than the policy.
 
@@ -232,6 +310,13 @@ def precedent_conflicts(rows: list[dict], domain: DomainConfig) -> list[Preceden
                 outcomes={k: sorted(v) for k, v in by_outcome.items()},
                 case_ids=sorted(row["case_id"] for row in group),
                 ruled_by=sorted({row["ruled_by"] for row in group}),
+                # The reason each reviewer gave, carried through. A conflict is
+                # resolved by two people talking, and this is the only thing in
+                # the record that tells them what they are disagreeing about -
+                # without it the panel can say they disagree and nothing more.
+                notes=[{"case_id": row["case_id"], "ruled_by": row["ruled_by"],
+                        "outcome": row["correct_outcome"], "note": row.get("note") or ""}
+                       for row in sorted(group, key=lambda r: r["case_id"])],
             )
         )
     # Widest disagreement first: a three-way split is more urgent than a pair.

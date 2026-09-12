@@ -102,6 +102,24 @@ class TestStatic:
         source = DAG_FILE.read_text(encoding="utf-8")
         assert "multiple_outputs" not in source
 
+    def test_the_reviewer_is_asked_for_a_reason(self):
+        """`record` reads params_input['note'] and the drafter renders it. If
+        the operator does not declare the parameter, every precedent on file
+        carries an empty note and nobody notices."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        review = source[source.index("HITLOperator.partial("):]
+        review = review[:review.index(".expand(")]
+        assert "params=" in review and '"note"' in review
+
+    def test_the_precedent_records_what_it_was_a_ruling_about(self):
+        """A ruling with no policy version attached cannot be re-read later -
+        see ptm.diff.stale_precedents."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        record = source[source.index("store.save_precedent("):]
+        record = record[:record.index("saved.append")]
+        for field in ("policy_version=", "judged_outcome=", "judged_clause="):
+            assert field in record
+
     def test_the_proposer_can_be_run_without_it_writing_anything(self):
         """Proposing and adopting are separate acts, and the directory it writes
         into is the one a person is accountable for."""
@@ -109,10 +127,47 @@ class TestStatic:
         assert '"publish": Param(' in source
         assert 'ctx["params"].get("publish")' in source
 
-    def test_per_case_segments_are_persisted(self):
+    def test_per_case_segments_are_persisted(self, seeded):
         """Summing the per-run aggregates counts a case once per run that saw
-        it, and manual runs overlap backfills on purpose."""
-        assert "case_segments=diff.case_segment_rows" in DAG_FILE.read_text(encoding="utf-8")
+        it, and manual runs overlap backfills on purpose.
+
+        Asserted against the behaviour rather than the source text. The grep
+        this replaced passed on a reformat that broke the write and failed on a
+        rename that did not, which is the wrong way round for both.
+        """
+        from datetime import datetime
+
+        from ptm import diff, store
+        from ptm.config import load_domain
+        from ptm.judge import offline_verdict
+
+        domain = load_domain("expenses")
+        cases = store.load_cases("expenses", until=datetime(2026, 9, 1), limit=25)
+        verdicts = {c.case_id: offline_verdict(c, domain, "v2") for c in cases}
+        flips = diff.flips(cases, verdicts, domain)
+        for run in ("overlap-a", "overlap-b"):
+            store.save_replay(run, "expenses", "v2-segment-probe", "actual", len(cases),
+                              flips, 0.0, verdicts,
+                              segments=diff.segment_stats(cases, flips, domain),
+                              case_segments=diff.case_segment_rows(cases, domain))
+        rows = store.segment_breakdown("expenses", "v2-segment-probe")
+        by_field: dict[str, int] = {}
+        for row in rows:
+            by_field[row["field"]] = by_field.get(row["field"], 0) + row["cases"]
+        assert by_field, "the replay wrote no per-case segment rows at all"
+        for field, counted in by_field.items():
+            assert counted == len(cases), \
+                f"{field} counted {counted} of {len(cases)} cases across two overlapping runs"
+
+    def test_the_cap_on_a_manual_run_is_not_applied_to_a_scheduled_one(self):
+        """The parameter says "Ignored by scheduled and backfilled runs" and it
+        was passed on every run, so a month holding more cases than the cap
+        replayed its oldest 250 and reported a rate for a window it had only
+        partly seen."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        prepare = source[source.index("def prepare("):source.index("def prompts(")]
+        assert "if manual else None" in prepare, \
+            "the cap has to be conditional on the run being a manual one"
 
 
 @needs_airflow

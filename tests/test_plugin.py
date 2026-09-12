@@ -57,7 +57,11 @@ CONCRETE = {"domain": "expenses", "version": "v2", "left": "v1", "right": "v2"}
 
 #: Endpoints the page calls with a query string it assembles separately, so the
 #: bare path extracted from the source would be a 422 rather than a real call.
-REQUIRED_QUERY = {"/api/sweep/": "field=amount_gbp&values=50,75&clause=1.1"}
+REQUIRED_QUERY = {
+    "/api/sweep/": "field=amount_gbp&values=50,75&clause=1.1",
+    "/api/sweep-grid/": ("field=amount_gbp&values=50,75&clause=1.1"
+                         "&field2=days_notice&values2=3,7&clause2=3.1"),
+}
 
 
 def dashboard_api_urls() -> list[str]:

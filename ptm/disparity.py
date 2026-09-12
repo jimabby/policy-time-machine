@@ -75,8 +75,17 @@ def analyse(rows: list[dict], domain: DomainConfig) -> list[DisparityFinding]:
             rate = flips / cases
             rest_rate = (rest_flips / rest_cases) if rest_cases else 0.0
             ratio = (rate / rest_rate) if rest_rate else 0.0
-            concentrated = ratio >= policy.max_ratio or (rest_flips == 0 and flips > 0)
-            passed_over = 0.0 < ratio <= (1 / policy.max_ratio if policy.max_ratio else 0)
+            # Two findings, deliberately computed apart. A ratio of 0.0 is
+            # ambiguous - it is "the rest of the field does not move" when this
+            # segment does, and "this segment does not move" when the rest does -
+            # so the test for each is written against the counts rather than
+            # against the shared number. Reading it off the ratio alone is what
+            # used to make a segment the change skips entirely, the strongest
+            # pass-over there is, the one case that could never be reported.
+            concentrated = (rest_flips == 0 and flips > 0) or (
+                rest_rate > 0 and ratio >= policy.max_ratio)
+            floor = (1 / policy.max_ratio) if policy.max_ratio else 0.0
+            passed_over = rest_rate > 0 and ratio <= floor
             if not (concentrated or passed_over):
                 continue
             lo, hi = stats.wilson_interval(flips, cases)
@@ -84,6 +93,7 @@ def analyse(rows: list[dict], domain: DomainConfig) -> list[DisparityFinding]:
             tightening = int(row.get("tightening") or 0)
             findings.append(DisparityFinding(
                 field=field,
+                kind="concentrated" if concentrated else "passed_over",
                 value=str(row.get("value", "")),
                 cases=cases,
                 flips=flips,
@@ -99,14 +109,22 @@ def analyse(rows: list[dict], domain: DomainConfig) -> list[DisparityFinding]:
                 net_impact=round(float(row.get("impact_loosening") or 0)
                                  - float(row.get("impact_tightening") or 0), 2),
             ))
-    # Significant first, then by how far from the rest of the field: a gated
-    # run should be able to print the top line and have said the useful thing.
-    findings.sort(key=lambda f: (not f.significant, -abs((f.ratio or 99) - 1)))
+    # Significant first, then exposure before distribution, then by how far from
+    # the rest of the field: a gated run should be able to print the top line and
+    # have said the useful thing. An undefined ratio sorts as the most extreme
+    # finding of its kind, which is what it is.
+    findings.sort(key=lambda f: (not f.significant,
+                                 f.kind != "concentrated",
+                                 -abs((f.ratio or 99) - 1)))
     return findings
 
 
 def _direction(loosening: int, tightening: int) -> str:
     """Which way a segment's flips run, as a word rather than two counts."""
+    if not loosening and not tightening:
+        # Distinct from "mixed". A segment with nothing moving either way is the
+        # pass-over finding, and calling that "mixed" describes the opposite.
+        return "unmoved"
     if loosening and tightening:
         bigger, smaller = max(loosening, tightening), min(loosening, tightening)
         if smaller / bigger > 0.34:  # a third or more the other way is genuinely mixed
@@ -123,9 +141,11 @@ def gated(findings: list[DisparityFinding]) -> list[DisparityFinding]:
 
     A group the change *passes over* is worth a panel and not worth failing a
     run for - it is a distribution question, not an exposure one - and an
-    unsupported ratio is a small-sample artefact by definition.
+    unsupported ratio is a small-sample artefact by definition. Selected on
+    ``kind`` rather than on the ratio, because 0.0 means one thing for each and
+    a numeric test cannot tell which one it is looking at.
     """
-    return [f for f in findings if f.significant and (f.ratio == 0.0 or f.ratio >= 1)]
+    return [f for f in findings if f.significant and f.kind == "concentrated"]
 
 
 def describe(findings: list[DisparityFinding], domain: DomainConfig) -> str:
@@ -139,16 +159,34 @@ def describe(findings: list[DisparityFinding], domain: DomainConfig) -> str:
     unit = domain.impact_unit
     lines = [f"{len(findings)} segment(s) the change does not land on evenly:"]
     for f in findings:
-        comparison = (f"{f.ratio:g}x the rest of {f.field}" if f.ratio
-                      else f"the rest of {f.field} does not move at all")
         lines.append(
             f"  {f.field}={f.value:<16} {f.flips}/{f.cases} moved ({f.flip_rate:.1%}, "
             f"{f.flip_rate_lo:.1%}-{f.flip_rate_hi:.1%}) vs {f.rest_flips}/{f.rest_cases} "
-            f"({f.rest_flip_rate:.1%}) - {comparison}")
+            f"({f.rest_flip_rate:.1%}) - {_comparison(f)}")
         lines.append(
-            f"      {'mostly ' + f.direction if f.direction != 'mixed' else 'both directions'}"
-            f", net {unit} {f.net_impact:,.0f}"
+            f"      {_movement(f)}, net {unit} {f.net_impact:,.0f}"
             + ("" if f.significant else "  [not significant at this sample size]"))
     lines.append("a concentration is not a fault - it is a question. These are the "
                  "segments somebody should be able to explain before the rule ships.")
     return "\n".join(lines)
+
+
+def _comparison(f: DisparityFinding) -> str:
+    """How this segment stands against the rest of its field, in words.
+
+    Words rather than the ratio, because the ratio is 0.0 in two opposite
+    situations and a reader cannot tell which from the number.
+    """
+    if f.kind == "passed_over" and not f.flips:
+        return f"nothing here moved, against {f.rest_flip_rate:.1%} across the rest of {f.field}"
+    if not f.ratio:
+        return f"the rest of {f.field} does not move at all"
+    if f.kind == "passed_over":
+        return f"{f.ratio:g}x the rest of {f.field} - the change largely passes it over"
+    return f"{f.ratio:g}x the rest of {f.field}"
+
+
+def _movement(f: DisparityFinding) -> str:
+    if f.direction == "unmoved":
+        return "no case in this segment changed outcome"
+    return "both directions" if f.direction == "mixed" else f"mostly {f.direction}"

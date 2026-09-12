@@ -37,7 +37,8 @@ import sys
 from . import stats
 from .config import DomainConfig, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
-from .lint import _names_in, payload_fields
+from .lint import payload_fields
+from .safe_eval import check_expression
 from .models import Case, RuleSet, Verdict
 
 SYNTHESIS_SYSTEM_PROMPT = (
@@ -114,6 +115,12 @@ def validate(rules: list[dict], domain: DomainConfig, version: str) -> list[str]
     generated ones at the moment they arrive. A generated rule reading a field
     that does not exist is exactly the failure the lint was written for, and a
     model is a far more prolific source of it than a person editing YAML.
+
+    This is a report, not the containment. :mod:`ptm.safe_eval` computes a rule
+    by walking it rather than by calling ``eval``, so an expression that gets
+    past this one still cannot do anything but arithmetic and comparison. The
+    two are separate on purpose: a validator is the kind of thing that acquires
+    a gap, and a gap in this one used to mean handing over the interpreter.
     """
     known = payload_fields(domain)
     declared = set(domain.clauses(version))
@@ -124,13 +131,10 @@ def validate(rules: list[dict], domain: DomainConfig, version: str) -> list[str]
         if not expression:
             problems.append(f"{at}: has no 'when' expression")
             continue
-        try:
-            unknown = sorted(_names_in(expression) - known)
-        except SyntaxError as exc:
-            problems.append(f"{at}: 'when' does not parse: {exc}")
-            continue
-        if unknown:
-            problems.append(f"{at}: reads unknown field(s) {unknown}; it could never match")
+        # The whole check, not a name scan. A generated expression made of
+        # attribute access reads no bare names at all, so the scan this replaced
+        # reported nothing wrong with one and let it through to be evaluated.
+        problems += [f"{at}: {problem}" for problem in check_expression(expression, known)]
         if rule.get("outcome") not in domain.outcomes:
             problems.append(f"{at}: outcome {rule.get('outcome')!r} is not one of {domain.outcomes}")
         clause = str(rule.get("clause") or "").strip()
@@ -211,6 +215,42 @@ def agreement(domain: DomainConfig, version: str, rules: list[dict],
     }
 
 
+def gate(result: dict, domain: DomainConfig) -> list[str]:
+    """Where the rules have drifted further from the judge than the domain allows.
+
+    Returns the reasons, or an empty list. Two things deliberately do not fire
+    it, and both would otherwise make it worse than useless:
+
+    **An inert measurement.** Offline the verdicts being scored against were
+    produced by these same rules, so agreement is 1.0 by construction. A gate
+    that passes because the check is switched off is a gate that teaches people
+    to trust a number that means nothing.
+
+    **Nothing measured.** No verdicts on file is not 0% agreement; it is no
+    evidence. Failing there would make the gate fire loudest on a project that
+    has not run yet.
+    """
+    policy = domain.rules
+    if not result.get("compared") or result.get("inert"):
+        return []
+    problems = []
+    outcome_floor = policy.min_outcome_agreement
+    clause_floor = policy.min_clause_agreement
+    if outcome_floor and result.get("rate", 0.0) < outcome_floor:
+        problems.append(
+            f"the offline rules reach the judge's outcome on {result['rate']:.1%} of "
+            f"{result['compared']} case(s), below the {outcome_floor:.1%} this domain "
+            f"requires. Every threshold curve is computed from these rules, so a sweep "
+            f"drawn now describes the rules rather than the policy.")
+    if clause_floor and result.get("clause_agreement", 0.0) < clause_floor:
+        problems.append(
+            f"they cite the same clause on {result['clause_agreement']:.1%} of the "
+            f"{result['clause_compared']} case(s) where both named one, below the "
+            f"{clause_floor:.1%} required. Right answer, wrong sentence - which is what "
+            f"the attribution panel reports and what the sweep moves.")
+    return problems
+
+
 def describe(result: dict) -> str:
     if not result.get("compared"):
         return (f"no stored verdicts for {result.get('domain')}/{result.get('policy_version')} "
@@ -251,6 +291,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  measured against verdicts produced by {result['judged_by'] or ['the offline judge']}, "
               f"which is these same rules - so this figure is 100% by construction and "
               f"means nothing until PTM_OFFLINE=0")
+        return 0
+    problems = gate(result, load_domain(domain_name))
+    for problem in problems:
+        print(f"GATE  {problem}", file=sys.stderr)
+    if problems and load_domain(domain_name).rules.gate == "fail":
+        return 1
     return 0
 
 
@@ -260,4 +306,4 @@ if __name__ == "__main__":  # pragma: no cover
 
 # Re-exported so callers need one import to go from a policy to scored rules.
 __all__ = ["SYNTHESIS_SYSTEM_PROMPT", "build_prompt", "as_offline_rules", "validate",
-           "with_rules", "agreement", "describe", "load_domain", "RuleSet"]
+           "with_rules", "agreement", "gate", "describe", "load_domain", "RuleSet"]

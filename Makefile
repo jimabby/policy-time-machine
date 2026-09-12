@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep dev preflight calibrate rules propose draft
+.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep grid dev preflight calibrate rules propose draft crosscheck
 
 PY ?= .venv/bin/python
 ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
@@ -72,3 +72,11 @@ sweep:     ## Ask what the threshold should be, not just which clause it is in
 	$(ENV) $(PY) -m ptm.sweep expenses v2
 	@echo
 	$(ENV) $(PY) -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
+
+grid:      ## Move two thresholds together - one curve cannot show them interacting
+	$(ENV) $(PY) -m ptm.sweep expenses v2 --joint \
+		1.1:amount_gbp=25,50,75,100,150 3.1:days_notice=3,7,14,21
+
+crosscheck: ## Ask a second model the same questions (needs PTM_OFFLINE=0)
+	docker compose exec airflow airflow dags trigger judge_stability_expenses \
+		--conf '{"compare_model":"anthropic:claude-haiku-4-5","sample_cases":40}'

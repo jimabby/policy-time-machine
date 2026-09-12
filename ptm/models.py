@@ -96,6 +96,10 @@ class PrecedentConflict(BaseModel):
     outcomes: dict[str, list[str]]
     case_ids: list[str]
     ruled_by: list[str]
+    #: What each reviewer said about their own ruling. A conflict is settled by
+    #: two people talking to each other, and this is the only thing in the
+    #: record that tells them what they are actually disagreeing about.
+    notes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FlipConfirmation(BaseModel):
@@ -125,15 +129,36 @@ class Precedent(BaseModel):
 
     This is the only durable output of the whole system. Everything else is
     recomputable; this is not.
+
+    It records the *circumstances* of the ruling as well as its answer, because
+    a ruling without them cannot be re-read later. ``policy_version`` is the
+    candidate the reviewer was shown, ``judged_outcome`` and ``judged_clause``
+    are the verdict they were disagreeing with, and ``note`` is why. A gate that
+    knows only "finance.lead said deny" cannot tell a ruling that still applies
+    from one made about a sentence that has since been rewritten - see
+    :func:`ptm.diff.stale_precedents`.
     """
 
     case_id: str
     domain: str
     correct_outcome: str
     ruled_by: str
+    #: Why the reviewer ruled as they did, in their words. Collected by the
+    #: HITL task's ``note`` parameter. This is the only free text in the system
+    #: written by the person accountable for the decision, and it is what
+    #: :mod:`ptm.proposal` shows a drafter alongside the ruling itself.
     note: str = ""
     established_at: datetime
     established_by_run: str = ""
+    #: The candidate policy version the reviewer was ruling against. Empty for
+    #: precedents recorded before this was captured.
+    policy_version: str = ""
+    #: What that policy gave for the case - the verdict the human overturned.
+    judged_outcome: str = ""
+    #: The clause that verdict cited. What makes staleness computable: if that
+    #: clause has since been rewritten, the ruling was about a sentence that no
+    #: longer exists in the form it was ruled on.
+    judged_clause: str = ""
 
 
 class CalibrationBucket(BaseModel):
@@ -199,6 +224,50 @@ class CalibrationReport(BaseModel):
     unjudged: list[str] = Field(default_factory=list)
 
 
+class CrossCheckReport(BaseModel):
+    """Two independent judges on the same policy and the same cases.
+
+    :class:`StabilityReport` asks whether a judge repeats itself and
+    :class:`CalibrationReport` asks whether it agrees with a human. This asks
+    the question between them, and it is the only one that can be asked of
+    *every* case: does a second, independent judge reach the same answer?
+
+    The valuable half is the disagreement. Two judges splitting on a case is
+    evidence the policy does not settle it, which is a sentence to rewrite -
+    and unlike a precedent it costs no human time to find. See
+    :mod:`ptm.crosscheck` for why this is not a scoreboard between models.
+    """
+
+    domain: str
+    primary: str
+    secondary: str
+    #: Cases both judges saw. Cases only one saw are listed, never counted.
+    compared: int
+    agreed: int
+    agreement: float
+    agreement_lo: float
+    agreement_hi: float
+    clause_compared: int
+    clause_agreed: int
+    #: Reaching the same answer for the same stated reason, which is the
+    #: stronger claim and the one clause attribution depends on.
+    clause_agreement: float
+    judged_only_by_primary: list[str] = Field(default_factory=list)
+    judged_only_by_secondary: list[str] = Field(default_factory=list)
+    #: Which way the disagreements run, primary relative to secondary. A
+    #: consistent lean is a model difference somebody can act on; an even split
+    #: is the policy being genuinely ambiguous.
+    lean: dict[str, int] = Field(default_factory=dict)
+    #: Disagreements where exactly one judge departs from the recorded outcome -
+    #: flips the headline rate rests on a single judge for.
+    contested_flips: int = 0
+    mean_confidence_when_agreed: float = 0.0
+    #: Confidence the primary judge claimed on cases a second judge contradicted.
+    #: At or above the agreed figure, its confidence is not tracking difficulty.
+    mean_confidence_when_split: float = 0.0
+    disagreements: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DisparityFinding(BaseModel):
     """One segment the change lands on much harder than the rest of its field.
 
@@ -225,8 +294,17 @@ class DisparityFinding(BaseModel):
     rest_cases: int
     rest_flips: int
     rest_flip_rate: float
-    #: flip_rate / rest_flip_rate, or 0.0 when the rest of the field has no
-    #: flips at all - a ratio of infinity is reported in words, not as a number.
+    #: Which question this finding is. ``concentrated`` - the change lands on
+    #: this segment far harder than the rest of its field, which is an exposure
+    #: question and the only kind a gate may act on. ``passed_over`` - the
+    #: change largely or entirely misses it, which is a distribution question.
+    #: The two are opposite findings and ``ratio`` alone cannot tell them apart,
+    #: because 0.0 is both "the rest does not move" and "this does not move".
+    kind: str = "concentrated"
+    #: flip_rate / rest_flip_rate, or 0.0 when the ratio is undefined - which is
+    #: the rest of the field having no flips for a ``concentrated`` finding, and
+    #: this segment having none for a ``passed_over`` one. A ratio of infinity
+    #: is reported in words, not as a number; read it with ``kind``.
     ratio: float
     #: Whether the two Wilson intervals are disjoint. A finding without this is
     #: a small-sample artefact, and is reported as one rather than gated on.

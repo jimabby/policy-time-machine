@@ -81,6 +81,12 @@ def stability(domain: str, version: str) -> dict:
     return found(report.stability, domain, version)
 
 
+@app.get("/api/cross-check/{domain}/{version}")
+def cross_check(domain: str, version: str) -> dict:
+    """A second, independent judge on the same cases - and where the two split."""
+    return found(report.cross_check, domain, version)
+
+
 @app.get("/api/conflicts/{domain}")
 def conflicts(domain: str) -> list[dict]:
     """Human rulings that contradict each other rather than the policy."""
@@ -148,6 +154,19 @@ def sweep(domain: str, version: str,
           clause: str = Query(default="", max_length=16)) -> dict:
     """Re-run the replay at each candidate threshold. ``values`` is comma-separated."""
     return found(report.sweep, domain, version, field, values, clause)
+
+
+@app.get("/api/sweep-grid/{domain}/{version}")
+def sweep_grid(domain: str, version: str,
+               field: str = Query(..., min_length=1, max_length=64),
+               values: str = Query(..., min_length=1, max_length=256),
+               field2: str = Query(..., min_length=1, max_length=64),
+               values2: str = Query(..., min_length=1, max_length=256),
+               clause: str = Query(default="", max_length=16),
+               clause2: str = Query(default="", max_length=16)) -> dict:
+    """Two thresholds at once, as a grid. Single sweeps cannot show them interacting."""
+    return found(report.joint_sweep, domain, version, field, values, field2, values2,
+                 clause, clause2)
 
 
 @app.get("/api/export/{domain}/{version}.json")

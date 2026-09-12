@@ -98,6 +98,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | **Plugin (FastAPI + external view)** | The Policy Diff Explorer, a tab inside the Airflow UI. |
 | **Dynamic DAG generation** | Drop a YAML in `include/domains/` and five new DAGs appear. The DAG code contains zero domain knowledge — [a test asserts it](tests/test_dags.py). |
 | **Structured generation** | The same `LLMOperator`, pointed the other way: `output_type=PolicyPatch` has a model *write* the next version of the policy, which the precedent gate then re-judges. Typed output is what makes that checkable rather than a wall of prose. |
+| **`model_id` per run** | The second judge. One connection, the model overridden at trigger time, so cross-checking a replay against a different vendor is a `--conf` flag rather than a DAG edit. |
 
 ### The point-in-time trap
 
@@ -149,6 +150,7 @@ Five DAGs per domain, generated from `include/domains/*.yaml`:
                     └─────────────────────┘
 
    manual  ────────▶ judge_stability_<domain>   the error bar on all of the above
+                                               (+ a second judge, on request)
 
    manual  ────────▶ ┌─────────────────────┐
                      │  propose_<domain>   │  reads every number above
@@ -195,9 +197,17 @@ money spends that budget badly:
   A monthly run sees twenty-five, and without the band two months that differ
   only in size read as two different policies.
 
-**`adjudicate_<domain>`** — the human loop. Each HITL task now tells the
-reviewer which clause drove the change, so they can argue with the rule rather
-than only the result.
+**`adjudicate_<domain>`** — the human loop. Each HITL task tells the reviewer
+which clause drove the change, so they can argue with the rule rather than only
+the result, and **asks them why**. The note is the only free text in the system
+written by the person accountable for the decision: it is shown beside any
+ruling that contradicts this one, and handed to the drafter that writes the next
+version of the policy.
+
+What is recorded is the *circumstances* as well as the answer — which candidate
+policy the reviewer was shown, and the verdict they were overturning. A ruling
+that does not say what it was a ruling about cannot be re-read later, which
+matters because the gate below enforces it forever.
 
 **`precedent_gate_<domain>`** — the regression suite, and the only place the
 judge is scored against an answer rather than against itself. Fails on a reversal, and
@@ -211,13 +221,35 @@ reversals the proposal *introduces* from the ones the status quo already makes.
 Three violations means something very different when v1 has the same three, and
 without that split a gate failure reads as the proposal's fault by default.
 
-It also loads its cases **by id**. Filtering a full history load would be
-subject to `load_cases`'s default limit, so past that many cases the gate would
-judge a subset of the precedent set and still report a pass — a regression
-suite that silently checks less than it reports is worse than none. A precedent
-whose case cannot be loaded fails the run rather than being skipped.
+It also loads its cases **by id**, never by loading history and filtering: a
+regression suite that silently checks less than it reports is worse than none,
+and a precedent whose case cannot be loaded fails the run rather than being
+skipped.
 
-**`judge_stability_<domain>`** — the error bar, in two modes.
+And it asks one question about its own oracle. Precedent is permanent — that is
+the point and also the risk. A reviewer ruled on one case, under one candidate
+policy, against one clause of it; if that clause now reads differently, the
+ruling is still a fact about the case but no longer a fact about *this* policy's
+treatment of it:
+
+```
+2 ruling(s) may no longer be about the policy they were made about, and are
+still enforced as though they were:
+  exp-0478 (finance.lead, 2026-03-04): ruled against clause 1.1 of policy v1;
+    that clause reads differently in v2
+  exp-0119 (finance.lead, 2026-02-11): recorded before the ruling's circumstances
+    were captured, so there is no way to tell what policy text it was about
+```
+
+Deliberately a warning and not a gate. Nothing here says the ruling is wrong —
+the reviewer may well say the same thing about the rewritten clause. It says the
+ruling has not been re-confirmed since the text it was about changed, and
+whether it still holds is a person's call rather than a run's. When a reversal
+rests on one of these, the gate says so: re-adjudicating it is a different fix
+from editing the policy.
+
+**`judge_stability_<domain>`** — the error bar, in two modes, plus an optional
+second judge (`compare_model`; see *Ask a second judge* below).
 
 `target=sample` judges the same cases several times under the *same* policy and
 reports how often the judge contradicts itself:
@@ -256,6 +288,12 @@ model?"*. Without this number there is no answer. `max_disagreement` turns it
 into a gate: refuse to trust a judge noisier than you can accept. Offline the
 judge is deterministic and this necessarily reports 0% — which is not a clean
 bill of health, it means the check is inert until you point it at a real model.
+
+Both modes still only ever compare the judge to *itself*. Setting
+`compare_model` on the same run adds the check that does not:
+`--conf '{"compare_model":"anthropic:claude-haiku-4-5"}'` asks a second model
+the same questions through the same connection, and reports the cases they split
+on. That is the section after next.
 
 ### Consistent is not the same as right
 
@@ -305,6 +343,56 @@ Nobody adjudicates the easy ones. The judge's accuracy over all six hundred
 cases is higher than 75%, and anyone quoting this as overall accuracy is quoting
 it wrong. The report says so on every line it prints.
 
+### Ask a second judge
+
+Calibration is the strongest check here and it can only speak about the handful
+of cases a human has ruled on — by construction the contested ones. For the
+other five hundred and ninety there is no ground truth at all, and the two
+checks that do cover them both compare the judge *to itself*.
+
+A second model is not ground truth either. What it is, is **independent**: two
+judges misreading the same clause in the same direction is a far smaller
+coincidence than one judge doing it twice. So run the same prompts past a
+different model and look at where they split:
+
+```
+$ airflow dags trigger judge_stability_expenses \
+    --conf '{"compare_model":"anthropic:claude-haiku-4-5","sample_cases":40}'
+
+anthropic:claude-sonnet-5 vs anthropic:claude-haiku-4-5 on 40 case(s) under the same policy
+  same outcome on 36  -  90.0% (76.9%-96.0%)
+  same clause cited on 31 of 38 (81.6%)
+  4 case(s) the two judges split on. These are cases the policy does not settle -
+  the disagreement is the finding, and neither answer is the right one to write down.
+    which way: 3 loosening, 1 tightening  (direction is sonnet relative to haiku)
+    3 of them are flips only sonnet makes - that much of the headline rests on one judge
+```
+
+Three things that are worth more than the headline rate.
+
+**The split cases are the output.** A case two independent judges decide
+differently is a case the policy does not settle, and unlike a precedent it
+costs no human time to find. That is a list of sentences to go and rewrite,
+produced for every case rather than for the eight somebody adjudicated.
+
+**It says how much of the flip rate rests on one judge.** A disagreement where
+exactly one of the two departs from the recorded outcome is a flip the second
+judge would not have made. *"3 of them are flips only sonnet makes"* is a
+sentence nothing else in this pipeline can produce.
+
+**It scores the confidence field against something.** If the primary judge
+claims *higher* confidence on the cases an independent judge contradicts than
+on the ones it confirms, its confidence is not tracking difficulty — and
+`review.below_confidence` is spending the scarcest resource here on it.
+
+What it does **not** do is say which judge was right. Where they disagree it
+reports both answers and stops. Calibration is still the only thing here that
+scores a judge against an answer, and it needs a human to have given one.
+
+There is no offline version of this check, and that is stated rather than
+faked: the offline judge standing in for a second opinion would be one rule set
+answering twice.
+
 ### Does the change land evenly?
 
 Blast radius already reports a flip rate per segment. In practice nobody reads
@@ -334,9 +422,17 @@ Three decisions make this worth having rather than noise:
   being read, which is worse than not having one.
 - **Direction stays attached.** A group whose cases mostly *loosen* is being
   given something; a group whose cases mostly *tighten* is having something
-  taken away. A flip rate cannot tell those apart. A ratio *below* 1 is the
-  third case worth seeing — a group the change passes over, which for a
-  loosening proposal means a benefit distributed unevenly.
+  taken away. A flip rate cannot tell those apart.
+- **The group the change *misses* is a finding too.** For a loosening proposal
+  that is a benefit distributed unevenly — the same question asked from the
+  other side. The two findings are labelled (`kind`), and only the exposure one
+  can fail a run: a distribution question is not something to stop a deploy for.
+
+  Labelling them was not cosmetic. Both carry a ratio of `0.0` — it means *"the
+  rest of the field does not move"* for one and *"this segment does not move"*
+  for the other — and the test for a pass-over used to read `0.0 < ratio`, so
+  the strongest pass-over there is, a segment the change skips entirely, was the
+  one case that could never be reported.
 
 What this is not is evidence of discrimination, and it never says so. Segments
 differ in what they contain; a policy that raises the meals cap will always move
@@ -404,6 +500,40 @@ sweeping clause 1.1 amount_gbp in expenses/v2 over 600 cases (baseline v1)
 `python -m ptm.sweep expenses v2` lists the dials; the same curve is a panel in
 the Diff Explorer.
 
+**One curve holds every other dial still, and never says so.** That is the
+assumption a reader inherits without noticing: *"at 100 you get 161 flips"*
+reads as a property of clause 1.1 when it is a property of clause 1.1 *given
+where everything else is sitting*. Policy thresholds are exactly where that
+breaks — an exemption and the restriction it carves out of interact by
+construction. So move two at once:
+
+```
+$ python -m ptm.sweep expenses v2 --joint \
+    1.1:amount_gbp=25,50,75,100,150 3.1:days_notice=3,7,14
+
+amount_gbp \ days_notice             3           7          14
+(rows \ columns)                 flips       flips       flips
+25                                104          93          98
+50                                127         116         121
+75                                158         147*        150
+100                               173         161         164
+150                               192         179         182
+  (* = the settings in force.)
+
+interaction: moving amount_gbp changes 84-88 decisions depending on where
+days_notice sits (4 apart)
+  the dials interact: the best setting for one depends on the other, which is
+  what a pair of single sweeps cannot show
+```
+
+The grid reports its own worth on the last line. If moving the second dial
+changed the first one's effect by nothing, the two are independent, two curves
+said everything, and the panel says so rather than letting itself be looked at
+out of habit. It is `|A| × |B|` full replays and still free — pure rule
+evaluation over cases already on file — so the expectation is that you narrow
+each axis with a single sweep first. The drafter is handed the same grid for the
+two clauses attribution blames most.
+
 This reads the `offline_rules`, not the markdown policy, and the caveat is
 worth stating plainly: it reports what the *rule evaluator* would do, not what
 a model reading a reworded policy would do. That makes it the free first pass
@@ -446,12 +576,56 @@ Offline this is inert and says so on its own last line, in the same way and for
 the same reason as the stability figure: the verdicts it scores against were
 produced by these very rules.
 
+**The agreement number is also a gate.** `rules.min_outcome_agreement` and
+`rules.min_clause_agreement` in the domain YAML say how far the rules may drift
+before the sweep built on them stops being served. Two things deliberately do
+not fire it: a measurement that is *inert* (offline, where the verdicts being
+scored came from these same rules) and one where nothing has been measured at
+all. A gate that passes because the check is switched off teaches people to
+trust a number that means nothing, and one that fires loudest on a project that
+has not run yet gets turned off on day one.
+
 The other direction is the interesting one. `ptm.rules` also builds the prompt
 that asks a model to *write* the rules from the policy text — the one job here
 where a model reading prose and emitting structure is exactly the right tool —
 and every generated rule is put through the lint's own checks before it is
 allowed near a replay. A generated rule reading a field that does not exist
 never matches, and never matching is silent.
+
+#### A rule is not Python
+
+`offline_rules` used to be YAML a person wrote, and `eval` with a trimmed
+`__builtins__` was a defensible shortcut for that. `propose_<domain>` changed
+the threat model: a **model** writes the rules for a drafted policy, they are
+written to `include/drafts/`, and every later replay of that draft evaluates
+them on a worker.
+
+A name-level check in front of `eval` does not contain that. This reads no bare
+identifier at all, so a scan built on `ast.Name` nodes reports nothing wrong
+with it:
+
+```python
+().__class__.__base__.__subclasses__()[-1].__init__.__globals__[...]
+```
+
+So [`ptm/safe_eval.py`](ptm/safe_eval.py) does not call `eval`. It walks the
+parsed expression and computes the result node by node, and anything it does not
+explicitly implement is a refusal rather than a fallthrough — attribute access,
+subscripting, lambdas, comprehensions and f-strings among them, which is what
+removes the object graph the line above walks. `**` carries a ceiling, because a
+worker holding a mapped task slot on `9**9**9` is a hang rather than a wrong
+answer.
+
+The same whitelist runs without evaluating, which is how `ptm.lint` and
+`ptm.rules.validate` reject a rule at the point it arrives instead of the first
+time it silently fails to match. The two jobs are separate on purpose: the
+validator is the kind of thing that acquires a gap, and a gap in it used to mean
+handing over the interpreter. [The escape is asserted against
+directly](tests/test_safe_eval.py).
+
+The language that is left is the one the rules actually use — comparisons,
+boolean and arithmetic operators, `in`, a conditional expression, literals, and
+calls to a fixed list of helpers.
 
 ### And what should it *say*?
 
@@ -538,6 +712,28 @@ the behaviour you want from a cache standing between you and a number you are
 going to act on. The model is in the key too: the same question put to a cheaper
 model is a different question.
 
+**And the estimate is scored.** Every cost figure here is measured from prompt
+size at four characters per token — the right precision for *"can I afford this
+backfill"*, and until recently a constant nobody could be shown to be wrong
+about. `LLMOperator` hands `result.usage` to its own logger and returns the
+output alone, so the vendor's real counts reached the task log and nothing else.
+[`ptm/metered.py`](ptm/metered.py) keeps them, by wrapping the *hook* rather than
+re-implementing `execute` — the approval path and the serialisation rules belong
+to the provider and are exactly what a copy drifts away from.
+
+Both numbers go in the ledger, because the gap is the point:
+
+```
+judged by anthropic:claude-sonnet-5 for an estimated USD 2.1471
+measured USD 2.4980 against an estimated USD 2.1471 (+16.3% out); these prompts
+ran at 3.44 characters per token, not the 4.0 the estimate assumes
+```
+
+The estimate is never corrected from the measurement — replacing it would
+destroy the only evidence of how good it is. `implied_chars_per_token` is the
+part to act on: it is the ratio that would have made the forecast right *for
+your policies*, in your language, with your markdown.
+
 The baseline pass is keyed separately from the candidate, which is where most of
 the saving comes from in practice — editing the candidate policy does not change
 the one in force, so half the judging is served from cache on every iteration.
@@ -556,6 +752,7 @@ make up        # Airflow 3.1 at localhost:8080 (admin/admin), history auto-seede
 make demo      # backfill 24 months of replay
 make confirm   # re-judge the biggest flips to check each one reproduces
 make stability # measure the judge's noise floor
+make crosscheck# ask a second model the same questions (needs PTM_OFFLINE=0)
 make draft     # have the proposal DAG write the next version of the policy
 ```
 
@@ -566,10 +763,11 @@ No Airflow, no API key, whole loop in about a second:
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest
-make test      # lint + 414 engine tests + the whole loop end to end
+make test      # lint + 510 engine tests + the whole loop end to end
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
+make grid      # two thresholds at once - one curve cannot show them interacting
 make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
 make propose   # draft the next version of the policy (writes nothing)
@@ -640,10 +838,12 @@ plugins/                        FastAPI plugin + Diff Explorer dashboard
 ptm/config.py                   domain YAML loading, and drafts merged in from disk
 ptm/store.py                    SQLite, incl. the point-in-time case query
 ptm/judge.py                    prompt construction + offline stand-in judge
+ptm/safe_eval.py                computes a rule by walking it, never by eval()
 ptm/diff.py                     flips, attribution, segments, precedent checks
 ptm/report.py                   the read models behind the plugin's API
 ptm/stability.py                how often the judge contradicts itself
 ptm/calibration.py              whether it is right, scored against the humans
+ptm/crosscheck.py               whether a second, independent judge agrees
 ptm/stats.py                    the intervals, in one place so each band means one thing
 ptm/disparity.py                who carries more of the change than the rest of their field
 ptm/preflight.py                what is wrong with the policy before it is replayed
@@ -651,11 +851,12 @@ ptm/sweep.py                    what the threshold should be, not just which cla
 ptm/rules.py                    are the offline rules the policy they stand in for?
 ptm/proposal.py                 drafts the next version, then makes the gate check it
 ptm/cache.py                    do not pay twice for a prompt already answered
-ptm/cost.py                     what a replay costs, and will cost
+ptm/cost.py                     what a replay costs, and did cost
+ptm/metered.py                  keeps the token counts LLMOperator only logs
 ptm/lint.py                     domain YAML vs the policies it claims to implement
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
-tests/                          501 tests; the engine's 414 need nothing but Python
+tests/                          612 tests; the engine's 510 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -705,10 +906,12 @@ Built and run against `apache/airflow:3.1.0` with
 - The baseline pass (`baseline_version`, on by default) is what makes clause
   attribution and deviation detection possible, and it **doubles** the judging.
   Blank it to diff against recorded history alone.
-- Cost figures are named `estimated_*` because they are measured from the
-  prompts this project builds, at a fixed 4 characters per token — not read
-  back from the vendor's usage reporting. Right precision for "can I afford
-  this backfill", wrong precision for reconciling an invoice.
+- Cost figures named `estimated_*` are measured from the prompts this project
+  builds, at a fixed 4 characters per token. `actual_*` are the vendor's own
+  counts and exist only for runs a real judge answered; `reconciliation` scores
+  one against the other. Neither is an invoice: the estimate is a forecast and
+  the measurement is a usage report, and a bill has rounding, minimums and
+  discounts in it that this knows nothing about.
 - Judge stability measures the vendor's default sampling behaviour. Offline it
   is identically zero and tells you so.
 - Precedent conflict detection needs a `conflicts.key` in the domain YAML, and
@@ -732,8 +935,32 @@ Built and run against `apache/airflow:3.1.0` with
   does not protect plugin endpoints automatically.
 - Airflow 3.1's `react_apps` plugin slot is marked experimental, so the
   dashboard is served as a dependency-free page from the FastAPI app instead.
-- `offline_rules` are evaluated with `eval` under an empty builtins scope.
-  They are a local demo fixture; only point them at YAML you wrote.
+- `offline_rules` are computed by `ptm/safe_eval.py`, which walks the parsed
+  expression rather than calling `eval`, and refuses everything outside
+  comparisons, boolean and arithmetic operators, literals and a fixed helper
+  list. That is what makes it safe to let `propose_<domain>` have a model write
+  rules that later replays evaluate. It is a whitelist, not a jail: it bounds
+  what an expression can *do*, and does not bound how long a pathological but
+  legal one takes beyond the `**` ceiling.
+- **A second judge is independent, not correct.** Where two judges split, the
+  cross-check reports both answers and stops; it is evidence the *policy* does
+  not settle that case, never evidence about which model was right. It also has
+  no offline form — the offline judge standing in for a second opinion would be
+  one rule set answering twice — so unlike every other check here it simply does
+  not run without `PTM_OFFLINE=0`.
+- **A ruling is not re-confirmed when the clause it was about changes.** The
+  staleness check says which rulings predate the text now in front of them; it
+  does not decide whether they still hold, and the gate goes on enforcing every
+  one of them. Rulings recorded before the circumstances were captured are
+  reported as *unknown* rather than assumed fresh.
+- **The rule-agreement gate is inert offline** and deliberately does not fire
+  when the measurement is inert or absent. A gate that passes because the check
+  is switched off is worse than no gate; one that fires on a project that has
+  not run yet gets turned off on day one.
+- **A threshold grid is still fixture arithmetic.** It shows that two dials
+  interact under the *rules*, which is the same caveat the single sweep carries,
+  and it is capped at 64 points because `|A| × |B|` full replays stops being
+  cheap somewhere.
 - **Judge accuracy is measured on the precedent set**, which is by construction
   the contested flips. It is a floor on the judge's accuracy over all cases, not
   an estimate of it, and on eight rulings its confidence band is very wide.

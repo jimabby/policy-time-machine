@@ -17,6 +17,7 @@ import json
 from datetime import datetime
 
 from . import calibration as calibration_engine
+from . import crosscheck as crosscheck_engine
 from . import cost, diff, disparity as disparity_engine, preflight as preflight_engine
 from . import rules as rules_engine
 from . import stats, store
@@ -108,6 +109,7 @@ def summary(domain: str, version: str) -> dict:
         "baseline_versions": sorted(b["baseline_version"] for b in baselines),
         "precedent_conflicts": len(conflicts(domain)),
         "stability": store.latest_stability(domain, version),
+        "cross_check": store.latest_cross_check(domain, version),
         "flip_confirmation": confirmation_summary(domain, version),
         "is_draft": version in config.draft_versions,
     }
@@ -204,15 +206,23 @@ def precedent_check(domain: str, version: str) -> dict:
     found, unchecked = under(version)
     in_force_found = found if config.in_force == version else under(config.in_force)[0]
     pre_existing = {v["case_id"] for v in in_force_found}
+    # Whether the oracle is still about this policy. Reported next to the
+    # violations rather than in a panel of its own, because the number that
+    # matters is how many of *these* reversals rest on a ruling that has not
+    # been re-confirmed since the clause it was about changed.
+    stale = diff.stale_precedents(precedents, config, version)
+    stale_ids = {r["case_id"] for r in stale}
     return {
         "precedents": len(precedents),
         "checked": len(precedents) - len(unchecked),
         "unchecked": unchecked,
-        "violations": found,
+        "violations": [{**v, "stale": v["case_id"] in stale_ids} for v in found],
         "in_force": config.in_force,
         "in_force_violations": in_force_found,
         # The honest headline: what this proposal is responsible for breaking.
         "introduced": [v for v in found if v["case_id"] not in pre_existing],
+        "stale": stale,
+        "stale_summary": diff.describe_stale(stale, version),
     }
 
 
@@ -220,6 +230,32 @@ def thresholds(domain: str, version: str) -> list[dict]:
     """The numeric dials a sweep can move in this version's offline rules."""
     config = _checked(domain, version)
     return sweep_engine.thresholds(config, version)
+
+
+def _rules_check(domain: str, version: str) -> dict:
+    """Whether the rules a sweep is about to be computed from still implement the policy.
+
+    Attached to every sweep result rather than left on its own panel. The sweep
+    is arithmetic over the offline rules, so it is worth exactly what the rules
+    are worth - and a curve that arrives with no statement about that is a curve
+    somebody will read as being about the policy.
+    """
+    config = _checked(domain, version)
+    try:
+        result = rule_agreement(domain, version)
+    except LookupError:
+        return {"measured": False}
+    problems = rules_engine.gate(result, config)
+    return {
+        "measured": bool(result.get("compared")),
+        "inert": bool(result.get("inert")),
+        "agreement": result.get("rate"),
+        "clause_agreement": result.get("clause_agreement"),
+        "compared": result.get("compared", 0),
+        "gate": config.rules.gate,
+        "problems": problems,
+        "hint": result.get("hint", ""),
+    }
 
 
 def sweep(domain: str, version: str, field: str, values: list[float] | str,
@@ -230,8 +266,13 @@ def sweep(domain: str, version: str, field: str, values: list[float] | str,
     carries. Parsing it here rather than in the plugin is what keeps the plugin
     to routing alone, and therefore keeps this endpoint covered by a test suite
     that does not install FastAPI.
+
+    Refuses outright when the rules have drifted past the domain's
+    ``rules.gate`` of ``fail``. A sweep is arithmetic over the offline rules, so
+    serving one built on rules that no longer agree with the judge hands back a
+    curve about the fixture wearing the policy's name.
     """
-    _checked(domain, version)
+    config = _checked(domain, version)
     if isinstance(values, str):
         try:
             values = sweep_engine.parse_values(values)
@@ -241,7 +282,47 @@ def sweep(domain: str, version: str, field: str, values: list[float] | str,
         raise LookupError("a sweep needs at least one value")
     if len(values) > 40:
         raise LookupError(f"{len(values)} values is more than one sweep will run; cap is 40")
-    return sweep_engine.sweep(domain, version, field, values, clause=clause)
+    check = _rules_check(domain, version)
+    if check["problems"] and config.rules.gate == "fail":
+        raise LookupError("; ".join(check["problems"]))
+    return {**sweep_engine.sweep(domain, version, field, values, clause=clause),
+            "rules_check": check}
+
+
+#: Ceiling on a grid. |A| x |B| full replays is cheap per point and not cheap
+#: at 400 of them, and an endpoint anyone can call is not the place to find that
+#: out. Two single sweeps are how a range gets narrowed to something this size.
+MAX_GRID_POINTS = 64
+
+
+def joint_sweep(domain: str, version: str, first_field: str, first_values: list | str,
+                second_field: str, second_values: list | str,
+                first_clause: str = "", second_clause: str = "") -> dict:
+    """Two dials at once. See :func:`ptm.sweep.joint` for why a grid, not two curves."""
+    _checked(domain, version)
+    axes = []
+    for field, raw, clause in ((first_field, first_values, first_clause),
+                               (second_field, second_values, second_clause)):
+        values = raw
+        if isinstance(values, str):
+            try:
+                values = sweep_engine.parse_values(values)
+            except ValueError as exc:
+                raise LookupError(
+                    f"values for {field} must be comma-separated numbers: {exc}") from exc
+        if not values:
+            raise LookupError(f"the {field} axis needs at least one value")
+        axes.append({"field": field, "values": values, "clause": clause})
+    points = len(axes[0]["values"]) * len(axes[1]["values"])
+    if points > MAX_GRID_POINTS:
+        raise LookupError(
+            f"{points} grid points is more than one request will run; the cap is "
+            f"{MAX_GRID_POINTS}. Narrow each axis with a single sweep first.")
+    check = _rules_check(domain, version)
+    if check["problems"] and load_domain(domain).rules.gate == "fail":
+        raise LookupError("; ".join(check["problems"]))
+    return {**sweep_engine.joint(domain, version, axes[0], axes[1]),
+            "rules_check": check}
 
 
 FLIP_COLUMNS = ["case_id", "decided_at", "actual_outcome", "new_outcome",
@@ -287,6 +368,7 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
         "precedents": precedents(domain),
         "cost": cost_report(domain, version),
         "stability": stability(domain, version),
+        "cross_check": cross_check(domain, version),
         "calibration": calibration(domain, version),
         "disparity": disparity(domain, version),
         "preflight": preflight(domain, version),
@@ -295,12 +377,18 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
         "caveats": [
             "Impact is the value of the cases whose outcome changes, not a cash-flow "
             "forecast.",
-            "Cost figures are estimated from prompt size at a fixed 4 characters per "
-            "token, not read back from the vendor.",
+            "Cost figures marked estimated_* are measured from prompt size at a fixed "
+            "4 characters per token. actual_* are the vendor's own counts, and only "
+            "exist for runs judged by a real model; 'reconciliation' scores one against "
+            "the other.",
             "Flips attributed to " + diff.DEVIATION + " are cases the policy already in "
             "force decided differently too, and are not caused by this proposal.",
             "A flip rate quoted without the judge stability figure is quoted without an "
             "error bar.",
+            "Judge self-consistency is satisfied by a judge that misreads a clause the "
+            "same way every time. 'cross_check' is the only figure here that asks a "
+            "second, independent judge - and where two judges split, the disagreement is "
+            "the finding, not either answer.",
             "flip_rate_lo/hi is sampling error - how much this rate could move on a "
             "different sample of the same size. It is a different band from the judge's "
             "noise floor and the two do not add.",
@@ -385,10 +473,22 @@ def cost_report(domain: str, version: str) -> dict:
     cached["estimated_saved_usd"] = cost.estimate(
         int(cached["hit_prompt_chars"] or 0), int(cached["hits"] or 0),
         JUDGE_MODEL)["estimated_cost_usd"] if cached["hits"] else 0.0
+    ledger = store.cost_ledger(domain, version)
+    # Score the forecast against what was actually billed, where anything
+    # measured it. Reported as a check rather than folded into the ledger: the
+    # estimate is what a reader compares the next backfill against, so replacing
+    # it would destroy the only evidence of how good it is.
+    check = cost.reconcile(
+        {"estimated_input_tokens": ledger["input_tokens"],
+         "estimated_cost_usd": ledger["cost_usd"],
+         "actual_input_tokens": ledger["actual_input_tokens"],
+         "actual_cost_usd": ledger["actual_cost_usd"]},
+        prompt_chars=int(ledger["input_tokens"] * cost.CHARS_PER_TOKEN))
     return {
-        "ledger": store.cost_ledger(domain, version),
+        "ledger": ledger,
         "forecast": {**forecast, "cases": n_cases,
                      "with_baseline_pass_usd": round(forecast["estimated_cost_usd"] * 2, 4)},
+        "reconciliation": check,
         "cache": cached,
         "judge_model": JUDGE_MODEL,
     }
@@ -411,6 +511,35 @@ def stability(domain: str, version: str) -> dict:
         by_case.setdefault(row["case_id"], {})[row["outcome"]] = row["n"]
     return {"measured": True, **latest,
             "disagreeing_cases": {k: v for k, v in by_case.items() if len(v) > 1}}
+
+
+def cross_check(domain: str, version: str) -> dict:
+    """A second judge's answers on the same policy. See :mod:`ptm.crosscheck`.
+
+    Returns a hint rather than a report when nothing has run, because an absent
+    panel reads as a check that passed. The cases the two judges split on are
+    the output worth reading - they are the sentences of the policy that do not
+    settle a case, found without spending a human on any of them.
+    """
+    _checked(domain, version)
+    latest = store.latest_cross_check(domain, version)
+    if not latest:
+        return {"measured": False,
+                "hint": f"run judge_stability_{domain} with compare_model set to a second "
+                        f"model to find out how much of this flip rate one judge is "
+                        f"responsible for"}
+    report_body = latest["report"]
+    return {
+        "measured": True,
+        "run_id": latest["run_id"],
+        "created_at": latest["created_at"],
+        "report": report_body,
+        "summary": crosscheck_engine.describe(
+            crosscheck_engine.CrossCheckReport(**report_body)),
+        "caveat": "a second judge is independent, not correct. A case they split on is "
+                  "evidence the policy does not settle it - it is not evidence about "
+                  "which model was right.",
+    }
 
 
 def conflicts(domain: str) -> list[dict]:

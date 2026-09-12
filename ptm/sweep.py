@@ -186,6 +186,144 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
     }
 
 
+def joint(domain_name: str, version: str, first: dict, second: dict,
+          baseline_version: str | None = None,
+          cases: list[Case] | None = None) -> dict:
+    """Two dials at once, as a grid rather than two curves.
+
+    One-at-a-time sweeping answers *"what happens if I move this"* and quietly
+    assumes the answer does not depend on where the other dial is sitting.
+    Policy thresholds are exactly where that assumption fails: an exemption and
+    the restriction it carves out of interact by construction, so the best
+    setting for one, found with the other held still, can be the wrong setting
+    once both move. A curve cannot show that and a grid can.
+
+    ``first`` and ``second`` are ``{"field", "values", "clause"}``. Everything
+    else works like :func:`sweep` - the baseline is judged once and reused,
+    because no candidate setting changes the policy already in force.
+
+    Cheap for the same reason the single sweep is: pure rule evaluation over
+    cases already on file, no model and no bill. It is |A| x |B| replays, so the
+    caller is expected to have narrowed the range with two single sweeps first.
+    """
+    domain = load_domain(domain_name)
+    if cases is None:
+        cases = load_cases(domain_name, until=datetime.now())
+    if not cases:
+        raise LookupError(f"no {domain_name} cases on file; seed the history first")
+    if first.get("field") == second.get("field") and \
+            str(first.get("clause") or "") == str(second.get("clause") or ""):
+        raise LookupError(
+            "both axes name the same dial, so every point on the diagonal would be the "
+            "only real measurement. Sweep one axis on its own instead.")
+
+    baseline_version = domain.in_force if baseline_version is None else baseline_version
+    baseline = None
+    if baseline_version:
+        baseline = {c.case_id: offline_verdict(c, domain, baseline_version) for c in cases}
+
+    dials = thresholds(domain, version)
+
+    def current_of(axis: dict):
+        clause = str(axis.get("clause") or "")
+        return next((d["value"] for d in dials
+                     if d["field"] == axis["field"] and (not clause or d["clause"] == clause)),
+                    None)
+
+    current_first, current_second = current_of(first), current_of(second)
+    points = []
+    for a in first["values"]:
+        patched_a, hits_a = variant(domain, version, first["field"], a,
+                                    str(first.get("clause") or ""))
+        if not hits_a:
+            raise LookupError(_no_dial(domain_name, version, first, dials))
+        for b in second["values"]:
+            patched, hits_b = variant(patched_a, version, second["field"], b,
+                                      str(second.get("clause") or ""))
+            if not hits_b:
+                raise LookupError(_no_dial(domain_name, version, second, dials))
+            verdicts = {c.case_id: offline_verdict(c, patched, version) for c in cases}
+            found = diff.flips(cases, verdicts, patched, baseline=baseline)
+            summary = diff.summarise(found, len(cases), patched)
+            points.append({
+                first["field"]: a,
+                second["field"]: b,
+                "first_value": a,
+                "second_value": b,
+                "is_current": (current_first is not None and float(a) == float(current_first)
+                               and current_second is not None
+                               and float(b) == float(current_second)),
+                "flips": summary["flips"],
+                "flip_rate": summary["flip_rate"],
+                "loosening": summary["loosening"],
+                "tightening": summary["tightening"],
+                "net_impact": summary["net_impact"],
+                "policy_driven_flips": summary["policy_driven_flips"],
+                "policy_driven_net_impact": summary["policy_driven_net_impact"],
+                "deviation_flips": summary["deviation_flips"],
+            })
+
+    # Whether the two dials interact at all, in one number. If moving the second
+    # dial changed the first's effect by nothing, the grid was not worth running
+    # and two curves would have told the whole story - saying so is what stops
+    # this becoming a panel people look at out of habit.
+    return {
+        "domain": domain_name,
+        "version": version,
+        "first": {**first, "current": current_first},
+        "second": {**second, "current": current_second},
+        "baseline_version": baseline_version or "",
+        "cases": len(cases),
+        "impact_unit": domain.impact_unit,
+        "points": points,
+        "interaction": _interaction(points, first["values"], second["values"]),
+    }
+
+
+def _no_dial(domain_name: str, version: str, axis: dict, dials: list[dict]) -> str:
+    where = f" clause {axis['clause']}" if axis.get("clause") else ""
+    return (f"no rule in {domain_name}/{version}{where} compares {axis['field']!r} to a "
+            f"number; available dials: {sorted({(d['clause'], d['field']) for d in dials})}")
+
+
+def _interaction(points: list[dict], firsts: list, seconds: list) -> dict:
+    """How much the effect of one dial depends on where the other one is.
+
+    Measured as the spread of the *first* dial's effect across the second dial's
+    settings: for each column, how far the flip count moves from the top of the
+    first axis to the bottom, and then how much those movements differ from each
+    other. Zero means the dials are independent and two separate curves say
+    everything this grid does.
+    """
+    if len(firsts) < 2 or len(seconds) < 2:
+        return {"measured": False,
+                "hint": "a grid needs at least two settings on each axis to say whether "
+                        "the dials interact"}
+    by_pair = {(p["first_value"], p["second_value"]): p["flips"] for p in points}
+    spans = []
+    for b in seconds:
+        column = [by_pair.get((a, b)) for a in firsts]
+        column = [v for v in column if v is not None]
+        if len(column) > 1:
+            spans.append(max(column) - min(column))
+    if not spans:
+        return {"measured": False, "hint": "the grid is incomplete"}
+    spread = max(spans) - min(spans)
+    return {
+        "measured": True,
+        # The first dial's effect, at its weakest and strongest position of the
+        # second. Reported as counts because that is what the rest of the panel
+        # is in, and a normalised index nobody can check is worse than a number.
+        "effect_min_flips": min(spans),
+        "effect_max_flips": max(spans),
+        "interaction_flips": spread,
+        "independent": spread == 0,
+        "note": "how far the first dial moves the decision base, at the second dial's "
+                "least and most favourable setting. Equal means the two are independent "
+                "and two single sweeps would have told you the same thing.",
+    }
+
+
 def parse_values(raw: str) -> list[float]:
     out: list[float] = []
     for chunk in raw.split(","):
@@ -199,8 +337,92 @@ def parse_values(raw: str) -> list[float]:
 USAGE = (
     "usage: python -m ptm.sweep <domain> <version>                        list the dials\n"
     "       python -m ptm.sweep <domain> <version> <field> <v1,v2,...>\n"
-    "       python -m ptm.sweep <domain> <version> <clause> <field> <v1,v2,...>"
+    "       python -m ptm.sweep <domain> <version> <clause> <field> <v1,v2,...>\n"
+    "       python -m ptm.sweep <domain> <version> --joint <clause>:<field>=<v1,v2,...> "
+    "<clause>:<field>=<v1,v2,...>\n"
+    "           two dials at once, as a grid. The clause is optional: ':field=..' or "
+    "'field=..' moves every\n"
+    "           occurrence of the field in the version."
 )
+
+
+def parse_axis(raw: str) -> dict:
+    """``1.1:amount=25,50,75`` - or ``amount=25,50`` for every clause using it."""
+    if "=" not in raw:
+        raise ValueError(f"axis {raw!r} needs the form [clause:]field=v1,v2,...")
+    head, values = raw.split("=", 1)
+    clause, _, field = head.rpartition(":")
+    if not field:
+        raise ValueError(f"axis {raw!r} names no field")
+    return {"clause": clause, "field": field, "values": parse_values(values)}
+
+
+def _print_joint(result: dict) -> None:
+    unit = result["impact_unit"]
+    first, second = result["first"], result["second"]
+    print(f"sweeping {first['field']} x {second['field']} in {result['domain']}/"
+          f"{result['version']} over {result['cases']} cases "
+          f"(baseline {result['baseline_version'] or 'none'})")
+    seconds = list(dict.fromkeys(p["second_value"] for p in result["points"]))
+    by_pair = {(p["first_value"], p["second_value"]): p for p in result["points"]}
+    # The row label is the first dial's setting; the column label is the
+    # second's. One prefix width for both, so the grid lines up under its own
+    # header - a table a reader has to count across is a table nobody reads.
+    label = f"{first['field'][:11]} \\ {second['field'][:11]}"
+    width = max(len(label) + 2, 20)
+    print(f"{label:<{width}}" + "".join(f"{v:>12}" for v in seconds))
+    print(f"{'(rows \\ columns)':<{width}}" + "".join(f"{'flips':>12}" for _ in seconds))
+    for a in dict.fromkeys(p["first_value"] for p in result["points"]):
+        cells = []
+        for b in seconds:
+            point = by_pair.get((a, b))
+            mark = "*" if point and point["is_current"] else " "
+            cells.append(f"{point['flips'] if point else '-':>11}{mark}")
+        print(f"{a:<{width}}" + "".join(cells))
+    print(f"  (* = the settings in force. net {unit} and the policy-driven split are in "
+          f"the JSON form of this result.)")
+    interaction = result["interaction"]
+    if interaction.get("measured"):
+        print(f"\ninteraction: moving {first['field']} changes "
+              f"{interaction['effect_min_flips']}-{interaction['effect_max_flips']} "
+              f"decisions depending on where {second['field']} sits "
+              f"({interaction['interaction_flips']} apart)")
+        print("  " + ("the two dials are independent here, so two single sweeps would "
+                      "have told you the same thing"
+                      if interaction["independent"] else
+                      "the dials interact: the best setting for one depends on the other, "
+                      "which is what a pair of single sweeps cannot show"))
+
+
+def _warn_about_the_rules(domain_name: str, version: str) -> None:
+    """Say what the curve above is worth, next to the curve above.
+
+    The sweep is arithmetic over ``offline_rules``, so it is only ever as good
+    as the rules' agreement with the judge. Printing the caveat somewhere else
+    means it is read by somebody other than the person acting on the numbers.
+    """
+    from . import report as report_module
+
+    try:
+        result = report_module.rule_agreement(domain_name, version)
+    except LookupError:
+        return
+    if result.get("inert"):
+        print("\n  these curves are computed from the offline rules, and the verdicts "
+              "they were last scored against came from those same rules - so nothing "
+              "here has been checked against a real judge")
+        return
+    if not result.get("compared"):
+        print("\n  these curves are computed from the offline rules, which have never "
+              "been scored against a judge - run the replay, then python -m ptm.rules")
+        return
+    print(f"\n  computed from offline rules agreeing with the judge on "
+          f"{result['rate']:.1%} of {result['compared']} case(s), citing the same clause "
+          f"{result['clause_agreement']:.1%} of the time")
+    from .config import load_domain as _load
+
+    for problem in report_module.rules_engine.gate(result, _load(domain_name)):
+        print(f"  WARNING {problem}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,6 +433,14 @@ def main(argv: list[str] | None = None) -> int:
 
     domain_name, version = args[0], args[1]
     domain = load_domain(domain_name)
+    if "--joint" in args:
+        axes = [a for a in args[args.index("--joint") + 1:] if not a.startswith("--")]
+        if len(axes) != 2:
+            print(USAGE)
+            return 2
+        _print_joint(joint(domain_name, version, parse_axis(axes[0]), parse_axis(axes[1])))
+        _warn_about_the_rules(domain_name, version)
+        return 0
     if len(args) == 2:
         print(f"numeric dials in {domain_name}/{version}:")
         for t in thresholds(domain, version):
@@ -237,6 +467,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{p['value']:>14}{p['flips']:>8}{p['flip_rate']:>7.1%}{p['loosening']:>8}"
               f"{p['tightening']:>9}{p['net_impact']:>13,.0f}"
               f"{p['policy_driven_flips']:>15}{mark}")
+    # After the table, not before it: the caveat is about the numbers a reader
+    # has just seen, and above them it is read as preamble and skipped.
+    _warn_about_the_rules(domain_name, version)
     return 0
 
 

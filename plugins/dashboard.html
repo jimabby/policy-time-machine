@@ -85,10 +85,22 @@ button:hover{border-color:var(--accent)}
     <button id=swgo>Sweep</button>
     <span id=swnote></span>
   </div>
+  <!-- A curve holds every other dial still and never says so. This is the
+       second axis that shows whether that assumption survives. -->
+  <div class=cmp>
+    <select id=swdial2 aria-label="Second threshold (optional)"></select>
+    <input id=swvalues2 aria-label="Values for the second dial" placeholder="3,7,14">
+    <button id=swgo2>Sweep both</button>
+    <span id=swnote2></span>
+  </div>
   <div id=sweep></div>
+  <div id=sweepgrid></div>
 
   <h2>Can the sweep be trusted? <span class=note>do the offline rules agree with the judge they stand in for</span></h2>
   <div id=rules></div>
+
+  <h2>Does a second judge agree? <span class=note>self-consistency is satisfied by a judge that misreads a clause every time</span></h2>
+  <div id=crosscheck></div>
 
   <h2>Not this policy's doing <span class=note>recorded outcomes the rule already in force disagreed with</span></h2>
   <div id=deviations></div>
@@ -133,7 +145,8 @@ const api = async path => {
 };
 
 let DOMAINS = [];
-const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep","#rules",
+const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep",
+                "#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
                 "#calibration","#drafts"];
 
@@ -142,6 +155,7 @@ function fail(message) {
   PANELS.slice(1).forEach(id => { $(id).innerHTML = ""; });
   $("#cmpsummary").textContent = "";
   $("#swnote").textContent = "";
+  $("#swnote2").textContent = "";
   $("#status").textContent = "Unavailable";
 }
 
@@ -189,11 +203,24 @@ function renderTiles(summary, costs, gate, calibration) {
           (calibration.report.overconfidence > 0
             ? `, ${pct(calibration.report.overconfidence)} overconfident` : "")
         : "needs precedents judged by the gate"],
-    ["Judging spend", costs ? `USD ${Number(costs.ledger.cost_usd).toFixed(2)}` : "-", "",
-      costs ? `full replay forecast USD ${Number(costs.forecast.estimated_cost_usd).toFixed(2)}` +
-        (costs.cache && costs.cache.hits
-          ? ` · cache saved USD ${Number(costs.cache.estimated_saved_usd).toFixed(2)}`
-          : "") : ""],
+    // The estimate, and - where a metered judge ran - what it actually was.
+    // Both, never one: the estimate is what the forecast beside it is built
+    // from, so replacing it with the measurement would hide how good it is.
+    ["Judging spend", costs
+        ? (costs.reconciliation && costs.reconciliation.measured
+            ? `USD ${Number(costs.reconciliation.actual_cost_usd).toFixed(2)}`
+            : `USD ${Number(costs.ledger.cost_usd).toFixed(2)}`)
+        : "-",
+      costs && costs.reconciliation && costs.reconciliation.measured ? "loose" : "",
+      costs
+        ? (costs.reconciliation && costs.reconciliation.measured
+            ? `measured; estimate was USD ${Number(costs.reconciliation.estimated_cost_usd).toFixed(2)} ` +
+              `(${pct(costs.reconciliation.cost_error)} out)`
+            : `estimated · full replay forecast USD ${Number(costs.forecast.estimated_cost_usd).toFixed(2)}`) +
+          (costs.cache && costs.cache.hits
+            ? ` · cache saved USD ${Number(costs.cache.estimated_saved_usd).toFixed(2)}`
+            : "")
+        : ""],
     ["Flips confirmed", confirm.measured
         ? `${num(confirm.stable)} / ${num(confirm.measured)}`
         : "not measured",
@@ -210,7 +237,13 @@ function renderTiles(summary, costs, gate, calibration) {
       gate && gate.precedents
         ? `${num(gate.introduced.length)} introduced by this policy; ` +
           `${num(gate.in_force_violations.length)} by ${esc(gate.in_force)}, in force` +
-          (gate.unchecked.length ? ` - ${gate.unchecked.length} unchecked` : "")
+          (gate.unchecked.length ? ` - ${gate.unchecked.length} unchecked` : "") +
+          // A reversal resting on a ruling made about a sentence that has since
+          // changed is a different fix from editing the policy, and the tile is
+          // where somebody decides which one they are looking at.
+          (gate.stale && gate.stale.length
+            ? ` - ${gate.stale.length} ruling(s) predate the current text`
+            : "")
         : "adjudicate some flips first"],
   ];
   $("#tiles").innerHTML = tiles.map(([k, v, cls, sub]) =>
@@ -337,15 +370,34 @@ function toggle(i) { const el = document.getElementById("d" + i); el.hidden = !e
 window.toggle = toggle;
 
 // --------------------------------------------------------- precedents
-function renderPrecedents(rows) {
-  $("#precedents").innerHTML = table(
-    [{label: "Case"}, {label: "Correct outcome"}, {label: "Ruled by"}, {label: "When"}, {label: "Note"}],
-    rows.map(r => `<tr>
+function renderPrecedents(rows, gate) {
+  // Which rulings may no longer be about the policy they were made about. The
+  // gate enforces every one of these as hard as a ruling made this morning, and
+  // without this column nothing on the page would ever say which is which.
+  const stale = new Map((gate && gate.stale || []).map(r => [r.case_id, r]));
+  const note = stale.size
+    ? `<p class=hero><strong class=warn>${num(stale.size)} of these rulings</strong> were
+       made about a version of the policy whose text has since changed, or before the
+       circumstances were recorded. They are still enforced &mdash; re-adjudicating one is
+       how it stops being a guess. Whether a ruling still holds is a person's call, so
+       nothing here fails a run.</p>`
+    : "";
+  $("#precedents").innerHTML = note + table(
+    [{label: "Case"}, {label: "Correct outcome"}, {label: "Ruled by"}, {label: "When"},
+     {label: "Ruled under"}, {label: "Why"}],
+    rows.map(r => {
+      const old = stale.get(r.case_id);
+      return `<tr>
       <td>${esc(r.case_id)}</td>
-      <td><span class=pill>${esc(r.correct_outcome)}</span></td>
+      <td><span class=pill>${esc(r.correct_outcome)}</span>${r.judged_outcome
+        ? ` <span class=sub>over &lsquo;${esc(r.judged_outcome)}&rsquo;</span>` : ""}</td>
       <td>${esc(r.ruled_by)}</td>
       <td>${esc(r.established_at.slice(0, 10))}</td>
-      <td>${esc(r.note || "")}</td></tr>`),
+      <td class="${old ? "warn" : "muted"}">${esc(r.policy_version || "not recorded")}${
+        r.judged_clause ? ` &middot; clause ${esc(r.judged_clause)}` : ""}${
+        old ? `<div class=sub>${esc(old.detail)}</div>` : ""}</td>
+      <td>${esc(r.note || "")}</td></tr>`;
+    }),
     "No precedents yet - run the adjudication DAG and answer the human-in-the-loop tasks.");
 }
 
@@ -378,6 +430,29 @@ function renderDials(dials) {
   $("#swvalues").value = [0.5, 0.75, 1, 1.5, 2]
     .map(m => Math.round(first * m * 100) / 100).join(",");
   $("#sweep").innerHTML = `<div class=empty>Pick a dial and press Sweep.</div>`;
+
+  // The second axis. Defaulted to a dial on a *different field* where one
+  // exists: two axes carrying the same name is a legitimate pair and an
+  // unreadable table.
+  const second = $("#swdial2");
+  const others = dials.filter((d, i) => i > 0);
+  if (!others.length) {
+    second.innerHTML = `<option value="">no second dial in this version</option>`;
+    second.disabled = $("#swgo2").disabled = true;
+    $("#sweepgrid").innerHTML = "";
+    return;
+  }
+  second.disabled = $("#swgo2").disabled = false;
+  second.innerHTML = others.map(d =>
+    `<option value="${esc(d.clause)}|${esc(d.field)}">clause ${esc(d.clause || "-")} &middot; ${
+      esc(d.field)} (now ${esc(d.value)})</option>`).join("");
+  const preferred = others.find(d => d.field !== dials[0].field) || others[0];
+  second.value = `${preferred.clause}|${preferred.field}`;
+  $("#swvalues2").value = [0.5, 1, 1.5, 2]
+    .map(m => Math.round(preferred.value * m * 100) / 100).join(",");
+  $("#sweepgrid").innerHTML = `<div class=empty>A single curve holds every other
+    threshold still and never says so. Press <strong>Sweep both</strong> to find out
+    whether that assumption survives.</div>`;
 }
 
 async function runSweep() {
@@ -392,6 +467,7 @@ async function runSweep() {
                        `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}`);
   } catch (e) {
     $("#swnote").textContent = "";
+  $("#swnote2").textContent = "";
     $("#sweep").innerHTML = `<div class=empty>That sweep could not be run. Values must be
       comma-separated numbers, and the dial must exist in this version.</div>`;
     return;
@@ -417,6 +493,102 @@ async function runSweep() {
         <td class=num>${money(unit, p.net_impact)}</td>
         <td class=num>${num(p.policy_driven_flips)}</td></tr>`),
       "No points returned.");
+}
+
+async function runGrid() {
+  const domain = $("#domain").value, version = $("#version").value;
+  const [clause, field] = ($("#swdial").value || "|").split("|");
+  const [clause2, field2] = ($("#swdial2").value || "|").split("|");
+  const values = $("#swvalues").value.trim(), values2 = $("#swvalues2").value.trim();
+  if (!field || !field2 || !values || !values2) {
+    $("#swnote2").textContent = "pick two dials and some values"; return;
+  }
+  $("#swnote2").textContent = "running...";
+  let result;
+  try {
+    result = await api(`/api/sweep-grid/${domain}/${version}` +
+      `?field=${encodeURIComponent(field)}&values=${encodeURIComponent(values)}` +
+      `&clause=${encodeURIComponent(clause)}` +
+      `&field2=${encodeURIComponent(field2)}&values2=${encodeURIComponent(values2)}` +
+      `&clause2=${encodeURIComponent(clause2)}`);
+  } catch (e) {
+    $("#swnote2").textContent = "";
+    $("#sweepgrid").innerHTML = `<div class=empty>That grid could not be run. Both dials
+      must exist and be different, the values must be comma-separated numbers, and the
+      grid is capped at 64 points &mdash; narrow each axis with a single sweep first.</div>`;
+    return;
+  }
+  const firsts = [...new Set(result.points.map(p => p.first_value))];
+  const seconds = [...new Set(result.points.map(p => p.second_value))];
+  const byPair = new Map(result.points.map(p => [`${p.first_value}|${p.second_value}`, p]));
+  const flips = result.points.map(p => p.flips);
+  const lo = Math.min(...flips), hi = Math.max(...flips);
+  // Shaded by flip count so the shape of the surface is visible at a glance;
+  // the numbers stay, because a heatmap nobody can read the values off is a
+  // picture rather than a measurement.
+  const shade = n => hi === lo ? 0 : (n - lo) / (hi - lo);
+  const interaction = result.interaction || {};
+  $("#swnote2").innerHTML = `<span class=muted>${num(result.cases)} cases &times;
+    ${result.points.length} settings</span>`;
+  $("#sweepgrid").innerHTML =
+    `<p class=hero>${interaction.measured
+      ? `Moving <strong>${esc(result.first.field)}</strong> changes
+         ${num(interaction.effect_min_flips)}&ndash;${num(interaction.effect_max_flips)}
+         decisions depending on where <strong>${esc(result.second.field)}</strong> sits. ` +
+        (interaction.independent
+          ? "The two are independent here, so two single sweeps say the same thing."
+          : "They interact &mdash; the best setting for one depends on the other, which is "
+            + "exactly what a pair of curves cannot show.")
+      : "A grid needs at least two settings on each axis to say whether the dials interact."}
+     </p>` +
+    table(
+      [{label: `${esc(result.first.field)} \\ ${esc(result.second.field)}`},
+       ...seconds.map(v => ({label: esc(v), num: 1}))],
+      firsts.map(a => `<tr>
+        <td><strong>${esc(a)}</strong>${a === result.first.current
+          ? " <span class=sub>current</span>" : ""}</td>` +
+        seconds.map(b => {
+          const point = byPair.get(`${a}|${b}`);
+          if (!point) return `<td class="num muted">-</td>`;
+          return `<td class="num${point.is_current ? " warn" : ""}"
+            style="background:rgba(220,120,60,${(shade(point.flips) * 0.35).toFixed(2)})"
+            title="${esc(a)} / ${esc(b)}: ${num(point.policy_driven_flips)} caused by this policy, net ${
+              esc(result.impact_unit)} ${num(point.net_impact)}">${num(point.flips)}</td>`;
+        }).join("") + `</tr>`),
+      "No points returned.");
+}
+
+// ------------------------------------------------------------ cross-check
+function renderCrossCheck(result) {
+  if (!result.measured) {
+    $("#crosscheck").innerHTML = `<div class=empty>${esc(result.hint)}<br><br>
+      Every other check here compares the judge to itself. A judge that misreads a clause
+      and misreads it the same way every time passes all of them.</div>`;
+    return;
+  }
+  const r = result.report;
+  const split = r.compared - r.agreed;
+  const note = `<p class=hero>${esc(r.primary)} and ${esc(r.secondary)} agreed on
+    <strong>${num(r.agreed)} of ${num(r.compared)}</strong> cases
+    (${pct(r.agreement)}, ${pct(r.agreement_lo)}&ndash;${pct(r.agreement_hi)}), citing the
+    same clause ${pct(r.clause_agreement)} of the time.
+    ${split ? `The ${num(split)} they split on are cases the policy does not settle &mdash;
+      ${num(r.contested_flips)} of them are flips only ${esc(r.primary)} makes, so that much
+      of the headline rests on one judge. A second judge is independent, not correct.`
+    : "They never disagreed on this sample."}</p>`;
+  $("#crosscheck").innerHTML = note + (split ? table(
+    [{label: "Case"}, {label: esc(r.primary)}, {label: esc(r.secondary)},
+     {label: "Clauses"}, {label: "Recorded"}, {label: "Only one flips"}],
+    r.disagreements.map(d => `<tr>
+      <td>${esc(d.case_id)}</td>
+      <td><span class=pill>${esc(d.primary_outcome)}</span>
+        <span class=sub>conf ${pct(d.primary_confidence)}</span></td>
+      <td><span class=pill>${esc(d.secondary_outcome)}</span></td>
+      <td class=muted>${esc(d.primary_clause || "-")} vs ${esc(d.secondary_clause || "-")}</td>
+      <td><span class=pill>${esc(d.actual_outcome || "-")}</span></td>
+      <td class="${d.only_one_flips ? "warn" : "muted"}">${d.only_one_flips ? "yes" : "no"}</td>
+      </tr>`),
+    "No disagreements.") : "");
 }
 
 // ------------------------------------------------------------ deviations
@@ -495,7 +667,8 @@ function renderDisparity(result, unit) {
   }
   if (!result.findings.length) {
     $("#disparity").innerHTML = `<div class=empty>No segment moves more than
-      ${esc(result.max_ratio)}x the rest of its field &mdash; or no segment has the
+      ${esc(result.max_ratio)}x the rest of its field, or is passed over by it &mdash;
+      or no segment has the
       ${esc(result.min_cases)} cases needed to say so. Checked:
       <code>${result.fields.map(esc).join("</code>, <code>")}</code>.</div>`;
     return;
@@ -504,17 +677,23 @@ function renderDisparity(result, unit) {
     differ in what they contain. These are the ones somebody should be able to explain
     before the rule ships.</p>`;
   $("#disparity").innerHTML = note + table(
-    [{label: "Segment"}, {label: "Moves"}, {label: "Rate (95%)"}, {label: "Rest of field"},
-     {label: "Ratio", num: 1}, {label: "Direction"}, {label: "Net", num: 1}],
+    [{label: "Segment"}, {label: "Finding"}, {label: "Moves"}, {label: "Rate (95%)"},
+     {label: "Rest of field"}, {label: "Ratio", num: 1}, {label: "Direction"},
+     {label: "Net", num: 1}],
     result.findings.map(f => `<tr>
       <td>${esc(f.field)}=<strong>${esc(f.value)}</strong>${f.significant ? ""
         : " <span class=unstable>not significant</span>"}</td>
+      <td class="${f.kind === "concentrated" ? "tight" : "muted"}">${
+        f.kind === "concentrated" ? "lands harder here" : "largely passes it over"}</td>
       <td class=num>${num(f.flips)} / ${num(f.cases)}</td>
       <td>${pct(f.flip_rate)} <span class=muted>(${pct(f.flip_rate_lo)}-${pct(f.flip_rate_hi)})</span></td>
       <td class=muted>${num(f.rest_flips)} / ${num(f.rest_cases)} = ${pct(f.rest_flip_rate)}</td>
-      <td class="num ${f.ratio >= result.max_ratio || f.ratio === 0 ? "warn" : ""}">${
-        f.ratio ? f.ratio.toFixed(2) + "x" : "no comparison"}</td>
-      <td class="${f.direction === "loosening" ? "loose" : f.direction === "tightening" ? "tight" : ""}">${esc(f.direction)}</td>
+      <td class="num ${f.kind === "concentrated" ? "warn" : ""}">${
+        // 0.0 is not a ratio - it is "one side has no flips", and which side
+        // that is depends on the finding. Saying so beats printing 0.00x.
+        f.ratio ? f.ratio.toFixed(2) + "x"
+                : (f.kind === "concentrated" ? "rest does not move" : "does not move")}</td>
+      <td class="${f.direction === "loosening" ? "loose" : f.direction === "tightening" ? "tight" : "muted"}">${esc(f.direction)}</td>
       <td class=num>${money(unit, f.net_impact)}</td></tr>`),
     "Nothing to report.");
 }
@@ -623,11 +802,11 @@ async function render() {
   $("#status").textContent = "Loading...";
   let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
       deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
-      preflightDetail, ruleDetail, draftRows;
+      preflightDetail, ruleDetail, crossDetail, draftRows;
   try {
     [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
      deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
-     preflightDetail, ruleDetail, draftRows] =
+     preflightDetail, ruleDetail, crossDetail, draftRows] =
       await Promise.all([
         api(`/api/summary/${domain}/${version}`),
         api(`/api/flips/${domain}/${version}`),
@@ -644,6 +823,7 @@ async function render() {
         api(`/api/disparity/${domain}/${version}`),
         api(`/api/preflight/${domain}/${version}`),
         api(`/api/rules/${domain}/${version}`),
+        api(`/api/cross-check/${domain}/${version}`),
         api(`/api/drafts/${domain}`),
       ]);
   } catch (e) {
@@ -671,9 +851,10 @@ async function render() {
   renderDisparity(disparityDetail, summary.impact_unit);
   renderDials(dials);
   renderRules(ruleDetail);
+  renderCrossCheck(crossDetail);
   renderDeviations(deviationRows, summary.impact_unit);
   renderFlips(shown, flipRows.length, summary.impact_unit);
-  renderPrecedents(precedentRows);
+  renderPrecedents(precedentRows, gate);
   renderConflicts(conflictRows);
   renderStability(stabilityDetail, summary);
   renderCalibration(calibrationDetail);
@@ -713,6 +894,7 @@ async function boot() {
   $("#search").oninput = render;
   $("#cmpleft").onchange = $("#cmpright").onchange = renderCompare;
   $("#swgo").onclick = runSweep;
+  $("#swgo2").onclick = runGrid;
   $("#swvalues").onkeydown = e => { if (e.key === "Enter") runSweep(); };
   onDomainChange();
 }

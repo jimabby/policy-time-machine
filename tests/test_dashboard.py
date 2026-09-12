@@ -126,12 +126,19 @@ def adjudicated(replayed):
     flips = report.flips("expenses", "v2", limit=3)
     agreed, reversed_, shaky = flips[0], flips[1], flips[2]
 
-    for row, outcome in ((agreed, agreed["new_outcome"]),
-                         (reversed_, reversed_["actual_outcome"])):
+    # One ruling with its circumstances recorded and one without, so the panel
+    # renders both halves: a ruling that can be re-read later, and one made
+    # before the circumstances were captured - which the page has to mark rather
+    # than show as though it were fresh.
+    for row, outcome, circumstances in (
+            (agreed, agreed["new_outcome"],
+             {"policy_version": "v2", "judged_outcome": agreed["new_outcome"],
+              "judged_clause": agreed["policy_clause"] or "1.1"}),
+            (reversed_, reversed_["actual_outcome"], {})):
         store.save_precedent(Precedent(
             case_id=row["case_id"], domain="expenses", correct_outcome=outcome,
             ruled_by="finance.lead", note="Ruled during the browser test.",
-            established_at=datetime.datetime(2026, 1, 1)))
+            established_at=datetime.datetime(2026, 1, 1), **circumstances))
 
     store.save_flip_stability("expenses", "v2", [
         FlipConfirmation(case_id=agreed["case_id"], samples=3,
@@ -216,7 +223,8 @@ class TestItRenders:
         empty = []
         for panel in ("#tiles", "#preflight", "#clauses", "#segments", "#disparity",
                       "#deviations", "#flips", "#precedents", "#conflicts", "#stability",
-                      "#calibration", "#drafts", "#sweep", "#rules"):
+                      "#calibration", "#drafts", "#sweep", "#sweepgrid", "#crosscheck",
+                      "#rules"):
             if not page.inner_text(panel).strip():
                 empty.append(panel)
         assert not empty, f"panels rendered nothing: {empty}"
@@ -277,6 +285,26 @@ class TestPanels:
         text = page.text("#precedents")
         assert "finance.lead" in text
         assert "ruled during the browser test" in text
+
+    def test_the_precedent_panel_says_which_rulings_predate_the_current_text(self, page):
+        """The gate enforces every ruling as hard as one made this morning. A
+        ruling with no circumstances on file is the one case nothing else on the
+        page could ever distinguish, so it has to be marked here."""
+        text = page.text("#precedents")
+        assert "not recorded" in text, \
+            "a ruling whose circumstances were never captured must say so"
+        assert "were made about a version of the policy" in text
+
+    def test_the_cross_check_panel_says_what_has_not_been_measured(self, page):
+        """Nothing in the fixture runs a second model, so this panel renders its
+        unmeasured state - which has to explain itself rather than look like a
+        check that passed."""
+        text = page.text("#crosscheck")
+        assert "compares the judge to itself" in text
+
+    def test_the_grid_invites_the_question_a_curve_cannot_answer(self, page):
+        text = page.text("#sweepgrid")
+        assert "holds every other" in text
 
     def test_a_flip_row_expands_to_show_the_case(self, page):
         """The detail row's colspan has to match the header or it renders wrong."""

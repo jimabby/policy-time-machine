@@ -139,3 +139,59 @@ class TestTheReadModel:
         prompt = rules.build_prompt(expenses, "v2", policy_text="1.1 Everything is denied.")
         assert "Everything is denied." in prompt
         assert "amount_gbp" in prompt, "it still lists the fields a rule may read"
+
+
+class TestTheAgreementGate:
+    """The number the sweep rests on, finally made load-bearing.
+
+    ``agreement`` has always been computed and nothing ever acted on it, so a
+    rule set that quietly stopped implementing the policy left every threshold
+    curve confidently wrong and the panel green.
+    """
+
+    def _result(self, **overrides):
+        base = {"compared": 600, "rate": 0.95, "clause_agreement": 0.95,
+                "clause_compared": 400, "inert": False}
+        return {**base, **overrides}
+
+    def _domain(self, expenses, **policy):
+        config = expenses.model_copy(deep=True)
+        for key, value in policy.items():
+            setattr(config.rules, key, value)
+        return config
+
+    def test_drifted_outcomes_are_a_finding(self, expenses):
+        problems = rules.gate(self._result(rate=0.5),
+                              self._domain(expenses, min_outcome_agreement=0.9))
+        assert problems and "below the 90.0%" in problems[0]
+
+    def test_the_right_answer_from_the_wrong_clause_is_also_a_finding(self, expenses):
+        """The weaker-looking number, and the one attribution depends on: a rule
+        reaching the judge's outcome by citing a different sentence makes the
+        panel name the wrong sentence to edit."""
+        problems = rules.gate(self._result(clause_agreement=0.4),
+                              self._domain(expenses, min_clause_agreement=0.85))
+        assert problems and "wrong sentence" in problems[0]
+
+    def test_agreement_above_the_floor_is_silent(self, expenses):
+        assert not rules.gate(
+            self._result(), self._domain(expenses, min_outcome_agreement=0.9,
+                                         min_clause_agreement=0.85))
+
+    def test_an_inert_measurement_never_fires_it(self, expenses):
+        """Offline the verdicts scored against came from these same rules, so
+        agreement is 1.0 by construction. A gate that passes because the check
+        is switched off teaches people to trust a number that means nothing."""
+        assert not rules.gate(self._result(rate=0.0, inert=True),
+                              self._domain(expenses, min_outcome_agreement=0.9))
+
+    def test_nothing_measured_is_not_zero_agreement(self, expenses):
+        """No verdicts on file is no evidence. Failing there would make the gate
+        fire loudest on a project that has not run yet."""
+        assert not rules.gate(self._result(compared=0, rate=0.0),
+                              self._domain(expenses, min_outcome_agreement=0.9))
+
+    def test_a_domain_that_sets_no_floor_enforces_nothing(self, expenses):
+        assert not rules.gate(self._result(rate=0.1, clause_agreement=0.1),
+                              self._domain(expenses, min_outcome_agreement=0.0,
+                                           min_clause_agreement=0.0))

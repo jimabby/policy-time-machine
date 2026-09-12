@@ -161,12 +161,22 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
               f"conf {f.confidence:.0%})")
 
     # Stand in for the reviewer: they side with history on the big tightenings.
+    # The circumstances are recorded alongside the answer, exactly as the HITL
+    # task records them, because a ruling that does not say what policy it was
+    # made about cannot be re-read later - see ptm.diff.stale_precedents.
     for f in contested:
+        keeps_history = f.direction == "tightening"
         store.save_precedent(Precedent(
             case_id=f.case_id, domain=domain_name,
-            correct_outcome=f.actual_outcome if f.direction == "tightening" else f.new_outcome,
-            ruled_by="finance.lead", note="Adjudicated during selftest.",
+            correct_outcome=f.actual_outcome if keeps_history else f.new_outcome,
+            ruled_by="finance.lead",
+            note=("The recorded decision was right; the proposed reading is too strict "
+                  "for a claim of this size." if keeps_history else
+                  "The proposed reading is correct - the original decision applied a "
+                  "restriction this policy no longer makes."),
             established_at=datetime.now(), established_by_run="selftest",
+            policy_version=version, judged_outcome=f.new_outcome,
+            judged_clause=f.policy_clause,
         ))
     store.mark_reviewed(domain_name, version, [f.case_id for f in contested])
     print(f"\n{len(contested)} precedents established")
@@ -191,6 +201,11 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
         where = ", ".join(f"{k}={v}" for k, v in c.signature)
         print(f"  [{where}] -> "
               + "; ".join(f"{o} ({', '.join(ids)})" for o, ids in c.outcomes.items()))
+        # The reasons, not just the disagreement. Two reviewers who cannot both
+        # be right have to be shown what the other one was thinking.
+        for n in c.notes:
+            print(f"      {n['case_id']}  {n['ruled_by']} said '{n['outcome']}'"
+                  + (f": {n['note']}" if n["note"] else ""))
 
     # --- what precedent_gate_<domain> does ---------------------------------
     precedents = store.load_precedents(domain_name)
@@ -214,6 +229,9 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     print(f"  {len(introduced)} introduced by {version}; "
           f"{len(violations) - len(introduced)} the policy in force ({baseline_version}) "
           f"already reverses")
+    # Is the oracle still about this policy? A ruling made against a clause that
+    # has since been rewritten is enforced here as hard as one made today.
+    print(diff.describe_stale(diff.stale_precedents(precedents, domain, version), version))
     if not violations:
         print("\nGATE PASSES.")
     elif introduced:
@@ -259,6 +277,51 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     print(rules_engine.describe(agreement))
     print("  (offline these verdicts came from these same rules, so this is 100% by "
           "construction - like the stability figure, it is inert until PTM_OFFLINE=0)")
+    agreement["inert"] = True  # offline, by construction; see above
+    gate_problems = rules_engine.gate(agreement, domain)
+    print(f"  the domain requires {domain.rules.min_outcome_agreement:.0%} outcome and "
+          f"{domain.rules.min_clause_agreement:.0%} clause agreement "
+          f"(gate={domain.rules.gate}); {len(gate_problems)} problem(s) - and the gate "
+          f"is held off entirely while the measurement is inert, because a gate that "
+          f"passes because the check is switched off is worse than no gate")
+
+    # --- the question a single sweep cannot answer -------------------------
+    # Every curve above holds the other thresholds still, which is the assumption
+    # a reader inherits without noticing. Moving the two most responsible dials
+    # together is what shows whether that assumption survives.
+    grid = (found_for_grid := proposal.evidence(domain, version)).get("grid") or {}
+    if grid.get("points"):
+        interaction = grid.get("interaction") or {}
+        print(f"\nmoving {grid['first']['field']} (clause {grid['first']['clause']}) and "
+              f"{grid['second']['field']} (clause {grid['second']['clause']}) together, "
+              f"{len(grid['points'])} settings:")
+        seconds = list(dict.fromkeys(pt["second_value"] for pt in grid["points"]))
+        by_pair = {(pt["first_value"], pt["second_value"]): pt for pt in grid["points"]}
+        print("      " + "".join(f"{v:>10}" for v in ["", *seconds]))
+        for a in dict.fromkeys(pt["first_value"] for pt in grid["points"]):
+            print(f"      {a:>10}" + "".join(
+                f"{by_pair[(a, b)]['flips'] if (a, b) in by_pair else '-':>10}"
+                for b in seconds))
+        if interaction.get("measured"):
+            print(f"  moving {grid['first']['field']} changes "
+                  f"{interaction['effect_min_flips']}-{interaction['effect_max_flips']} "
+                  f"decisions depending on where {grid['second']['field']} sits"
+                  + ("; independent, so two single sweeps say the same thing"
+                     if interaction["independent"] else
+                     "; they interact, so these two clauses cannot be reasoned about "
+                     "one at a time"))
+
+    # --- the check nothing offline can perform -----------------------------
+    # Self-consistency is satisfied completely by a judge that misreads a clause
+    # the same way every time, and offline there is no second judge to ask. Said
+    # out loud rather than omitted: a missing panel reads as a passing one.
+    print(f"\nsecond-judge cross-check: not run. The offline judge cannot stand in for "
+          f"one - it would be these same rules answering twice, and a 100% agreement "
+          f"rate that means nothing is worse than no cross-check at all.")
+    print(f"  with PTM_OFFLINE=0: trigger judge_stability_{domain_name} with "
+          f"compare_model set to a second model. Cases the two judges split on are "
+          f"cases the policy does not settle - found without spending a human on any "
+          f"of them. See ptm/crosscheck.py.")
 
     # --- what the second measurement costs ---------------------------------
     # The loop this whole project is built around is *edit a clause, measure
@@ -287,7 +350,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     # allowed to is the gate below: the draft is re-judged against every ruling
     # a human has made, and one that reverses a ruling is reported as such
     # however well it argues for itself.
-    found = proposal.evidence(domain, version)
+    found = found_for_grid
     patch = proposal.offline_patch(domain, version, found)
     print()
     print(proposal.describe(patch))

@@ -10,7 +10,9 @@ policy it says it implements while still producing confident output.
 **A rule referencing a field that does not exist.** This is the dangerous one.
 :func:`ptm.judge.offline_verdict` deliberately swallows exceptions, so a rule
 that says ``grade`` where the payload says ``employee_grade`` does not crash -
-it simply never matches, and the replay quietly comes out wrong.
+it simply never matches, and the replay quietly comes out wrong. The same check
+now also refuses a rule written in constructs :mod:`ptm.safe_eval` will not
+evaluate, which fails in exactly the same silent way.
 
     python -m ptm.lint            # every domain
     python -m ptm.lint expenses   # one domain
@@ -21,14 +23,14 @@ legitimate, such as a discretion clause that no mechanical rule can express.
 
 from __future__ import annotations
 
-import ast
 import string
 import sys
 from dataclasses import dataclass
 
 from . import preflight
 from .config import DomainConfig, available_domains, load_domain
-from .judge import SAFE_BUILTINS, SAFE_NAMES
+from .judge import SAFE_BUILTINS
+from .safe_eval import check_expression, names_in
 
 
 @dataclass
@@ -69,13 +71,11 @@ def payload_fields(domain: DomainConfig) -> set[str]:
     return rendered | ({domain.pit_field} if domain.pit_field else set())
 
 
-def _names_in(expression: str) -> set[str]:
-    """Identifiers an expression reads, ignoring the safe-builtin helpers."""
-    tree = ast.parse(expression, mode="eval")
-    return {
-        node.id for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and node.id not in SAFE_NAMES
-    }
+#: Kept as the module's own name because the lint's reader expects it here.
+#: The implementation lives in :mod:`ptm.safe_eval` alongside the evaluator, so
+#: "which fields does this read" and "will this actually run" can never answer
+#: from two different ideas of what a rule expression is.
+_names_in = names_in
 
 
 def check_domain(name: str) -> list[Problem]:
@@ -151,6 +151,21 @@ def check_domain(name: str) -> list[Problem]:
                                     f"almost no cases in them; one case out of one is a "
                                     f"100% flip rate and no evidence at all")
 
+    if domain.rules.gate not in {"warn", "fail"}:
+        err("rules.gate", f"{domain.rules.gate!r} is not 'warn' or 'fail'")
+    # Not `name`: that is this function's domain argument, which err() and warn()
+    # close over, and rebinding it here relabelled every later finding with a
+    # field name instead of the domain it came from.
+    for setting in ("min_outcome_agreement", "min_clause_agreement"):
+        value = getattr(domain.rules, setting)
+        if not 0.0 <= value <= 1.0:
+            err(f"rules.{setting}", f"{value} is outside 0..1")
+        elif value == 1.0:
+            warn(f"rules.{setting}", "1.0 requires the offline rules to match the judge "
+                                     "on every single case, which no real judge will do - "
+                                     "the gate would fail permanently rather than catch "
+                                     "drift")
+
     if not 0.0 <= domain.review.below_confidence <= 1.0:
         err("review", f"below_confidence {domain.review.below_confidence} is outside 0..1")
     if domain.review.max_reviews < 1:
@@ -202,16 +217,14 @@ def check_domain(name: str) -> list[Problem]:
             if not expression:
                 err(at, "has no 'when' expression")
                 continue
-            try:
-                names = _names_in(expression)
-            except SyntaxError as exc:
-                err(at, f"'when' does not parse: {exc}")
-                continue
-            unknown = sorted(names - known)
-            if unknown:
-                err(at, f"'when' reads unknown field(s) {unknown}; the rule would never "
-                        f"match and the replay would be silently wrong. Known fields: "
-                        f"{sorted(known)}")
+            # One check, covering both halves: a field that does not exist, and
+            # a construct the evaluator will not run. The second used to be
+            # unreachable here - the old name-level scan saw nothing wrong with
+            # an expression made entirely of attribute access, and the rule then
+            # failed silently at judging time, which is the failure this lint is
+            # for. See ptm/safe_eval.py.
+            for problem in check_expression(expression, known):
+                err(at, f"'when' {problem}. Known fields: {sorted(known)}")
 
             outcome = rule.get("outcome")
             if outcome not in domain.outcomes:

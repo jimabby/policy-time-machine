@@ -7,6 +7,7 @@ file swaps the entire application.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from functools import lru_cache
@@ -91,6 +92,32 @@ class DisparityPolicy(BaseModel):
     gate: str = "warn"
 
 
+class RulesPolicy(BaseModel):
+    """How far the offline rules may drift from the judge before it is a failure.
+
+    :func:`ptm.rules.agreement` has always produced this number and nothing has
+    ever acted on it, so a rule set that quietly stopped implementing the policy
+    left the sweep confidently wrong and the panel green. These are the two
+    thresholds that make it load-bearing.
+
+    Both default to 0, which enforces nothing: a project that has never measured
+    agreement against a real judge must not start failing runs the first time it
+    does. Set them once you have a figure to hold the rules to.
+    """
+
+    #: Minimum share of cases where the rules reach the judge's outcome.
+    min_outcome_agreement: float = 0.0
+    #: Minimum share where they reach it *citing the same clause*. The weaker
+    #: looking number and the one the sweep actually rests on: a rule that gets
+    #: the right answer from the wrong clause makes the attribution panel, and
+    #: therefore every threshold curve drawn from it, describe the wrong
+    #: sentence.
+    min_clause_agreement: float = 0.0
+    #: ``warn`` reports and carries on. ``fail`` refuses to serve a sweep whose
+    #: rules no longer implement the policy it claims to be sweeping.
+    gate: str = "warn"
+
+
 class DomainConfig(BaseModel):
     name: str
     label: str
@@ -119,6 +146,9 @@ class DomainConfig(BaseModel):
     conflicts: ConflictPolicy = Field(default_factory=ConflictPolicy)
     #: Whether a change landing unevenly across segments is worth stopping for.
     disparity: DisparityPolicy = Field(default_factory=DisparityPolicy)
+    #: How far the offline rules may drift from the judge before the sweep built
+    #: on them stops being served. See :class:`RulesPolicy`.
+    rules: RulesPolicy = Field(default_factory=RulesPolicy)
     #: Fixtures for PTM_OFFLINE=1 only; the real judge never reads these.
     offline_rules: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     #: Versions that were drafted by :mod:`ptm.proposal` rather than written by
@@ -179,7 +209,13 @@ class DomainConfig(BaseModel):
             value = payload.get(field)
             if field == self.impact_field and band > 0:
                 try:
-                    value = f"{int(float(value or 0) // band) * int(band)}+"
+                    # Arithmetic in floats, formatted with :g. Rounding the band
+                    # to an int first meant any band below 1 became 0, and every
+                    # case in the domain then shared the signature "0+" - so a
+                    # fine-grained band, the setting a careful person would
+                    # reach for, silently made every pair of rulings a conflict.
+                    floor = math.floor(float(value or 0) / band) * band
+                    value = f"{floor:g}+"
                 except (TypeError, ValueError):
                     value = "unknown"
             sig.append((field, "unknown" if value is None or value == "" else str(value)))
@@ -194,6 +230,19 @@ class DomainConfig(BaseModel):
         """
         pattern = re.compile(r"^\s*(\d+\.\d+)\s", re.MULTILINE)
         return sorted(set(pattern.findall(self.policy_text(version))))
+
+    def clause_text(self, version: str, clause: str) -> str:
+        """One clause's text, joined across its continuation lines.
+
+        Lives here beside :meth:`clauses` because two callers need the same
+        answer for different reasons - :mod:`ptm.proposal` rewrites a threshold
+        in it, and :func:`ptm.diff.stale_precedents` asks whether it has changed
+        since a human ruled on it - and two readers of a policy that disagree
+        about where a clause ends is exactly the drift this project is about.
+        """
+        match = re.search(rf"^\s*{re.escape(clause)}\s+(.*?)(?=^\s*\d+\.\d+\s|^#|\Z)",
+                          self.policy_text(version), re.MULTILINE | re.DOTALL)
+        return " ".join(match.group(1).split()) if match else ""
 
     def direction(self, old: str, new: str) -> str:
         """Loosening = the new policy is more generous than history was."""

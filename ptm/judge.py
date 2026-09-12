@@ -4,13 +4,16 @@ The real judge is the Common AI provider's ``LLMOperator``. The offline judge
 exists so the whole project runs, end to end, with no API key and no network -
 useful for CI, for rehearsing the demo, and for the moment the conference wifi
 gives up.
+
+Its conditions are computed by :mod:`ptm.safe_eval` rather than by ``eval``.
+That is not paranoia about the shipped YAML: ``propose_<domain>`` has a model
+write ``offline_rules`` for a drafted policy, and every replay of that draft
+then evaluates them on a worker.
 """
 
 from __future__ import annotations
 
-import builtins
-from typing import Any
-
+from . import safe_eval
 from .config import DomainConfig
 from .models import Case, Verdict
 
@@ -48,18 +51,12 @@ def build_prompt(case: Case, domain: DomainConfig, version: str) -> str:
     )
 
 
-#: Helpers a rule may call. They live in ``__builtins__`` rather than as
-#: top-level globals so the payload merged in below cannot *replace* them by
-#: accident - though a payload field of the same name still shadows one during
-#: name resolution, which is why :mod:`ptm.lint` warns about the collision.
-SAFE_BUILTINS: dict[str, Any] = {
-    name: getattr(builtins, name)
-    for name in ("abs", "len", "min", "max", "float", "int", "str", "round", "sum")
-}
-_SAFE: dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
-#: Every name an expression may use without it being a payload field. Exported
-#: for the lint, which must not report a helper call as an unknown field.
-SAFE_NAMES: frozenset[str] = frozenset(SAFE_BUILTINS) | {"__builtins__"}
+#: Re-exported from :mod:`ptm.safe_eval`, which owns both the helper list and
+#: the evaluator that may call them. One definition, because a lint that warns
+#: about shadowing a helper the evaluator does not actually have is worse than
+#: no warning at all.
+SAFE_BUILTINS = safe_eval.SAFE_BUILTINS
+SAFE_NAMES = safe_eval.SAFE_NAMES
 
 
 #: The rationale a defaulted verdict carries. Named rather than inlined because
@@ -73,24 +70,32 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
 
     Rules come from the domain YAML's ``offline_rules`` block; the first
     matching rule wins, otherwise the domain's first (most generous) outcome.
-    Expressions are evaluated against :data:`SAFE_BUILTINS` and nothing else -
-    this is a local demo fixture, not a sandbox, so only ever point it at YAML
-    you wrote yourself.
+
+    Conditions are computed by :mod:`ptm.safe_eval`, which walks the parsed
+    expression rather than calling ``eval``. That matters because these rules
+    are no longer only ever hand-written: :mod:`ptm.proposal` has a model write
+    them for a drafted policy, and they are then evaluated on a worker like any
+    other version's.
     """
     rules = domain.offline_rules.get(version, [])
-    scope = dict(_SAFE)
-    scope.update({k: _coerce(v) for k, v in case.payload.items()})
+    scope = {k: _coerce(v) for k, v in case.payload.items()}
     for rule in rules:
         try:
-            if eval(rule["when"], scope):  # noqa: S307 - local fixture, see docstring
-                return Verdict(
-                    outcome=domain.validate_outcome(rule["outcome"]),
-                    rationale=rule.get("because", "Matched offline rule."),
-                    confidence=float(rule.get("confidence", 0.9)),
-                    policy_clause=str(rule.get("clause", "")),
-                )
-        except Exception:  # a rule referencing a field this case lacks simply does not match
+            matched = safe_eval.evaluate(rule["when"], scope)
+        except safe_eval.RuleError:
+            # A rule the evaluator refuses, or one reading a field this case
+            # lacks. Both mean "does not match"; ptm.lint and ptm.rules.validate
+            # are where a refusal is reported rather than swallowed.
             continue
+        except Exception:  # arithmetic on a field of the wrong type, etc.
+            continue
+        if matched:
+            return Verdict(
+                outcome=domain.validate_outcome(rule["outcome"]),
+                rationale=rule.get("because", "Matched offline rule."),
+                confidence=float(rule.get("confidence", 0.9)),
+                policy_clause=str(rule.get("clause", "")),
+            )
     return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]),
                    rationale=NO_RULE_RATIONALE, confidence=0.6)
 

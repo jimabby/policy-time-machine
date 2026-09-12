@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS flips (
     -- candidate cited: a restriction that stops firing cites nothing. Also the
     -- bucket that separates a policy effect from a reviewer deviation.
     attribution    TEXT DEFAULT '',
+    -- Whether re-judging this flip reproduced it: 'stable', 'unstable', or ''
+    -- when nothing has measured it. Also in MIGRATIONS, for a database seeded
+    -- before it existed - a column that lives only there is invisible to
+    -- anyone reading the schema to find out what a flip is.
+    stability      TEXT DEFAULT '',
     -- What the policy in force gives for this case, when a baseline pass ran.
     baseline_outcome TEXT DEFAULT '',
     -- Segment values as of the decision date. Stored rather than joined from
@@ -91,9 +96,18 @@ CREATE TABLE IF NOT EXISTS precedents (
     domain          TEXT NOT NULL,
     correct_outcome TEXT NOT NULL,
     ruled_by        TEXT NOT NULL,
+    -- Why, in the reviewer's words. The only free text here written by the
+    -- person accountable for the decision.
     note            TEXT DEFAULT '',
     established_at  TEXT NOT NULL,
     established_by_run TEXT DEFAULT '',
+    -- The circumstances of the ruling: which candidate policy the reviewer was
+    -- shown, and the verdict they were overturning. Without these a precedent
+    -- cannot be re-read later - a ruling made about a clause that has since
+    -- been rewritten is indistinguishable from one made this morning.
+    policy_version  TEXT DEFAULT '',
+    judged_outcome  TEXT DEFAULT '',
+    judged_clause   TEXT DEFAULT '',
     PRIMARY KEY (domain, case_id)
 );
 
@@ -115,6 +129,13 @@ CREATE TABLE IF NOT EXISTS runs (
     estimated_input_tokens  INTEGER DEFAULT 0,
     estimated_output_tokens INTEGER DEFAULT 0,
     estimated_cost_usd      REAL DEFAULT 0,
+    -- What the vendor said it actually was, when a metered judge ran. Kept
+    -- beside the estimate rather than replacing it: the gap between the two is
+    -- what prices the next backfill properly. See ptm/metered.py.
+    actual_requests         INTEGER DEFAULT 0,
+    actual_input_tokens     INTEGER DEFAULT 0,
+    actual_output_tokens    INTEGER DEFAULT 0,
+    actual_cost_usd         REAL DEFAULT 0,
     judge_model    TEXT DEFAULT ''
 );
 
@@ -153,6 +174,7 @@ CREATE TABLE IF NOT EXISTS case_segments (
     PRIMARY KEY (domain, policy_version, case_id, field)
 );
 CREATE INDEX IF NOT EXISTS case_segments_lookup ON case_segments (domain, policy_version, field, value);
+CREATE INDEX IF NOT EXISTS case_segments_run ON case_segments (run_id);
 
 -- Whether re-judging a recorded flip reproduced it. A flip the judge will not
 -- reproduce is the model changing its mind, not the policy moving, and must
@@ -227,6 +249,26 @@ CREATE TABLE IF NOT EXISTS policy_drafts (
     PRIMARY KEY (domain, version)
 );
 
+-- A second judge's answers on the same cases under the same policy. Kept per
+-- run rather than collapsed to a rate, because the useful output is the list of
+-- cases the two judges split on: those are sentences of the policy to rewrite,
+-- and they cost no human time to find. See ptm/crosscheck.py.
+CREATE TABLE IF NOT EXISTS cross_checks (
+    run_id         TEXT PRIMARY KEY,
+    domain         TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    primary_judge  TEXT NOT NULL,
+    secondary_judge TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    compared       INTEGER DEFAULT 0,
+    agreed         INTEGER DEFAULT 0,
+    agreement      REAL DEFAULT 0,
+    clause_agreement REAL DEFAULT 0,
+    contested_flips INTEGER DEFAULT 0,
+    report         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cross_checks_lookup ON cross_checks (domain, policy_version, created_at);
+
 CREATE TABLE IF NOT EXISTS stability_runs (
     run_id           TEXT PRIMARY KEY,
     domain           TEXT NOT NULL,
@@ -256,6 +298,13 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("runs", "estimated_cost_usd", "REAL DEFAULT 0"),
     ("runs", "judge_model", "TEXT DEFAULT ''"),
     ("flips", "stability", "TEXT DEFAULT ''"),
+    ("precedents", "policy_version", "TEXT DEFAULT ''"),
+    ("precedents", "judged_outcome", "TEXT DEFAULT ''"),
+    ("precedents", "judged_clause", "TEXT DEFAULT ''"),
+    ("runs", "actual_requests", "INTEGER DEFAULT 0"),
+    ("runs", "actual_input_tokens", "INTEGER DEFAULT 0"),
+    ("runs", "actual_output_tokens", "INTEGER DEFAULT 0"),
+    ("runs", "actual_cost_usd", "REAL DEFAULT 0"),
 ]
 
 
@@ -310,7 +359,7 @@ def _migrate(c: sqlite3.Connection) -> None:
 _ID_CHUNK = 400
 
 
-def load_cases(domain: str, until: datetime, limit: int = 10_000,
+def load_cases(domain: str, until: datetime, limit: int | None = None,
                since: datetime | None = None, newest_first: bool = False,
                case_ids: list[str] | None = None) -> list[Case]:
     """Load cases decided in ``[since, until)``, hydrated point-in-time.
@@ -329,8 +378,15 @@ def load_cases(domain: str, until: datetime, limit: int = 10_000,
     ``case_ids`` asks for exactly those cases and ignores ``limit`` entirely.
     Callers that need a *specific* set - the precedent gate needs every case a
     human has ruled on - must use it rather than loading everything and
-    filtering, because a default ``limit`` silently truncating the set would
-    make the regression suite check fewer precedents than exist and still pass.
+    filtering, because a ``limit`` silently truncating the set would make the
+    regression suite check fewer precedents than exist and still pass.
+
+    ``limit`` defaults to **None, meaning every case in the window**. It used to
+    default to 10,000, which is the same failure one order of magnitude further
+    out: a sweep curve, a rule-agreement figure or a proposal drawn from the
+    first 10,000 of 40,000 cases describes a sample nobody asked for and nothing
+    says so. A caller that wants a bound now has to name it, which is also the
+    point at which it can report it.
     """
     order = "DESC" if newest_first else "ASC"
     with conn() as c:
@@ -352,7 +408,10 @@ def load_cases(domain: str, until: datetime, limit: int = 10_000,
                 ORDER BY decided_at {order}
                 LIMIT ?
                 """,
-                (domain, _bound(until), _bound(since or datetime.min), limit),
+                # SQLite reads a negative LIMIT as no limit, which is how
+                # "every case" stays one query rather than two code paths.
+                (domain, _bound(until), _bound(since or datetime.min),
+                 -1 if limit is None else limit),
             ).fetchall()
 
         cases: list[Case] = []
@@ -390,10 +449,12 @@ def save_precedent(p: Precedent) -> None:
     with conn() as c:
         c.execute(
             """INSERT OR REPLACE INTO precedents
-               (case_id, domain, correct_outcome, ruled_by, note, established_at, established_by_run)
-               VALUES (?,?,?,?,?,?,?)""",
+               (case_id, domain, correct_outcome, ruled_by, note, established_at,
+                established_by_run, policy_version, judged_outcome, judged_clause)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (p.case_id, p.domain, p.correct_outcome, p.ruled_by, p.note,
-             p.established_at.isoformat(), p.established_by_run),
+             p.established_at.isoformat(), p.established_by_run,
+             p.policy_version, p.judged_outcome, p.judged_clause),
         )
 
 
@@ -406,6 +467,9 @@ def load_precedents(domain: str) -> list[Precedent]:
             ruled_by=r["ruled_by"], note=r["note"] or "",
             established_at=datetime.fromisoformat(r["established_at"]),
             established_by_run=r["established_by_run"] or "",
+            policy_version=r["policy_version"] or "",
+            judged_outcome=r["judged_outcome"] or "",
+            judged_clause=r["judged_clause"] or "",
         )
         for r in rows
     ]
@@ -489,6 +553,12 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
         c.execute("DELETE FROM verdicts WHERE run_id IN (?, ?)", (run_id, baseline_run))
         c.execute("DELETE FROM flips WHERE run_id = ?", (run_id,))
         c.execute("DELETE FROM segment_stats WHERE run_id = ?", (run_id,))
+        # Keyed on the case rather than the run, so a retry that sees fewer
+        # cases - or a domain that has dropped a segment_field - would otherwise
+        # leave rows behind that INSERT OR REPLACE never touches and that the
+        # blast radius then counts forever. Clearing this run's own rows first
+        # makes the write a replacement rather than an accumulation.
+        c.execute("DELETE FROM case_segments WHERE run_id = ?", (run_id,))
         c.executemany(
             """INSERT INTO verdicts
                (run_id, domain, policy_version, case_id, outcome, rationale, confidence, policy_clause, created_at)
@@ -539,12 +609,15 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
             """INSERT OR REPLACE INTO runs
                (run_id, domain, policy_version, baseline, started_at, cases_replayed,
                 flips, impact, baseline_version, estimated_requests, estimated_input_tokens,
-                estimated_output_tokens, estimated_cost_usd, judge_model)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                estimated_output_tokens, estimated_cost_usd, actual_requests,
+                actual_input_tokens, actual_output_tokens, actual_cost_usd, judge_model)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (run_id, domain, policy_version, baseline, now, cases_replayed, len(flips), impact,
              baseline_version,
              ledger.get("estimated_requests", 0), ledger.get("estimated_input_tokens", 0),
              ledger.get("estimated_output_tokens", 0), ledger.get("estimated_cost_usd", 0.0),
+             ledger.get("actual_requests", 0), ledger.get("actual_input_tokens", 0),
+             ledger.get("actual_output_tokens", 0), ledger.get("actual_cost_usd", 0.0),
              ledger.get("judge_model", "")),
         )
 
@@ -614,7 +687,8 @@ def flip_stability(domain: str, policy_version: str) -> dict[str, dict]:
 #: verdict cache goes: its keys are hashes of prompts built from the *old*
 #: cases, so after a re-seed not one of them can ever be hit again.
 DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
-                  "judge_samples", "stability_runs", "flip_stability", "verdict_cache")
+                  "judge_samples", "stability_runs", "flip_stability", "verdict_cache",
+                  "cross_checks")
 
 
 # ------------------------------------------------------------- verdict cache
@@ -888,7 +962,11 @@ def cost_ledger(domain: str, policy_version: str) -> dict:
                   COALESCE(SUM(estimated_requests),0) AS requests,
                   COALESCE(SUM(estimated_input_tokens),0) AS input_tokens,
                   COALESCE(SUM(estimated_output_tokens),0) AS output_tokens,
-                  COALESCE(SUM(estimated_cost_usd),0) AS cost_usd
+                  COALESCE(SUM(estimated_cost_usd),0) AS cost_usd,
+                  COALESCE(SUM(actual_requests),0) AS actual_requests,
+                  COALESCE(SUM(actual_input_tokens),0) AS actual_input_tokens,
+                  COALESCE(SUM(actual_output_tokens),0) AS actual_output_tokens,
+                  COALESCE(SUM(actual_cost_usd),0) AS actual_cost_usd
            FROM runs WHERE domain=? AND policy_version=?""",
         (domain, policy_version),
     )[0]
@@ -899,6 +977,7 @@ def cost_ledger(domain: str, policy_version: str) -> dict:
     )
     row["models"] = sorted(m["judge_model"] for m in models)
     row["cost_usd"] = round(row["cost_usd"] or 0, 4)
+    row["actual_cost_usd"] = round(row["actual_cost_usd"] or 0, 4)
     return row
 
 
@@ -940,6 +1019,41 @@ def compare_versions(domain: str, left: str, right: str) -> dict:
         "differ": len(differences),
         "differences": differences,
     }
+
+
+def save_cross_check(run_id: str, domain: str, policy_version: str, report: dict) -> None:
+    """Persist one cross-check, report and all.
+
+    The whole report rather than its headline: the number is a rate, and the
+    thing worth keeping is the list of cases underneath it. A rate on its own
+    cannot be turned back into the sentences somebody has to go and rewrite.
+    """
+    with conn() as c:
+        c.execute(
+            """INSERT OR REPLACE INTO cross_checks
+               (run_id, domain, policy_version, primary_judge, secondary_judge,
+                created_at, compared, agreed, agreement, clause_agreement,
+                contested_flips, report)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (run_id, domain, policy_version, report.get("primary", ""),
+             report.get("secondary", ""), datetime.now().isoformat(),
+             report.get("compared", 0), report.get("agreed", 0),
+             report.get("agreement", 0.0), report.get("clause_agreement", 0.0),
+             report.get("contested_flips", 0), json.dumps(report)),
+        )
+
+
+def latest_cross_check(domain: str, policy_version: str) -> dict | None:
+    rows = query(
+        """SELECT * FROM cross_checks WHERE domain=? AND policy_version=?
+           ORDER BY created_at DESC LIMIT 1""",
+        (domain, policy_version),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    row["report"] = json.loads(row["report"])
+    return row
 
 
 def latest_stability(domain: str, policy_version: str) -> dict | None:

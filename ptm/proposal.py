@@ -75,6 +75,9 @@ PROMPT = """Draft an amendment to this {label} policy.
 # What moving the numeric thresholds would do
 {curves}
 
+# What moving the two most responsible thresholds together would do
+{grid}
+
 # Your task
 Propose the smallest set of clause edits that addresses the evidence above.
 
@@ -138,6 +141,14 @@ def evidence(domain: DomainConfig, version: str, max_dials: int = 3) -> dict:
         curves.append({"clause": dial["clause"], "field": dial["field"],
                        "current": dial["value"], "points": curve["points"]})
 
+    # The two dials the attribution blames most, moved together. Every curve
+    # above holds the other dials still, which is the assumption a drafter is
+    # most likely to inherit without noticing: it reads "at 100 you get 161
+    # flips" as a property of that clause when it is a property of that clause
+    # *given where the others sit*. The grid is what makes the interaction
+    # visible, and it costs nothing but rule evaluation.
+    grid = _grid(name, version, ranked)
+
     return {
         "domain": name,
         "version": version,
@@ -148,8 +159,49 @@ def evidence(domain: DomainConfig, version: str, max_dials: int = 3) -> dict:
         "precedents": len(precedents),
         "dials": ranked,
         "curves": curves,
+        "grid": grid,
         "impact_unit": domain.impact_unit,
     }
+
+
+def _grid(name: str, version: str, ranked: list[dict]) -> dict:
+    """The top two *distinct* dials, swept together. ``{}`` when there is no pair.
+
+    Distinct matters twice over. The same field in the same clause is one dial
+    listed twice, and a grid over it would put the only real measurements on the
+    diagonal. The same field in two different clauses is a legitimate pair but a
+    confusing one to read - both axes carry the same name - so a dial on a
+    *different field* is preferred where the policy has one, and the same-field
+    pair is the fallback rather than the first choice.
+    """
+    if len(ranked) < 2:
+        return {}
+    first = ranked[0]
+    rest = [d for d in ranked[1:]
+            if (d["field"], d["clause"]) != (first["field"], first["clause"])]
+    second = next((d for d in rest if d["field"] != first["field"]), None) or \
+        next(iter(rest), None)
+    if second is None:
+        return {}
+    try:
+        return sweep_engine.joint(
+            name, version,
+            {"field": first["field"], "clause": first["clause"],
+             "values": _axis_values(first["value"])},
+            {"field": second["field"], "clause": second["clause"],
+             "values": _axis_values(second["value"])})
+    except LookupError:
+        return {}
+
+
+def _axis_values(current: float) -> list[float]:
+    """A short, *ordered* axis around the current setting, including it.
+
+    Sorted because an axis is read as a direction: a row of settings in ladder
+    order reads as noise, and a reader cannot see a trend in it even when the
+    numbers underneath are perfectly good.
+    """
+    return sorted({*_ladder(current)[:3], current})
 
 
 def _ladder(current: float) -> list[float]:
@@ -195,6 +247,35 @@ def build_prompt(domain: DomainConfig, version: str, found: dict) -> str:
                 f"this policy, net {unit} {point['net_impact']:>10,.0f}")
     curve_text = "\n".join(curves) or "  no numeric thresholds in this policy to sweep"
 
+    # The pair, moved together. Rendered as a grid because that is the shape of
+    # the thing: a drafter reading two curves has no way to see that the best
+    # setting for one depends on where the other sits.
+    grid = found.get("grid") or {}
+    if grid.get("points"):
+        rows = [f"  {grid['first']['field']} (rows, currently {grid['first']['current']}) "
+                f"against {grid['second']['field']} (columns, currently "
+                f"{grid['second']['current']}), as decisions changed:"]
+        seconds = list(dict.fromkeys(pt["second_value"] for pt in grid["points"]))
+        by_pair = {(pt["first_value"], pt["second_value"]): pt for pt in grid["points"]}
+        rows.append("      " + "".join(f"{v:>10}" for v in ["", *seconds]))
+        for a in dict.fromkeys(pt["first_value"] for pt in grid["points"]):
+            cells = "".join(
+                f"{by_pair[(a, b)]['flips'] if (a, b) in by_pair else '-':>10}"
+                for b in seconds)
+            rows.append(f"      {a:>10}{cells}")
+        interaction = grid.get("interaction") or {}
+        if interaction.get("measured"):
+            rows.append(
+                f"    moving {grid['first']['field']} changes "
+                f"{interaction['effect_min_flips']}-{interaction['effect_max_flips']} "
+                f"decisions depending on {grid['second']['field']}"
+                + ("; the two are independent" if interaction["independent"]
+                   else "; they interact, so these two clauses cannot be reasoned "
+                        "about one at a time"))
+        grid_text = "\n".join(rows)
+    else:
+        grid_text = "  no pair of thresholds to move together"
+
     return PROMPT.format(
         label=domain.label,
         version=version,
@@ -206,6 +287,7 @@ def build_prompt(domain: DomainConfig, version: str, found: dict) -> str:
         attribution=attribution,
         violations=violations,
         curves=curve_text,
+        grid=grid_text,
     )
 
 
@@ -297,11 +379,8 @@ def offline_patch(domain: DomainConfig, version: str, found: dict) -> PolicyPatc
 
 
 def _clause_body(domain: DomainConfig, version: str, clause: str) -> str:
-    """The text of one clause, joined across its continuation lines."""
-    text = domain.policy_text(version)
-    match = re.search(rf"^\s*{re.escape(clause)}\s+(.*?)(?=^\s*\d+\.\d+\s|^#|\Z)",
-                      text, re.MULTILINE | re.DOTALL)
-    return " ".join(match.group(1).split()) if match else ""
+    """The text of one clause. One reader of a policy, in :mod:`ptm.config`."""
+    return domain.clause_text(version, clause)
 
 
 def _retarget_text(body: str, current: float, value: float) -> str | None:
@@ -574,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
     materialise(domain_name, draft_version, markdown, rules)
     verification = verify(domain_name, draft_version, domain.in_force)
     store.save_draft(domain_name, draft_version, version, patch.model_dump(),
-                     evidence={k: v for k, v in found.items() if k != "curves"},
+                     evidence={k: v for k, v in found.items() if k not in ("curves", "grid")},
                      verification=verification, drafted_by="offline")
     print(describe(patch, verification))
     print(f"\nwrote {DRAFTS_DIR}/{domain_name}/{draft_version}.md - replay, sweep and gate "

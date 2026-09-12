@@ -5,13 +5,19 @@ will this cost me?" deserves an answer before the bill arrives rather than
 after. Every replay records its own spend, and :func:`estimate_backfill` prices
 a proposed backfill from the case count alone.
 
-Honest about its own precision: the token counts here are **measured from the
-prompts this project actually built** and converted at a fixed characters-per-
-token ratio, not read back from the vendor's usage reporting. That makes them
-an estimate with a known bias (tokenisers vary by model and by language), which
-is why every field and column is named ``estimated_*``. It is the right
-precision for "can I afford this backfill" and the wrong precision for
-reconciling an invoice.
+Honest about its own precision: the ``estimated_*`` counts here are **measured
+from the prompts this project actually built** and converted at a fixed
+characters-per-token ratio. That makes them an estimate with a known bias
+(tokenisers vary by model and by language), which is why the fields say so. It
+is the right precision for "can I afford this backfill" and the wrong precision
+for reconciling an invoice.
+
+It no longer has to stay a guess. With ``PTM_OFFLINE=0`` the judge tasks run
+through :mod:`ptm.metered`, which keeps the token counts the vendor itself
+reported, and :func:`from_usage` prices those as ``actual_*``. Both go in the
+ledger: :func:`reconcile` is the one that matters, because the gap between them
+says how wrong the forecast was *and* what characters-per-token ratio would
+have made it right for your policies.
 
 Prices are USD per million tokens and live in one table below. Override a model
 or add one without touching code via ``PTM_PRICE_<IN>_<OUT>``:
@@ -84,6 +90,75 @@ def estimate(prompt_chars: int, requests: int, model: str,
         "estimated_output_tokens": out_tokens,
         "estimated_cost_usd": round(cost, 4),
         "judge_model": model,
+    }
+
+
+def from_usage(rows: list[dict], model: str) -> dict:
+    """Price what the vendor says actually happened. See :mod:`ptm.metered`.
+
+    ``rows`` are the usage dicts a metered judge task pushed - requests, input
+    tokens and output tokens as counted by the model, not by us. The shape
+    matches :func:`estimate` so the two can sit in one ledger and be compared
+    field by field; the names carry ``actual_`` rather than ``estimated_``
+    because this is the only number here that was measured rather than derived.
+    """
+    requests = sum(int(r.get("requests") or 0) for r in rows)
+    in_tokens = sum(int(r.get("input_tokens") or 0) for r in rows)
+    out_tokens = sum(int(r.get("output_tokens") or 0) for r in rows)
+    in_price, out_price = price_for(model)
+    return {
+        "actual_requests": requests,
+        "actual_input_tokens": in_tokens,
+        "actual_output_tokens": out_tokens,
+        "actual_cost_usd": round((in_tokens * in_price + out_tokens * out_price) / 1_000_000, 4),
+        "measured_calls": len([r for r in rows if r]),
+    }
+
+
+def reconcile(ledger: dict, prompt_chars: int = 0) -> dict:
+    """The estimate against the measurement, and what the gap implies.
+
+    Two numbers come out of this and they answer different questions. ``error``
+    is how wrong the forecast was, which is what somebody deciding whether to
+    launch a backfill needs. ``implied_chars_per_token`` is *why* it was wrong:
+    the ratio that would have made the estimate right for these prompts, against
+    the :data:`CHARS_PER_TOKEN` of 4 the estimate assumed. A policy in a
+    language that tokenises badly, or one heavy with markdown punctuation, moves
+    that ratio a long way - and until something measured it, the four was a
+    constant nobody could be shown to be wrong about.
+
+    Returns ``{"measured": False}`` when nothing was measured, rather than a
+    tidy zero: an offline run and a run whose usage reporting failed must not
+    read as a forecast that came in exactly right.
+    """
+    actual_in = int(ledger.get("actual_input_tokens") or 0)
+    actual_cost = float(ledger.get("actual_cost_usd") or 0)
+    if not actual_in and not actual_cost:
+        return {"measured": False,
+                "hint": "no usage reported; the ledger is the estimate alone. Usage is "
+                        "collected by ptm.metered and is only available with PTM_OFFLINE=0."}
+    estimated_in = int(ledger.get("estimated_input_tokens") or 0)
+    estimated_cost = float(ledger.get("estimated_cost_usd") or 0)
+    return {
+        "measured": True,
+        "estimated_cost_usd": round(estimated_cost, 4),
+        "actual_cost_usd": round(actual_cost, 4),
+        "cost_error_usd": round(actual_cost - estimated_cost, 4),
+        "cost_error": round((actual_cost - estimated_cost) / estimated_cost, 4)
+        if estimated_cost else None,
+        "estimated_input_tokens": estimated_in,
+        "actual_input_tokens": actual_in,
+        "token_error": round((actual_in - estimated_in) / estimated_in, 4)
+        if estimated_in else None,
+        "assumed_chars_per_token": CHARS_PER_TOKEN,
+        # The ratio that would have made the estimate right. Only computable
+        # when the caller knows how many characters it sent, which is why it is
+        # an argument rather than derived back out of the token count.
+        "implied_chars_per_token": round(prompt_chars / actual_in, 2)
+        if prompt_chars and actual_in else None,
+        "note": "actual_* are the vendor's counts; estimated_* are this project's, "
+                "measured from prompt size. The gap is the forecast's error, not a "
+                "second bill.",
     }
 
 

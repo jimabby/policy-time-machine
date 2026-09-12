@@ -49,15 +49,21 @@ import pendulum
 from airflow.exceptions import AirflowFailException
 from airflow.sdk import Asset, Param, dag, task
 
-from ptm import (cache, calibration, cost, diff, disparity, preflight, proposal,
-                 rules, stability, store)
+from ptm import (cache, calibration, cost, crosscheck, diff, disparity, preflight,
+                 proposal, rules, stability, store)
 from ptm.config import JUDGE_MODEL, LLM_CONN_ID, OFFLINE, available_domains, load_domain
 from ptm.judge import build_prompt, offline_verdict
 from ptm.models import Case, PolicyPatch, Precedent, RuleSet, Verdict
 
 if not OFFLINE:
-    from airflow.providers.common.ai.operators.llm import LLMOperator
     from pydantic_ai.usage import UsageLimits
+
+    from ptm.metered import USAGE_KEY, metered_operator
+
+    # The provider's LLMOperator with the vendor's own token counts kept on a
+    # second XCom key. Same operator, same return value; see ptm/metered.py for
+    # why it wraps the hook rather than re-implementing execute.
+    LLMOperator = metered_operator()
 from airflow.providers.standard.operators.hitl import HITLOperator
 
 START = pendulum.datetime(2024, 9, 1, tz="UTC")
@@ -136,29 +142,42 @@ def _item(case: Case, domain, version: str, baseline_version: str = "",
     return item
 
 
-def _ledger(items: list[dict], chars_field: str = "prompt_chars") -> dict:
+def _ledger(items: list[dict], chars_field: str = "prompt_chars",
+            usage: list[dict] | None = None) -> dict:
     """Price one pass over ``items`` - the cases actually sent to the judge.
 
     Offline the answer is genuinely zero, and the ledger says so rather than
     quoting a counterfactual as though money had moved. The forecast of what a
     real judge *would* have cost lives on the plugin's /api/cost endpoint, where
     it is clearly labelled as a forecast.
+
+    ``usage`` is what the judge tasks actually reported, when they were metered.
+    It is added to the estimate rather than replacing it: keeping both is what
+    turns "4 characters per token" from an assumption into something the next
+    run can be told it got wrong. See :func:`ptm.cost.reconcile`.
     """
     if OFFLINE:
         return cost.zero()
     prompt_chars = sum(int(i.get(chars_field) or 0) for i in items)
-    return cost.estimate(prompt_chars, len(items), JUDGE_MODEL)
+    ledger = cost.estimate(prompt_chars, len(items), JUDGE_MODEL)
+    ledger["prompt_chars"] = prompt_chars
+    if usage:
+        ledger.update(cost.from_usage(usage, JUDGE_MODEL))
+    return ledger
 
 
 def _add_ledgers(*ledgers: dict) -> dict:
     """One bill from several passes. Offline they are all zero and stay zero."""
     total = cost.zero(JUDGE_ID)
+    total.update({"actual_requests": 0, "actual_input_tokens": 0,
+                  "actual_output_tokens": 0, "actual_cost_usd": 0.0, "prompt_chars": 0})
     for ledger in ledgers:
         for field in ("estimated_requests", "estimated_input_tokens",
-                      "estimated_output_tokens"):
+                      "estimated_output_tokens", "actual_requests",
+                      "actual_input_tokens", "actual_output_tokens", "prompt_chars"):
             total[field] += int(ledger.get(field) or 0)
-        total["estimated_cost_usd"] = round(
-            total["estimated_cost_usd"] + float(ledger.get("estimated_cost_usd") or 0), 4)
+        for field in ("estimated_cost_usd", "actual_cost_usd"):
+            total[field] = round(total[field] + float(ledger.get(field) or 0), 4)
     return total
 
 
@@ -182,9 +201,39 @@ def to_judge(items: list[dict], key_field: str = "cache_key") -> list[dict]:
     return misses
 
 
+def _measured_usage(judge_task_id: str) -> list[dict]:
+    """What the judge tasks reported spending, if anything did.
+
+    A mapped task's XComs come back as a list, one per map index. Pulled by key
+    rather than from the return value because the return value is a verdict that
+    downstream zips positionally against a case - wrapping it to carry the
+    usage figures alongside would make every consumer unwrap it.
+
+    Best-effort on purpose. This is accounting running inside a paid task, and a
+    usage key that is absent because the provider changed, or because the judge
+    was the offline one, must cost the *measurement* and never the run.
+    """
+    if OFFLINE or not judge_task_id:
+        return []
+    try:
+        from airflow.sdk import get_current_context
+
+        pulled = get_current_context()["ti"].xcom_pull(
+            task_ids=judge_task_id, key=USAGE_KEY)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(f"no usage reported by {judge_task_id}: {exc}")
+        return []
+    if pulled is None:
+        return []
+    if isinstance(pulled, dict):
+        return [pulled]
+    return [row for row in pulled if isinstance(row, dict)]
+
+
 @task
 def merge(items: list[dict], misses: list[dict], fresh: list,
-          key_field: str = "cache_key", chars_field: str = "prompt_chars") -> dict:
+          key_field: str = "cache_key", chars_field: str = "prompt_chars",
+          judge_task_id: str = "") -> dict:
     """Fresh verdicts for the cases judged, cached verdicts for the rest, in order.
 
     Restoring the one-to-one alignment between ``items`` and verdicts is the
@@ -232,7 +281,7 @@ def merge(items: list[dict], misses: list[dict], fresh: list,
                 f"a verdict would report a case as unchanged, which is indistinguishable "
                 f"from a case the policy agrees with.")
     return {"verdicts": out,
-            "ledger": _ledger(misses, chars_field),
+            "ledger": _ledger(misses, chars_field, _measured_usage(judge_task_id)),
             **cache.saving(hits, JUDGE_ID, chars_field)}
 
 
@@ -346,8 +395,13 @@ def build(domain_name: str) -> None:
             else:
                 print(f"scheduled run: replaying {lo:%Y-%m-%d} to {hi:%Y-%m-%d}")
 
+            # The cap is a manual-run guard and the parameter says so, but it
+            # used to be passed on every run - so a scheduled window holding
+            # more cases than the cap quietly replayed its oldest 250 and
+            # reported a flip rate for a month it had only partly seen.
+            limit = (cap or None) if manual else None
             cases = store.load_cases(domain_name, until=hi, since=lo,
-                                     limit=cap or 10_000, newest_first=manual and bool(cap))
+                                     limit=limit, newest_first=manual and bool(cap))
             print(f"{len(cases)} cases to replay under policy {version}")
             if cases:
                 print(f"covering {cases[0].decided_at:%Y-%m-%d} to {cases[-1].decided_at:%Y-%m-%d}")
@@ -471,8 +525,21 @@ def build(domain_name: str) -> None:
                       f"USD {ledger['estimated_cost_usd']:.4f}"
                       + (f"; {cache_hits} verdict(s) came from cache, saving an estimated "
                          f"USD {cache_saved:.4f}" if cache_hits else ""))
+            # What it actually was, when the judge reported it. The estimate is
+            # not corrected - it is scored, because the gap is what prices the
+            # next backfill. See ptm/cost.py:reconcile.
+            check = cost.reconcile(ledger, int(ledger.get("prompt_chars") or 0))
+            if check["measured"]:
+                print(f"measured USD {check['actual_cost_usd']:.4f} against an estimated "
+                      f"USD {check['estimated_cost_usd']:.4f} "
+                      f"({check['cost_error']:+.1%} out)"
+                      + (f"; these prompts ran at {check['implied_chars_per_token']} "
+                         f"characters per token, not the "
+                         f"{check['assumed_chars_per_token']} the estimate assumes"
+                         if check["implied_chars_per_token"] else ""))
             return {**summary, **ledger, "segments": segments,
                     "cache_hits": cache_hits, "estimated_saved_usd": cache_saved,
+                    "cost_check": check,
                     "disparity": [f.model_dump(mode="json") for f in findings]}
 
         items = prepare()
@@ -522,11 +589,13 @@ def build(domain_name: str) -> None:
                 max_active_tis_per_dag=8,
             ).expand(prompt=baseline_prompts(baseline_misses)).output
 
-        candidate = merge(items, candidate_misses, verdicts)
+        candidate = merge(items, candidate_misses, verdicts,
+                          judge_task_id="" if OFFLINE else "judge")
         baseline_pass = merge.override(task_id="merge_baseline",
                                        trigger_rule="none_failed")(
             baseline_case_items, baseline_misses, baseline_verdicts,
-            "baseline_cache_key", "baseline_prompt_chars")
+            "baseline_cache_key", "baseline_prompt_chars",
+            judge_task_id="" if OFFLINE else "judge_baseline")
 
         @task(outlets=[flips_asset])
         def publish(summary: dict) -> dict:
@@ -622,6 +691,20 @@ def build(domain_name: str) -> None:
             task_id="review",
             options=domain.outcomes,
             defaults=[domain.outcomes[0]],
+            # The reviewer's reasoning, not just their answer. `record` below
+            # has always read this out of `params_input`, but nothing ever
+            # declared the parameter, so every precedent on file carries an
+            # empty note - including the ones ptm.proposal shows a drafter
+            # under the heading "their note". An outcome with no reason behind
+            # it is the one thing a permanent record cannot afford to lose:
+            # it is what a second reviewer needs to settle a conflict, and what
+            # tells a future reader whether a ruling still applies.
+            params={"note": Param(
+                "", type="string", title="Why is this the correct outcome?",
+                description="Your reasoning, in a sentence or two. It is kept with the "
+                            "ruling forever, shown beside any ruling that contradicts "
+                            "this one, and given to the drafter that writes the next "
+                            "version of the policy.")},
             task_display_name="Adjudicate contested case",
         ).expand(subject=subjects(flips), body=bodies(flips))
 
@@ -644,6 +727,7 @@ def build(domain_name: str) -> None:
                     f"a partial set would attribute a ruling to the wrong case. Re-run "
                     f"the failed review task(s) instead."
                 )
+            version = ctx["params"]["policy_version"]
             saved = []
             for f, resp in zip(flips, responses):
                 chosen = (resp or {}).get("chosen_options") or []
@@ -654,9 +738,17 @@ def build(domain_name: str) -> None:
                     ruled_by=(resp.get("user_id") or "unknown"),
                     note=(resp.get("params_input") or {}).get("note", ""),
                     established_at=pendulum.now("UTC"), established_by_run=ctx["run_id"],
+                    # The circumstances, not just the answer. Which policy the
+                    # reviewer was shown and what it gave for this case is what
+                    # makes the ruling re-readable later: a precedent the gate
+                    # enforces forever, against a clause that has since been
+                    # rewritten, is a fact about a sentence nobody can find.
+                    policy_version=version,
+                    judged_outcome=f.get("new_outcome", ""),
+                    judged_clause=f.get("policy_clause", ""),
                 ))
                 saved.append(f["case_id"])
-            store.mark_reviewed(domain_name, ctx["params"]["policy_version"], saved)
+            store.mark_reviewed(domain_name, version, saved)
             return {"precedents_recorded": len(saved), "case_ids": saved,
                     "held_back_unconfirmed": len(held_back)}
 
@@ -784,11 +876,13 @@ def build(domain_name: str) -> None:
             ).expand(prompt=gate_baseline_prompts(gate_baseline_misses)).output
 
         gate_candidate = merge.override(task_id="gate_merge")(
-            cases, gate_misses, gate_verdicts)
+            cases, gate_misses, gate_verdicts,
+            judge_task_id="" if OFFLINE else "gate_judge")
         gate_baseline = merge.override(task_id="gate_merge_baseline",
                                        trigger_rule="none_failed")(
             gate_baseline_case_items, gate_baseline_misses, gate_baseline_verdicts,
-            "baseline_cache_key", "baseline_prompt_chars")
+            "baseline_cache_key", "baseline_prompt_chars",
+            judge_task_id="" if OFFLINE else "gate_judge_baseline")
 
         @task(trigger_rule="none_failed")
         def enforce(items: list[dict], candidate: dict, found_conflicts: list[dict],
@@ -806,6 +900,13 @@ def build(domain_name: str) -> None:
                 domain.validate_outcome(verdict.outcome)
             precedents = store.load_precedents(domain_name)
             violations = diff.precedent_violations(by_case, precedents)
+
+            # Before trusting the oracle, ask whether it is still about this
+            # policy. A ruling made against a clause that has since been
+            # rewritten is enforced here exactly as hard as one made this
+            # morning, and nothing else in the pipeline would ever say so.
+            stale = diff.stale_precedents(precedents, domain, version)
+            print(diff.describe_stale(stale, version))
             # Stored so the dashboard can show the gate's answer without paying
             # to judge these cases all over again.
             store.save_verdicts(ctx["run_id"], domain_name, version, by_case)
@@ -853,6 +954,11 @@ def build(domain_name: str) -> None:
                         f"{len(found_conflicts)} internal conflict(s), so some violation here may "
                         "be unavoidable until two humans agree with each other."
                         ) if found_conflicts else ""
+                shaky = {r["case_id"] for r in stale} & {v["case_id"] for v in violations}
+                if shaky:
+                    hint += (f"\n{len(shaky)} of these reverse a ruling made about a clause "
+                             f"that has since changed ({sorted(shaky)[:5]}); re-adjudicating "
+                             f"those is a different fix from editing the policy.")
                 if pre_existing:
                     hint += (f"\n{len(introduced)} of these are introduced by {version}; "
                              f"{len(violations) - len(introduced)} are reversals the policy "
@@ -863,7 +969,8 @@ def build(domain_name: str) -> None:
                 )
             return {"precedents_checked": len(by_case), "violations": 0,
                     "in_force_violations": len(pre_existing),
-                    "precedent_conflicts": len(found_conflicts)}
+                    "precedent_conflicts": len(found_conflicts),
+                    "stale_precedents": len(stale)}
 
         enforce(cases, gate_candidate, conflicts(), gate_baseline)
 
@@ -900,6 +1007,17 @@ def build(domain_name: str) -> None:
                 1.0, type="number", minimum=0.0, maximum=1.0,
                 title="Fail above this disagreement rate",
                 description="1.0 measures without gating. Lower it to refuse to trust a noisy judge."),
+            # A second, independent judge on the same cases. Self-consistency is
+            # satisfied completely by a judge that misreads a clause the same way
+            # every time; two judges misreading it the same way is a far smaller
+            # coincidence. Blank skips the pass entirely, so it costs nothing
+            # unless asked for.
+            "compare_model": Param(
+                "", type=["string", "null"], title="Second judge (blank to skip)",
+                description="A pydantic-ai model identifier, e.g. 'anthropic:claude-haiku-4-5'. "
+                            "Judged through the same connection with the model overridden, so "
+                            "no second connection is needed. Cases the two judges split on are "
+                            "cases the policy does not settle."),
         },
         tags=["policy-time-machine", domain_name, "stability"],
         doc_md=(
@@ -988,13 +1106,56 @@ def build(domain_name: str) -> None:
             version = _version_from_context()
             return [build_prompt(_case(r), domain, version) for r in rows]
 
+        @task
+        def cross_units(rows: list[dict], **ctx) -> list[dict]:
+            """One row per case for the second judge - or none at all.
+
+            Deduplicated off the stability fan-out rather than loaded again, so
+            both judges are asked about exactly the same cases. The repeats are
+            dropped: asking a second judge the same question three times
+            measures *its* self-consistency, which is a different check and not
+            the one being paid for here.
+            """
+            if OFFLINE or not (ctx["params"].get("compare_model") or "").strip():
+                return []
+            seen, out = set(), []
+            for row in rows:
+                if row["case_id"] in seen:
+                    continue
+                seen.add(row["case_id"])
+                out.append(row)
+            print(f"second judge {ctx['params']['compare_model']} will see "
+                  f"{len(out)} case(s)")
+            return out
+
+        @task
+        def cross_prompts(rows: list[dict]) -> list[str]:
+            version = _version_from_context()
+            return [build_prompt(_case(r), domain, version) for r in rows]
+
         rows = units()
+        cross_rows = cross_units(rows)
         if OFFLINE:
             @task(max_active_tis_per_dag=8)
             def stability_judge_offline(row: dict, **ctx) -> dict:
                 return offline_verdict(_case(row), domain, ctx["params"]["policy_version"]).model_dump()
 
             sampled = stability_judge_offline.expand(row=rows)
+
+            @task
+            def cross_judge_offline(row: dict) -> dict:
+                """Never runs: cross_units returns nothing offline.
+
+                Present so the graph has the same shape in both configurations -
+                a task that exists only in the paid branch is a task nobody sees
+                fail until they are paying.
+                """
+                raise AirflowFailException(
+                    "the offline judge cannot stand in for a second opinion: it would "
+                    "be the same rules answering twice, and a 100% agreement rate that "
+                    "means nothing is worse than no cross-check at all")
+
+            cross_verdicts = cross_judge_offline.expand(row=cross_rows)
         else:
             sampled = LLMOperator.partial(
                 task_id="stability_judge",
@@ -1004,9 +1165,22 @@ def build(domain_name: str) -> None:
                 usage_limits=UsageLimits(request_limit=3),
                 max_active_tis_per_dag=8,
             ).expand(prompt=stability_prompts(rows)).output
+            cross_verdicts = LLMOperator.partial(
+                task_id="cross_judge",
+                llm_conn_id=LLM_CONN_ID,
+                # The connection's model, overridden per run. model_id is a
+                # template field, so the second judge is chosen at trigger time
+                # without a second connection or a DAG edit.
+                model_id="{{ params.compare_model }}",
+                system_prompt=SYSTEM_PROMPT,
+                output_type=Verdict,
+                usage_limits=UsageLimits(request_limit=3),
+                max_active_tis_per_dag=8,
+            ).expand(prompt=cross_prompts(cross_rows)).output
 
-        @task
-        def report(rows: list[dict], verdicts: list, **ctx) -> dict:
+        @task(trigger_rule="none_failed")
+        def report(rows: list[dict], verdicts: list, cross_rows: list[dict],
+                   cross_verdicts: list, **ctx) -> dict:
             params = ctx["params"]
             version = params["policy_version"]
             if len(verdicts) != len(rows):
@@ -1026,7 +1200,8 @@ def build(domain_name: str) -> None:
 
             repeats = max(2, int(params["samples_per_case"]))
             result = stability.analyse(samples, repeats)
-            ledger = _ledger(rows)
+            ledger = _ledger(rows, usage=_measured_usage(
+                "" if OFFLINE else "stability_judge"))
             store.save_stability(ctx["run_id"], domain_name, version,
                                  samples, result.model_dump(), ledger)
 
@@ -1037,6 +1212,40 @@ def build(domain_name: str) -> None:
                 confirmed = store.save_flip_stability(domain_name, version, confirmations,
                                                       run_id=ctx["run_id"])
                 print(stability.describe_confirmations(confirmations))
+
+            # The second judge, if one ran. Scored against the primary judge's
+            # first sample of each case, so both answers are one judgement of
+            # the same prompt rather than a modal vote against a single call.
+            cross: dict = {}
+            cross_rows = list(cross_rows or [])
+            cross_verdicts = list(cross_verdicts or [])
+            if cross_rows and cross_verdicts:
+                if len(cross_verdicts) != len(cross_rows):
+                    raise AirflowFailException(
+                        f"Second judge returned {len(cross_verdicts)} verdict(s) for "
+                        f"{len(cross_rows)} case(s); refusing a cross-check computed "
+                        f"from a partial fan-out.")
+                first = {}
+                for sample, row in zip(samples, rows):
+                    first.setdefault(row["case_id"], Verdict(
+                        outcome=sample["outcome"], rationale="",
+                        confidence=sample["confidence"],
+                        policy_clause=sample["policy_clause"] or ""))
+                second = {}
+                for row, raw in zip(cross_rows, cross_verdicts):
+                    verdict = _as_verdict(raw)
+                    domain.validate_outcome(verdict.outcome)
+                    second[row["case_id"]] = verdict
+                actual = {r["case_id"]: r["actual_outcome"] for r in cross_rows}
+                report_model = crosscheck.analyse(
+                    first, second, domain,
+                    primary_label=JUDGE_ID,
+                    secondary_label=(params.get("compare_model") or "second judge").strip(),
+                    actual=actual)
+                cross = report_model.model_dump(mode="json")
+                store.save_cross_check(ctx["run_id"], domain_name, version, cross)
+                print()
+                print(crosscheck.describe(report_model))
 
             print(stability.describe(result))
             for row in result.unstable[:10]:
@@ -1056,9 +1265,11 @@ def build(domain_name: str) -> None:
                 )
             return {**result.model_dump(exclude={"unstable"}), **ledger,
                     "target": (params.get("target") or "sample").strip(),
-                    "flips_confirmed": confirmed}
+                    "flips_confirmed": confirmed,
+                    "cross_check": {k: v for k, v in cross.items()
+                                    if k != "disagreements"}}
 
-        report(rows, sampled)
+        report(rows, sampled, cross_rows, cross_verdicts)
 
     judge_stability()
 
@@ -1318,7 +1529,7 @@ def build(domain_name: str) -> None:
                 verdicts=by_case or None)
             store.save_draft(domain_name, written["draft_version"], written["version"],
                              written["patch"],
-                             evidence={k: v for k, v in found.items() if k != "curves"},
+                             evidence={k: v for k, v in found.items() if k not in ("curves", "grid")},
                              verification=verification, drafted_by=JUDGE_ID,
                              run_id=ctx["run_id"])
             print(proposal.describe(patch, verification))

@@ -41,6 +41,22 @@ conflicts:
   key: [reason, documentation, contract_months, outstanding_balance_gbp]
   impact_band: 200
 
+
+# How far the offline rules may drift from the judge before the threshold sweep
+# built on them stops being trustworthy. The sweep is arithmetic over these
+# rules, so it is worth exactly what they are worth - and until this existed,
+# nothing acted on the number that says so.
+#
+# 'warn' rather than 'fail' because offline the figure is 100% by construction
+# (the verdicts being scored against came from these same rules), so the gate is
+# inert here by design and only starts meaning anything with PTM_OFFLINE=0.
+# Raise it to 'fail' once you have run a real judge and know what the agreement
+# actually is.
+rules:
+  min_outcome_agreement: 0.9
+  min_clause_agreement: 0.85
+  gate: warn
+
 offline_rules:
   v1:
     - when: "months_elapsed < contract_months and reason == 'medical' and documentation == 'yes'"
