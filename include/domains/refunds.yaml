@@ -20,6 +20,8 @@ case_template: |
   Outstanding balance:  GBP {outstanding_balance_gbp}
   Member's note:        {note}
 
+cohort_fields: [tier, reason]
+
 judge_instructions: |
   - "partial_refund" means the final month is charged and the remainder
     returned. Use it wherever the policy charges rather than forfeits.

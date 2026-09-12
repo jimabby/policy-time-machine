@@ -1,113 +1,803 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Policy Diff Explorer</title>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Policy Diff Explorer</title>
 <style>
-:root{--bg:#0f1115;--panel:#171a21;--line:#252a34;--fg:#e6e8ec;--dim:#8b93a1;
---loose:#4ade80;--tight:#f87171;--warn:#fbbf24;--accent:#60a5fa}
+/* Light is the base; every token is redefined for dark so the page sits
+   correctly inside either Airflow theme. */
+:root{
+  --bg:#f7f8fa; --panel:#fff; --panel-2:#fbfcfd; --line:#e3e7ed; --line-2:#eef1f5;
+  --fg:#1a1f2b; --dim:#67707f; --faint:#98a1b0;
+  --loose:#0f8a4d; --loose-bg:#e6f6ed; --tight:#c2321f; --tight-bg:#fdecea;
+  --warn:#9a6400; --warn-bg:#fdf3e0; --accent:#2563eb; --accent-bg:#eaf0fe;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
+  --radius:10px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1115; --panel:#171a21; --panel-2:#13161c; --line:#252a34; --line-2:#1e222b;
+  --fg:#e6e8ec; --dim:#8b93a1; --faint:#6b7280;
+  --loose:#4ade80; --loose-bg:#11291c; --tight:#f87171; --tight-bg:#2a1414;
+  --warn:#fbbf24; --warn-bg:#2a2110; --accent:#60a5fa; --accent-bg:#13203a;
+  --shadow:none;
+}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
-header{padding:20px 24px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
-h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
-select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
-main{padding:24px;max-width:1200px}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.tile .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
-.tile .v{font-size:20px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums;white-space:nowrap}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  -webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.011em}
+a{color:var(--accent)}
+.num{font-variant-numeric:tabular-nums}
+
+/* ---------------------------------------------------------------- header */
+header{position:sticky;top:0;z-index:20;background:var(--panel);
+  border-bottom:1px solid var(--line);padding:12px 20px}
+.hrow{display:flex;gap:14px;align-items:center;flex-wrap:wrap;max-width:1320px;margin:0 auto}
+.brand{display:flex;align-items:center;gap:9px;margin-right:auto;min-width:0}
+.brand h1{font-size:15px;white-space:nowrap}
+.brand .sub{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.dot{width:8px;height:8px;border-radius:99px;background:var(--accent);flex:none}
+.ctl{display:flex;align-items:center;gap:6px}
+.ctl label{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+select,input,button{font:inherit;color:var(--fg);background:var(--panel-2);
+  border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid var(--accent);
+  outline-offset:1px;border-color:var(--accent)}
+button{cursor:pointer}
+button:hover{border-color:var(--faint)}
+@media (max-width:560px){
+  .brand{margin-right:0;width:100%}
+  .hrow{gap:10px}
+  .ctl{flex:1 1 auto}
+  .ctl select{width:100%}
+}
+
+/* ------------------------------------------------------------------ main */
+main{padding:20px;max-width:1320px;margin:0 auto}
+section{margin-bottom:26px}
+.shead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 11px}
+.shead h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)}
+.shead .note{color:var(--faint);font-size:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow)}
+.empty{color:var(--dim);padding:18px 16px;text-align:center}
+.empty code{background:var(--panel-2);border:1px solid var(--line);border-radius:5px;
+  padding:1px 5px;font-size:12.5px}
+
+/* ------------------------------------------------------------- AI brief */
+.brief{padding:18px 20px}
+.brief .top{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.brief .headline{font-size:17px;font-weight:600;line-height:1.4;flex:1 1 320px;
+  letter-spacing:-.014em;min-width:0}
+.brief p{color:var(--dim);margin:12px 0 0;max-width:78ch}
+.verdict{flex:none;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;
+  border-radius:99px;font-size:11.5px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.05em;border:1px solid transparent;white-space:nowrap}
+.v-ship{background:var(--loose-bg);color:var(--loose);border-color:var(--loose)}
+.v-caveat{background:var(--warn-bg);color:var(--warn);border-color:var(--warn)}
+.v-stop{background:var(--tight-bg);color:var(--tight);border-color:var(--tight)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;
+  margin-top:18px;padding-top:16px;border-top:1px solid var(--line-2)}
+.cols h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
+  margin-bottom:8px}
+.cols ul{margin:0;padding-left:17px;color:var(--dim)}
+.cols li{margin-bottom:6px}
+.by{color:var(--faint);font-size:11.5px;margin-top:16px;padding-top:12px;
+  border-top:1px solid var(--line-2)}
+
+/* ------------------------------------------------------------------ tiles */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:13px 15px;box-shadow:var(--shadow)}
+.tile .k{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
+.tile .v{font-size:21px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em;line-height:1.2}
+.tile .s{color:var(--faint);font-size:11.5px;margin-top:3px}
 .loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line)}
-td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:none}
-tr.row{cursor:pointer}tr.row:hover{background:#1c2029}
-.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
-.num{font-variant-numeric:tabular-nums;text-align:right}
-.detail td{background:#12151b;color:var(--dim);font-size:13px}
-pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
+
+/* ------------------------------------------------------------------ chart */
+.chart{padding:16px 18px 12px}
+.chart svg{display:block;width:100%;height:auto}
+.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--dim);font-size:11.5px;
+  margin-top:10px}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.gl{stroke:var(--line-2);stroke-width:1}
+.axis{fill:var(--faint);font-size:10px}
+
+/* --------------------------------------------------- coverage & cohorts */
+.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:11px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:15px 17px;box-shadow:var(--shadow)}
+.panel h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
+  margin-bottom:11px;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.panel h3 .r{text-transform:none;letter-spacing:0;font-weight:400;color:var(--faint)}
+.meter{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;
+  padding:4px 0;font-variant-numeric:tabular-nums}
+.meter .lab{font-size:12.5px;min-width:44px;max-width:126px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+/* Both must be blocks: .track is blockified by the grid, but a bare inline
+   .fill would ignore its width and the bar would render empty. */
+.meter .track{display:block;height:7px;border-radius:4px;background:var(--line-2);
+  overflow:hidden}
+.meter .fill{display:block;height:100%;border-radius:4px;background:var(--accent);
+  min-width:2px}
+.meter .val{font-size:12px;color:var(--dim);min-width:74px;text-align:right}
+.meter.off .lab,.meter.off .val{color:var(--tight)}
+.meter.off .fill{background:var(--tight)}
+.hint{color:var(--dim);font-size:12.5px;margin-top:11px;padding-top:10px;
+  border-top:1px solid var(--line-2)}
+.hint strong{color:var(--fg)}
+.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:600;
+  background:var(--tight-bg);color:var(--tight);margin-left:6px}
+.tag.ok{background:var(--loose-bg);color:var(--loose)}
+.tag.warn{background:var(--warn-bg);color:var(--warn)}
+.tag.calc{background:var(--accent-bg);color:var(--accent);font-weight:500}
+
+/* ------------------------------------------------------------- comparison */
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.cmp>div{background:var(--panel);padding:15px 17px}
+.cmp .vh{font-weight:600;font-size:15px;letter-spacing:-.01em;margin-bottom:11px}
+.cmp dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:5px 10px;
+  font-variant-numeric:tabular-nums}
+.cmp dt{color:var(--dim);font-size:12.5px}
+.cmp dd{margin:0;text-align:right;font-size:12.5px;font-weight:500}
+@media (max-width:620px){.cmp{grid-template-columns:1fr}}
+
+/* ----------------------------------------------------------------- themes */
+.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:11px}
+.theme{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:7px}
+.theme .th{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.theme .nm{font-weight:600;letter-spacing:-.008em}
+.theme .ct{flex:none;color:var(--dim);font-variant-numeric:tabular-nums;font-size:12.5px}
+.theme p{margin:0;color:var(--dim);font-size:13px}
+.theme .ex{color:var(--faint);font-size:11.5px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ------------------------------------------------------------------ table */
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;min-width:760px}
+table.narrow{min-width:560px}
+th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line);
+  background:var(--panel-2);white-space:nowrap;position:sticky;top:0;z-index:1}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--fg)}
+th .arrow{opacity:.4;margin-left:3px}
+th[aria-sort] .arrow{opacity:1;color:var(--accent)}
+td{padding:10px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tr.row{cursor:pointer}
+tr.row:hover{background:var(--panel-2)}
+tr.row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+td.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.pill{display:inline-block;padding:1.5px 8px;border-radius:99px;font-size:11.5px;
+  border:1px solid var(--line);background:var(--panel-2);white-space:nowrap}
+.pill.g{background:var(--loose-bg);color:var(--loose);border-color:transparent}
+.pill.r{background:var(--tight-bg);color:var(--tight);border-color:transparent}
+.arrow-c{color:var(--faint);padding:0 4px}
+.bar{display:inline-block;height:4px;border-radius:2px;background:var(--accent);
+  vertical-align:middle;margin-left:7px;min-width:2px;opacity:.5}
 .bad{color:var(--tight);font-weight:600}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}
-.empty{color:var(--dim);padding:16px}
+.detail>td{background:var(--panel-2);color:var(--dim);font-size:13px;padding:14px 16px}
+.detail pre{margin:0 0 12px;white-space:pre-wrap;word-break:break-word;
+  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);
+  background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:11px 13px}
+.detail .kv{margin-top:8px}
+.detail .kv strong{color:var(--fg);font-weight:600}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.filters input{flex:1 1 180px;min-width:0}
+.chip{padding:5px 11px;border-radius:99px;font-size:12.5px;background:var(--panel);
+  border:1px solid var(--line);cursor:pointer;white-space:nowrap}
+.chip[aria-pressed=true]{background:var(--accent-bg);border-color:var(--accent);
+  color:var(--accent);font-weight:500}
+.count{color:var(--faint);font-size:12px;margin-left:auto;white-space:nowrap}
+
+/* Below this width a wide table is worse than a list, so the flips become
+   cards and the table header is dropped entirely. */
+@media (max-width:700px){
+  main{padding:14px}
+  table,table.narrow,.scroll{min-width:0;border:0;background:none;box-shadow:none;
+    overflow:visible;display:block}
+  /* The card layout re-labels every cell via data-l, so the header row carries
+     nothing a narrow screen needs. Hiding it with position:absolute left it in
+     flow at full table width and scrolled the whole page sideways. */
+  thead{display:none}
+  tbody{display:block}
+  tbody tr:not(.detail){display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:12px 14px;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    margin-bottom:9px;box-shadow:var(--shadow)}
+  tbody tr td{border:0;padding:0}
+  /* The reasoning column needs the full width rather than a grid half. */
+  tbody td[data-l="Why"],tbody td[data-l="Change"]{grid-column:1/-1}
+  tbody td[data-l]::before{content:attr(data-l);color:var(--faint);font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:1px}
+  td.r{text-align:left}
+  /* :not([hidden]) matters - a bare display:block would override the hidden
+     attribute and leave every case detail expanded on load. */
+  .detail:not([hidden]){display:block;margin:-6px 0 9px}
+  .detail>td{display:block;border:1px solid var(--line);border-radius:var(--radius)}
+  .bar{display:none}
+}
 </style></head><body>
+
 <header>
-  <h1>Policy Diff Explorer</h1>
-  <select id=domain></select>
-  <select id=version></select>
-  <span id=label style="color:var(--dim)"></span>
+  <div class=hrow>
+    <div class=brand>
+      <span class=dot></span>
+      <h1>Policy Diff Explorer</h1>
+      <span class=sub id=label></span>
+    </div>
+    <div class=ctl><label for=domain>Domain</label><select id=domain></select></div>
+    <div class=ctl><label for=version>Policy</label><select id=version></select></div>
+    <button id=refresh title="Reload from the database">Refresh</button>
+  </div>
 </header>
+
 <main>
-  <div class=tiles id=tiles></div>
-  <h2>Flipped decisions</h2>
-  <div id=flips></div>
-  <h2>Established precedent</h2>
-  <div id=precedents></div>
+  <section id=brief-s hidden>
+    <div class=shead><h2>Brief</h2><span class=note id=brief-note></span></div>
+    <div class="card brief" id=brief></div>
+  </section>
+
+  <section>
+    <div class=shead><h2>Impact</h2><span class=note id=runs-note></span></div>
+    <div class=tiles id=tiles></div>
+  </section>
+
+  <section id=chart-s hidden>
+    <div class=shead><h2>Impact over replayed history</h2>
+      <span class=note>By the month each decision was originally made</span></div>
+    <div class="card chart" id=chart></div>
+  </section>
+
+  <section id=blind-s hidden>
+    <div class=shead><h2>Blind spots</h2>
+      <span class=note>What the flip list cannot show you</span></div>
+    <div class=split id=blind></div>
+  </section>
+
+  <section id=themes-s hidden>
+    <div class=shead><h2>What moved, and why</h2><span class=note id=themes-note></span></div>
+    <div class=themes id=themes></div>
+  </section>
+
+  <section id=amend-s hidden>
+    <div class=shead><h2>Proposed amendment</h2>
+      <span class=note>Drafted because the precedent gate failed</span></div>
+    <div class="card brief" id=amend></div>
+  </section>
+
+  <section id=cmp-s hidden>
+    <div class=shead><h2>Compare</h2>
+      <span class=note id=cmp-note></span>
+      <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        <label for=against style="color:var(--dim);font-size:11px;text-transform:uppercase;
+               letter-spacing:.06em">Against</label>
+        <select id=against></select></span></div>
+    <div id=cmp></div>
+  </section>
+
+  <section>
+    <div class=shead><h2>Flipped decisions</h2>
+      <span class=note>Every case where the proposed policy disagrees with history</span></div>
+    <div class=filters id=filters hidden>
+      <input id=q type=search placeholder="Filter by case, outcome or reasoning…"
+             aria-label="Filter flipped decisions">
+      <button class=chip id=f-all aria-pressed=true>All</button>
+      <button class=chip id=f-loose aria-pressed=false>More generous</button>
+      <button class=chip id=f-tight aria-pressed=false>More strict</button>
+      <button class=chip id=f-unsure aria-pressed=false>Low confidence</button>
+      <button class=chip id=f-prec aria-pressed=false>Has precedent</button>
+      <span class=count id=count></span>
+    </div>
+    <div id=flips></div>
+  </section>
+
+  <section>
+    <div class=shead><h2>Established precedent</h2>
+      <span class=note>Human rulings. The only durable output, and the regression suite.</span></div>
+    <div id=precedents></div>
+  </section>
 </main>
+
 <script>
+'use strict';
 const $ = s => document.querySelector(s);
-// Absolute so the page works whether it is served at /ptm or /ptm/.
-const api = p => fetch('/ptm' + p).then(r => r.json());
-let DOMAINS = [];
+// Absolute, so the page works whether it is served at /ptm or /ptm/.
+const api = p => fetch('/ptm' + p).then(r => {
+  if (!r.ok) throw new Error(p + ' -> ' + r.status);
+  return r.json();
+});
 
-function money(u, n){ return (u ? u + ' ' : '') + Number(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+const PAGE = 25;
+let DOMAINS = [], STATE = {flips: [], sort: {key: 'impact', dir: -1}, filter: 'all',
+                           q: '', shown: PAGE};
 
+/* ------------------------------------------------------------------ utils */
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function n(x){ return Number(x || 0).toLocaleString(undefined, {maximumFractionDigits:0}); }
+function money(unit, v){ return (unit ? unit + ' ' : '') + n(v); }
+function pct(x){ return Math.round((x || 0) * 100) + '%'; }
+// The flip rate is quoted to a decimal in the brief; the tile should agree.
+function pct1(x){ return ((x || 0) * 100).toFixed(1) + '%'; }
+const VERDICTS = {
+  ship:              ['v-ship',   'Ship'],
+  ship_with_caveats: ['v-caveat', 'Ship with caveats'],
+  do_not_ship:       ['v-stop',   'Do not ship'],
+};
+
+/* ------------------------------------------------------------------- boot */
 async function boot(){
-  DOMAINS = await api('/api/domains');
-  $('#domain').innerHTML = DOMAINS.map(d => `<option value="${d.name}">${d.name}</option>`).join('');
-  $('#domain').onchange = onDomain; $('#version').onchange = render;
+  try { DOMAINS = await api('/api/domains'); }
+  catch (e) { return fail('Could not reach the Policy Time Machine API. ' + e.message); }
+  if (!DOMAINS.length) return fail('No domains configured. Add a YAML to include/domains/.');
+  $('#domain').innerHTML = DOMAINS.map(d =>
+    `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
+  $('#domain').onchange = onDomain;
+  $('#version').onchange = render;
+  $('#refresh').onclick = render;
+  $('#q').oninput = e => { STATE.q = e.target.value.toLowerCase(); STATE.shown = PAGE; paintFlips(); };
+  for (const [id, key] of [['#f-all','all'],['#f-loose','loosening'],['#f-tight','tightening'],
+                           ['#f-unsure','unsure'],['#f-prec','precedent']]) {
+    $(id).onclick = () => {
+      STATE.filter = key; STATE.shown = PAGE;
+      document.querySelectorAll('.chip').forEach(c =>
+        c.setAttribute('aria-pressed', String(c === $(id))));
+      paintFlips();
+    };
+  }
   onDomain();
+}
+function fail(msg){
+  $('#flips').innerHTML = `<div class="card empty">${esc(msg)}</div>`;
 }
 function onDomain(){
   const d = DOMAINS.find(x => x.name === $('#domain').value);
-  $('#version').innerHTML = d.policies.map(v => `<option${v==='v2'?' selected':''}>${v}</option>`).join('');
+  $('#version').innerHTML = d.policies.map(v =>
+    `<option${v === 'v2' ? ' selected' : ''}>${esc(v)}</option>`).join('');
   $('#label').textContent = d.label;
   render();
 }
 
+/* ----------------------------------------------------------------- render */
 async function render(){
   const dom = $('#domain').value, ver = $('#version').value;
   const d = DOMAINS.find(x => x.name === dom);
-  const [s, f, p] = await Promise.all([
-    api(`/api/summary/${dom}/${ver}`), api(`/api/flips/${dom}/${ver}`), api(`/api/precedents/${dom}`)]);
+  let s, f, p, tl, ins, cov, coh;
+  try {
+    [s, f, p, tl, ins, cov, coh] = await Promise.all([
+      api(`/api/summary/${dom}/${ver}`), api(`/api/flips/${dom}/${ver}`),
+      api(`/api/precedents/${dom}`),    api(`/api/timeline/${dom}/${ver}`),
+      api(`/api/insights/${dom}/${ver}`), api(`/api/coverage/${dom}/${ver}`),
+      api(`/api/cohorts/${dom}/${ver}`),
+    ]);
+  } catch (e) { return fail('Failed to load ' + dom + '/' + ver + '. ' + e.message); }
 
-  const loose = s.by_direction.find(x => x.direction === 'loosening') || {n:0,impact:0};
-  const tight = s.by_direction.find(x => x.direction === 'tightening') || {n:0,impact:0};
-  $('#tiles').innerHTML = [
-    ['Decisions replayed', s.cases.toLocaleString(), ''],
-    ['Outcomes that change', s.flips.toLocaleString(), s.flips ? 'warn' : ''],
-    ['More generous', `${loose.n} · ${money(s.impact_unit, loose.impact)}`, 'loose'],
-    ['More strict', `${tight.n} · ${money(s.impact_unit, tight.impact)}`, 'tight'],
-    ['Net cost', money(s.impact_unit, s.net_impact), s.net_impact > 0 ? 'loose' : 'tight'],
-    ['Precedents on file', s.precedents, ''],
-  ].map(([k,v,c]) => `<div class=tile><div class=k>${k}</div><div class="v ${c}">${v}</div></div>`).join('');
-
-  $('#flips').innerHTML = !f.length ? '<div class=empty>No replay results yet — trigger or backfill the replay DAG.</div>' : `
-    <table><thead><tr><th>Case</th><th>Decided</th><th>Was</th><th>Becomes</th>
-    <th>Direction</th><th class=num>Impact</th><th class=num>Conf.</th><th>Precedent</th></tr></thead><tbody>
-    ${f.map((r,i) => `
-      <tr class=row onclick="toggle(${i})">
-        <td>${r.case_id}</td><td>${r.decided_at.slice(0,10)}</td>
-        <td><span class=pill>${r.actual_outcome}</span></td>
-        <td><span class=pill>${r.new_outcome}</span></td>
-        <td class="${r.direction==='loosening'?'loose':'tight'}">${r.direction}</td>
-        <td class=num>${money('', r.impact)}</td>
-        <td class=num>${Math.round(r.confidence*100)}%</td>
-        <td>${r.precedent ? (r.precedent === r.new_outcome
-             ? '<span class=loose>consistent</span>'
-             : `<span class=bad>VIOLATES → ${r.precedent}</span>`) : '—'}</td>
-      </tr>
-      <tr class=detail id=d${i} hidden><td colspan=8>
-        <pre>${esc(render_case(r.payload))}</pre>
-        <div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || '—')}</div>
-        <div style="margin-top:6px"><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div>
-      </td></tr>`).join('')}
-    </tbody></table>`;
-
-  $('#precedents').innerHTML = !p.length ? '<div class=empty>No precedents yet — run the adjudication DAG and answer the human-in-the-loop tasks.</div>' : `
-    <table><thead><tr><th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Note</th></tr></thead>
-    <tbody>${p.map(r => `<tr><td>${r.case_id}</td><td><span class=pill>${r.correct_outcome}</span></td>
-      <td>${esc(r.ruled_by)}</td><td>${r.established_at.slice(0,10)}</td><td>${esc(r.note||'')}</td></tr>`).join('')}
-    </tbody></table>`;
+  STATE.flips = f; STATE.unit = s.impact_unit; STATE.threshold = s.confidence_threshold;
+  STATE.shown = PAGE;
+  paintBrief(ins.brief, s);
+  paintTiles(s);
+  paintChart(tl, s.impact_unit);
+  paintBlindSpots(cov, coh);
+  paintThemes(ins.themes);
+  paintAmendment(ins.amendment, ins.amendment_verification);
+  paintCompare(d, dom, ver);
+  paintFlips();
+  paintPrecedents(p);
+  $('#runs-note').textContent = s.runs
+    ? `${n(s.runs)} replay run${s.runs === 1 ? '' : 's'} on record`
+    : 'No replay runs yet';
 }
-function render_case(p){ return Object.entries(p).map(([k,v]) => `${(k+':').padEnd(20)}${v}`).join('\n'); }
-function toggle(i){ const el = document.getElementById('d'+i); el.hidden = !el.hidden; }
-function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+/* ------------------------------------------------------------------ brief */
+function paintBrief(b, s){
+  $('#brief-s').hidden = !b;
+  if (!b) return;
+  const [cls, text] = VERDICTS[b.verdict] || ['v-caveat', b.verdict || 'unrated'];
+  const list = (items, title) => !items || !items.length ? '' :
+    `<div><h3>${esc(title)}</h3><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`;
+  $('#brief').innerHTML = `
+    <div class=top>
+      <div class=headline>${esc(b.headline || '')}</div>
+      <span class="verdict ${cls}">${esc(text)}</span>
+    </div>
+    <p>${esc(b.summary || '')}</p>
+    <div class=cols>${list(b.risks, 'Risks')}${list(b.watch_items, 'Watch after shipping')}</div>
+    ${(b.blind_spots || []).length ? `<div class=cols style="grid-template-columns:1fr">
+      ${list(b.blind_spots, 'Blind spots — what the replay could not test')}</div>` : ''}`;
+  $('#brief-note').textContent = source(b);
+}
+function source(x){
+  if (!x) return '';
+  const who = x.generated_by === 'offline'
+    ? 'Generated offline (deterministic stand-in, no model called)'
+    : `Generated by ${x.generated_by}`;
+  return x.created_at ? `${who} · ${x.created_at.slice(0, 16).replace('T', ' ')}` : who;
+}
+
+/* ------------------------------------------------------------------ tiles */
+function paintTiles(s){
+  const u = s.impact_unit;
+  const dir = k => s.by_direction.find(x => x.direction === k) || {n:0, impact:0};
+  const loose = dir('loosening'), tight = dir('tightening');
+  const rate = s.cases ? s.flips / s.cases : 0;
+  const tiles = [
+    ['Decisions replayed', n(s.cases), '', ''],
+    ['Outcomes that change', n(s.flips), s.flips ? 'warn' : '', s.cases ? pct1(rate) + ' of the population' : ''],
+    ['More generous', n(loose.n), 'loose', money(u, loose.impact)],
+    ['More strict', n(tight.n), 'tight', money(u, tight.impact)],
+    ['Net effect', money(u, Math.abs(s.net_impact)), s.net_impact > 0 ? 'tight' : 'loose',
+      s.net_impact > 0 ? 'additional cost' : s.net_impact < 0 ? 'saving' : 'no change'],
+    ['Ambiguous', n(s.low_confidence), s.low_confidence ? 'warn' : '',
+      `judged below ${pct(s.confidence_threshold)} confidence`],
+    ['Precedents on file', n(s.precedents), '', 'binding on future changes'],
+  ];
+  $('#tiles').innerHTML = tiles.map(([k, v, c, sub]) =>
+    `<div class=tile><div class=k>${esc(k)}</div><div class="v ${c}">${esc(v)}</div>
+     ${sub ? `<div class=s>${esc(sub)}</div>` : ''}</div>`).join('');
+}
+
+/* ------------------------------------------------------------------ chart */
+function paintChart(tl, unit){
+  $('#chart-s').hidden = tl.length < 2;
+  if (tl.length < 2) return;
+  const W = 1000, H = 240, PL = 58, PR = 12, PT = 14, PB = 30;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const peak = Math.max(1, ...tl.map(r => Math.max(r.loosening || 0, r.tightening || 0)));
+  const bw = Math.max(2, (iw / tl.length) * 0.62);
+  // Loosening above the baseline, tightening below: the shape of the change
+  // is the thing to read, so it gets a diverging axis rather than a stack.
+  const mid = PT + ih / 2, half = ih / 2 - 6;
+  const x = i => PL + (iw / tl.length) * (i + 0.5);
+  const h = v => (Math.abs(v) / peak) * half;
+
+  const bars = tl.map((r, i) => {
+    const lh = h(r.loosening || 0), th = h(r.tightening || 0);
+    const t = `${esc(r.month)}: ${r.flips} flip(s), +${money(unit, r.loosening)} generous, -${money(unit, r.tightening)} strict`;
+    return `<g><title>${t}</title>
+      <rect x="${(x(i) - bw/2).toFixed(1)}" y="${(mid - lh).toFixed(1)}" width="${bw.toFixed(1)}"
+            height="${lh.toFixed(1)}" rx="1.5" fill="var(--loose)" opacity=".85"/>
+      <rect x="${(x(i) - bw/2).toFixed(1)}" y="${mid.toFixed(1)}" width="${bw.toFixed(1)}"
+            height="${th.toFixed(1)}" rx="1.5" fill="var(--tight)" opacity=".85"/></g>`;
+  }).join('');
+
+  // Label roughly six months so the axis stays legible at any width.
+  const every = Math.max(1, Math.round(tl.length / 6));
+  const labels = tl.map((r, i) => i % every ? '' :
+    `<text class=axis x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor=middle>${esc(r.month)}</text>`).join('');
+
+  $('#chart').innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role=img
+         aria-label="Monthly impact of the policy change across replayed history">
+      <line class=gl x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + ih}"/>
+      <line class=gl x1="${PL}" y1="${mid}" x2="${W - PR}" y2="${mid}"/>
+      <text class=axis x="${PL - 8}" y="${PT + 10}" text-anchor=end>${esc(money(unit, peak))}</text>
+      <text class=axis x="${PL - 8}" y="${mid + 4}" text-anchor=end>0</text>
+      <text class=axis x="${PL - 8}" y="${PT + ih}" text-anchor=end>${esc(money(unit, peak))}</text>
+      ${bars}${labels}
+    </svg>
+    <div class=legend>
+      <span><i style="background:var(--loose)"></i>More generous than history</span>
+      <span><i style="background:var(--tight)"></i>More strict than history</span>
+      <span>Peak month ${esc(money(unit, peak))}</span>
+    </div>`;
+}
+
+
+/* ----------------------------------------------------- coverage & cohorts */
+function paintBlindSpots(cov, coh){
+  const panels = [];
+
+  if (cov && cov.declared) {
+    const peak = Math.max(1, ...cov.clauses.map(c => c.cases));
+    const rows = cov.clauses.map(c => `
+      <div class="meter ${c.exercised ? '' : 'off'}">
+        <span class=lab>${esc(c.clause)}</span>
+        <span class=track><span class=fill style="width:${(c.cases / peak * 100).toFixed(1)}%"></span></span>
+        <span class=val>${c.exercised ? n(c.cases) + ' cases' : 'never'}</span>
+      </div>`).join('');
+    const never = cov.unexercised || [];
+    panels.push(`<div class=panel>
+      <h3>Rules history exercised
+        <span class=r>${cov.exercised} of ${cov.declared}${
+          never.length ? `<span class=tag>${never.length} untested</span>`
+                       : '<span class="tag ok">all tested</span>'}</span></h3>
+      ${rows}
+      <div class=hint>${never.length
+        ? `<strong>Clause ${never.map(esc).join(', ')}</strong> decided no case in the whole
+           replay. Shipping ${never.length > 1 ? 'them' : 'it'} is a guess, not a measurement.`
+        : 'Every clause decided at least one real case.'}
+        ${cov.decided_by_no_clause
+          ? `<br><strong>${n(cov.decided_by_no_clause)}</strong> case${cov.decided_by_no_clause===1?'':'s'}
+             (${pct1(cov.no_clause_share)}) reached no clause at all and took the default outcome.`
+          : ''}
+      </div></div>`);
+  }
+
+  for (const b of (coh && coh.breakdowns) || []) {
+    if (!b.cohorts.length) continue;
+    const peak = Math.max(...b.cohorts.map(c => c.flip_rate), 0.0001);
+    const rows = b.cohorts.map(c => {
+      const hot = c.cases >= 20 && c.disproportion >= 1.5;
+      return `<div class="meter">
+        <span class=lab title="${esc(c.cohort)}">${esc(c.cohort)}</span>
+        <span class=track><span class=fill style="width:${(c.flip_rate / peak * 100).toFixed(1)}%
+          ${hot ? ';background:var(--tight)' : ''}"></span></span>
+        <span class=val>${pct1(c.flip_rate)}${hot ? ` <span class=tag>${c.disproportion}x</span>` : ''}</span>
+      </div>`;
+    }).join('');
+    const worst = b.cohorts.filter(c => c.cases >= 20 && c.disproportion >= 1.5)
+                           .sort((x, y) => y.disproportion - x.disproportion)[0];
+    panels.push(`<div class=panel>
+      <h3>Who bears it, by ${esc(b.field)}
+        <span class=r>population ${pct1(b.baseline_flip_rate)}</span></h3>
+      ${rows}
+      <div class=hint>${worst
+        ? `<strong>${esc(b.field)} = ${esc(worst.cohort)}</strong> absorbs
+           ${pct1(worst.flip_rate)} of its ${n(worst.cases)} cases changing —
+           ${worst.disproportion}x the population rate, net
+           ${esc(money(b.impact_unit, worst.net_impact))}.`
+        : 'No group is disproportionately affected, on a 20-case floor.'}</div></div>`);
+  }
+
+  $('#blind-s').hidden = !panels.length;
+  $('#blind').innerHTML = panels.join('');
+}
+
+/* ----------------------------------------------------------------- themes */
+function paintThemes(t){
+  const themes = (t && t.themes) || [];
+  $('#themes-s').hidden = !themes.length;
+  if (!themes.length) return;
+  $('#themes').innerHTML = themes.map(x => {
+    const c = x.direction === 'loosening' ? 'loose' : x.direction === 'tightening' ? 'tight' : '';
+    return `<div class=theme>
+      <div class=th><span class=nm>${esc(x.name)}</span>
+        <span class=ct>${n(x.case_count)} case${x.case_count === 1 ? '' : 's'}</span></div>
+      <div><span class="pill ${c === 'loose' ? 'g' : c === 'tight' ? 'r' : ''}">${esc(x.direction)}</span>
+        ${x.clause ? `<span class=pill>clause ${esc(x.clause)}</span>` : ''}</div>
+      <p>${esc(x.explanation)}</p>
+      ${(x.example_case_ids || []).length
+        ? `<div class=ex>${x.example_case_ids.map(esc).join('  ')}</div>` : ''}
+    </div>`;
+  }).join('')
+    + (t.unexplained ? `<div class=theme><div class=th><span class=nm>Long tail</span>
+        <span class=ct>${n(t.unexplained)} cases</span></div>
+        <p>Changed without fitting a named pattern.</p></div>` : '');
+  $('#themes-note').textContent = source(t);
+}
+
+/* -------------------------------------------------------------- amendment */
+function paintAmendment(a, v){
+  $('#amend-s').hidden = !a;
+  if (!a) return;
+  const edits = (a.edits || []).map(e => `
+    <div style="margin-top:14px;padding-top:13px;border-top:1px solid var(--line-2)">
+      <h3 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)">
+        Clause ${esc(e.clause)}</h3>
+      ${e.current_text ? `<div class=kv style="margin-top:7px"><strong>Currently:</strong>
+        <span style="color:var(--dim)">${esc(e.current_text)}</span></div>` : ''}
+      <div class=kv style="margin-top:7px"><strong>Proposed:</strong> ${esc(e.proposed_text)}</div>
+      <div class=kv style="color:var(--dim);margin-top:5px">${esc(e.reason)}</div>
+    </div>`).join('');
+  // An untested amendment is an opinion; say which one this is.
+  const tested = v
+    ? `<span class="verdict ${v.clears_gate ? 'v-ship' : 'v-stop'}">${
+         v.clears_gate ? 'Verified' : 'Fix fails'}</span>`
+    : `<span class="verdict v-caveat">Untested</span>`;
+
+  $('#amend').innerHTML = `
+    <div class=top>
+      <div class=headline>${a.feasible
+        ? 'A narrower version of this policy clears the gate'
+        : 'No single policy can satisfy these precedents'}</div>
+      ${tested}
+    </div>
+    <p>${esc(a.rationale || '')}</p>
+    ${v ? `<div class=hint style="margin-top:14px;padding:11px 13px;border:1px solid var(--line);
+             border-radius:8px;background:var(--panel-2)">
+        <strong>${esc(v.candidate || 'candidate')}</strong> — ${esc(v.summary || '')}
+        <div style="margin-top:7px;color:var(--faint);font-size:11.5px">
+          ${n(v.precedents_checked)} precedent(s) re-judged ·
+          ${n(v.collateral_changed)} of ${n(v.collateral_checked)} other settled decisions moved ·
+          ${n((v.intended_changes || []).length)} case(s) the fix was written for
+        </div></div>`
+      : `<div class=hint style="margin-top:14px">This amendment has not been tested.
+           Run <code>amend_${esc($('#domain').value)}</code> to judge it against every precedent
+           and measure what it disturbs.</div>`}
+    ${edits}
+    ${a.residual_risk ? `<div class=by><strong style="color:var(--fg)">Residual risk:</strong>
+      ${esc(a.residual_risk)}</div>` : ''}
+    <div class=by>${esc(source(a))}${v ? ` · verified ${esc(source(v))}` : ''}</div>`;
+}
+
+/* ------------------------------------------------------------- comparison */
+async function paintCompare(d, dom, ver){
+  const others = (d.policies || []).filter(v => v !== ver);
+  $('#cmp-s').hidden = !others.length;
+  if (!others.length) return;
+
+  const sel = $('#against');
+  // Default to the policy currently in force, which is the comparison that
+  // actually matters: what does the proposal change relative to today?
+  const keep = others.includes(sel.value) ? sel.value
+             : (others.includes('v1') ? 'v1' : others[0]);
+  sel.innerHTML = others.map(v =>
+    `<option${v === keep ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  sel.onchange = () => paintCompare(d, dom, ver);
+
+  let c;
+  try { c = await api(`/api/compare/${dom}/${sel.value}/${ver}`); }
+  catch (e) { $('#cmp').innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
+
+  const side = (x, isProposal) => {
+    const row = (k, v, cls) => `<dt>${esc(k)}</dt><dd class="${cls || ''}">${v}</dd>`;
+    return `<div>
+      <div class=vh>${esc(x.version)}
+        ${isProposal ? '<span class="tag calc">proposed</span>'
+                     : '<span class=tag style="background:var(--panel-2);color:var(--dim)">baseline</span>'}</div>
+      <dl>
+        ${row('Decisions replayed', n(x.cases_replayed))}
+        ${row('Differ from history', `${n(x.flips)} · ${pct1(x.flip_rate)}`)}
+        ${row('Net effect', esc(money(c.impact_unit, x.net_impact)),
+              x.net_impact > 0 ? 'tight' : 'loose')}
+        ${row('Reverses precedent', x.precedents_checked
+              ? `${n(x.violations)} of ${n(x.precedents_checked)}`
+              : '<span style="color:var(--faint)">none on file</span>',
+              x.violations ? 'tight' : 'loose')}
+        ${row('Clauses exercised', `${x.clauses_exercised} of ${x.clauses_declared}`,
+              x.clauses_exercised < x.clauses_declared ? 'warn' : '')}
+      </dl></div>`;
+  };
+
+  $('#cmp').innerHTML = `
+    <div class=cmp>${side(c.left, false)}${side(c.right, true)}</div>
+    <div class="panel" style="margin-top:11px">
+      <div><strong>${esc(c.verdict)}</strong></div>
+      <div class=hint style="border:0;margin:7px 0 0;padding:0">
+        The two decide <strong>${n(c.disagreements)}</strong> of
+        ${n(c.compared_cases)} shared cases differently.
+        ${(c.left.unexercised || []).length || (c.right.unexercised || []).length
+          ? `Untested clauses — ${esc(c.left.version)}:
+             ${(c.left.unexercised || []).map(esc).join(', ') || 'none'};
+             ${esc(c.right.version)}:
+             ${(c.right.unexercised || []).map(esc).join(', ') || 'none'}.`
+          : ''}
+        ${c.caveat ? `<div style="margin-top:8px;color:var(--faint)">${esc(c.caveat)}</div>` : ''}
+      </div></div>`;
+  $('#cmp-note').textContent = `${sel.value} vs ${ver}, same history and same precedents`;
+}
+
+/* ------------------------------------------------------------------ flips */
+const COLS = [
+  ['case_id',        'Case',      0],
+  ['decided_at',     'Decided',   1],
+  ['actual_outcome', 'Was → becomes', 0],
+  ['direction',      'Direction', 1],
+  ['impact',         'Impact',    1],
+  ['confidence',     'Conf.',     1],
+  ['precedent',      'Precedent', 0],
+];
+function visible(){
+  const {filter, q, threshold} = STATE;
+  return STATE.flips.filter(r => {
+    if (filter === 'loosening' && r.direction !== 'loosening') return false;
+    if (filter === 'tightening' && r.direction !== 'tightening') return false;
+    if (filter === 'unsure' && !(r.confidence < threshold)) return false;
+    if (filter === 'precedent' && !r.precedent) return false;
+    if (!q) return true;
+    return [r.case_id, r.actual_outcome, r.new_outcome, r.rationale, r.policy_clause]
+      .join(' ').toLowerCase().includes(q);
+  }).sort((a, b) => {
+    const {key, dir} = STATE.sort, x = a[key], y = b[key];
+    if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir;
+    return String(x ?? '').localeCompare(String(y ?? '')) * dir;
+  });
+}
+function paintFlips(){
+  const rows = visible(), total = STATE.flips.length, unit = STATE.unit;
+  $('#filters').hidden = !total;
+  if (!total) {
+    $('#flips').innerHTML = `<div class="card empty">No replay results for this policy yet.<br>
+      Trigger or backfill the <code>replay_${esc($('#domain').value)}</code> DAG.</div>`;
+    return;
+  }
+  $('#count').textContent = rows.length === total
+    ? `${n(total)} flips` : `${n(rows.length)} of ${n(total)} flips`;
+  if (!rows.length) {
+    $('#flips').innerHTML = '<div class="card empty">Nothing matches that filter.</div>';
+    return;
+  }
+  const peak = Math.max(1, ...rows.map(r => r.impact || 0));
+  const page = rows.slice(0, STATE.shown);
+  const head = COLS.map(([k, lbl, right]) => {
+    const on = STATE.sort.key === k;
+    return `<th class="sortable${right ? ' r' : ''}" data-k="${k}"
+      ${on ? `aria-sort="${STATE.sort.dir < 0 ? 'descending' : 'ascending'}"` : ''}
+      ${right ? 'style="text-align:right"' : ''}>${esc(lbl)}<span class=arrow>${
+      on ? (STATE.sort.dir < 0 ? '↓' : '↑') : '↕'}</span></th>`;
+  }).join('');
+
+  $('#flips').innerHTML = `<div class=scroll><table><thead><tr>${head}</tr></thead><tbody>
+    ${page.map((r, i) => {
+      const lo = r.direction === 'loosening';
+      const w = Math.round((r.impact || 0) / peak * 34);
+      return `<tr class=row tabindex=0 data-i="${i}">
+        <td class=cid data-l="Case">${esc(r.case_id)}</td>
+        <td class=num data-l="Decided">${esc(String(r.decided_at).slice(0, 10))}</td>
+        <td data-l="Change"><span class=pill>${esc(r.actual_outcome)}</span
+          ><span class=arrow-c>→</span><span class="pill ${lo ? 'g' : 'r'}">${esc(r.new_outcome)}</span></td>
+        <td class="${lo ? 'loose' : 'tight'}" data-l="Direction">${esc(r.direction)}</td>
+        <td class=r data-l="Impact">${esc(money('', r.impact))}<span class=bar
+          style="width:${w}px;background:var(--${lo ? 'loose' : 'tight'})"></span></td>
+        <td class=r data-l="Confidence"><span class="${
+          r.confidence < STATE.threshold ? 'warn' : ''}">${pct(r.confidence)}</span></td>
+        <td data-l="Precedent">${r.precedent
+          ? (r.precedent === r.new_outcome
+              ? '<span class=loose>consistent</span>'
+              : `<span class=bad>reverses → ${esc(r.precedent)}</span>`)
+          : '<span style="color:var(--faint)">—</span>'}</td>
+      </tr>
+      <tr class=detail hidden><td colspan=7>
+        <pre>${esc(caseText(r.payload))}</pre>
+        <div class=kv><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || '—')}</div>
+        <div class=kv><strong>Under the proposed policy${
+          r.policy_clause ? ` (clause ${esc(r.policy_clause)})` : ''}:</strong> ${esc(r.rationale)}</div>
+      </td></tr>`;
+    }).join('')}
+  </tbody></table></div>
+  ${rows.length > page.length
+    ? `<div style="text-align:center;margin-top:11px">
+         <button id=more>Show ${n(Math.min(PAGE, rows.length - page.length))} more
+           · ${n(rows.length - page.length)} remaining</button></div>`
+    : ''}`;
+
+  const more = $('#more');
+  if (more) more.onclick = () => { STATE.shown += PAGE; paintFlips(); };
+
+  $('#flips').querySelectorAll('th.sortable').forEach(th => {
+    th.onclick = () => {
+      const k = th.dataset.k;
+      STATE.sort = {key: k, dir: STATE.sort.key === k ? -STATE.sort.dir
+        : (['impact', 'confidence', 'decided_at'].includes(k) ? -1 : 1)};
+      paintFlips();  // STATE.shown is deliberately kept: re-sorting is not a reset
+    };
+  });
+  $('#flips').querySelectorAll('tr.row').forEach(tr => {
+    const open = () => { const d = tr.nextElementSibling; d.hidden = !d.hidden; };
+    tr.onclick = open;
+    tr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+  });
+}
+function caseText(p){
+  const w = Math.max(...Object.keys(p || {}).map(k => k.length), 0) + 2;
+  return Object.entries(p || {}).map(([k, v]) => (k + ':').padEnd(w) + v).join('\n');
+}
+
+/* ------------------------------------------------------------- precedents */
+function paintPrecedents(p){
+  if (!p.length) {
+    $('#precedents').innerHTML = `<div class="card empty">No precedents yet.<br>
+      Run <code>adjudicate_${esc($('#domain').value)}</code> and answer the human-in-the-loop tasks.</div>`;
+    return;
+  }
+  $('#precedents').innerHTML = `<div class=scroll><table class=narrow><thead><tr>
+    <th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Why</th>
+    </tr></thead><tbody>${p.map(r => `<tr>
+      <td class=cid data-l="Case">${esc(r.case_id)}</td>
+      <td data-l="Outcome"><span class=pill>${esc(r.correct_outcome)}</span></td>
+      <td data-l="Ruled by">${esc(r.ruled_by)}</td>
+      <td class=num data-l="When">${esc(String(r.established_at).slice(0, 10))}</td>
+      <td data-l="Why" style="color:var(--dim)">${esc(r.note || '—')}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
 boot();
 </script></body></html>

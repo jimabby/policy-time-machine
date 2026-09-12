@@ -107,15 +107,24 @@ def seed_expenses(n_cases: int = 600, months: int = 24, seed: int = 7) -> dict:
 
     with conn() as c:
         c.execute("DELETE FROM cases WHERE domain = 'expenses'")
+        # Facts are keyed by (subject, key, known_from), so a re-seed that only
+        # replaced them would leave every previous run's promotion dates behind
+        # and silently change the point-in-time replay. Clear them outright.
+        _clear_facts(c, [sid for sid, _ in employees])
         c.executemany(
             "INSERT INTO cases (case_id, domain, subject_id, decided_at, payload, actual_outcome, actual_rationale) VALUES (?,?,?,?,?,?,?)",
             rows,
         )
         c.executemany(
-            "INSERT OR REPLACE INTO subject_facts (subject_id, key, value, known_from) VALUES (?,?,?,?)",
+            "INSERT INTO subject_facts (subject_id, key, value, known_from) VALUES (?,?,?,?)",
             facts,
         )
     return {"cases": len(rows), "employees": len(employees), "facts": len(facts)}
+
+
+def _clear_facts(c, subject_ids: list[str]) -> None:
+    """Drop every fact for these subjects, so a re-seed is a clean slate."""
+    c.executemany("DELETE FROM subject_facts WHERE subject_id = ?", [(s,) for s in subject_ids])
 
 
 def _grade_as_of(facts, sid: str, when: datetime) -> int:
@@ -206,11 +215,12 @@ def seed_refunds(n_cases: int = 400, months: int = 24, seed: int = 11) -> dict:
 
     with conn() as c:
         c.execute("DELETE FROM cases WHERE domain = 'refunds'")
+        _clear_facts(c, [sid for sid, _ in members])
         c.executemany(
             "INSERT INTO cases (case_id, domain, subject_id, decided_at, payload, actual_outcome, actual_rationale) VALUES (?,?,?,?,?,?,?)",
             rows)
         c.executemany(
-            "INSERT OR REPLACE INTO subject_facts (subject_id, key, value, known_from) VALUES (?,?,?,?)",
+            "INSERT INTO subject_facts (subject_id, key, value, known_from) VALUES (?,?,?,?)",
             facts)
     return {"cases": len(rows), "members": len(members), "facts": len(facts)}
 

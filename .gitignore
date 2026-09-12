@@ -4,3 +4,5 @@ __pycache__/
 include/ptm.db
 logs/
 .env
+.pytest_cache/
+.playwright-mcp/

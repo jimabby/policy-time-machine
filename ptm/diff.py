@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from itertools import zip_longest
+from typing import Iterator
+
 from .config import DomainConfig
 from .models import Case, Flip, Precedent, Verdict
 
@@ -38,14 +41,43 @@ def select_for_review(flips_: list[Flip], domain: DomainConfig) -> list[Flip]:
     the organisation more permissive than it chose to be.
     """
     r = domain.review
-    candidates = [
-        f for f in flips_
-        if f.confidence < r.below_confidence
-        or (r.above_impact and f.impact >= r.above_impact)
-        or f.direction in r.always_review_directions
-    ]
-    candidates.sort(key=lambda f: (-f.impact, f.confidence))
-    return candidates[: r.max_reviews]
+    unsure, costly, directional = [], [], []
+    for f in flips_:
+        # A case can qualify on more than one ground; bucket it by the strongest.
+        if f.confidence < r.below_confidence:
+            unsure.append(f)
+        elif r.above_impact and f.impact >= r.above_impact:
+            costly.append(f)
+        elif f.direction in r.always_review_directions:
+            directional.append(f)
+
+    # Sorting the whole candidate pool by impact alone would let eight large
+    # claims crowd out every ambiguous one, and an ambiguous case is the more
+    # useful precedent: it settles the drafting, not just the invoice. So take
+    # from each ground in turn, ambiguity first.
+    for bucket in (unsure, costly, directional):
+        bucket.sort(key=lambda f: (-f.impact, f.confidence))
+
+    picked: list[Flip] = []
+    # A manual replay covers all of history in one run, so the same case can
+    # appear under several run_ids. The reviewer should see it once.
+    seen: set[str] = set()
+    for f in _round_robin(unsure, costly, directional):
+        if f.case_id in seen:
+            continue
+        seen.add(f.case_id)
+        picked.append(f)
+        if len(picked) == r.max_reviews:
+            break
+    return picked
+
+
+def _round_robin(*buckets: list[Flip]) -> Iterator[Flip]:
+    """Draw from each bucket in turn, so no one ground monopolises the quota."""
+    for group in zip_longest(*buckets):
+        for f in group:
+            if f is not None:
+                yield f
 
 
 def precedent_violations(verdicts: dict[str, Verdict], precedents: list[Precedent]) -> list[dict]:

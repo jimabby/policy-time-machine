@@ -8,6 +8,8 @@ gives up.
 
 from __future__ import annotations
 
+import logging
+
 from .config import DomainConfig
 from .models import Case, Verdict
 
@@ -51,12 +53,13 @@ _SAFE = {"__builtins__": {}, "abs": abs, "len": len, "min": min, "max": max, "fl
 def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
     """Deterministic rule evaluation, used when PTM_OFFLINE=1.
 
-    Rules come from the domain YAML's ``offline_rules`` block; the first
-    matching rule wins, otherwise the domain's first (most generous) outcome.
+    Rules come from the domain YAML's ``offline_rules`` block, or from the
+    candidate registry for a drafted version; the first matching rule wins,
+    otherwise the domain's first (most generous) outcome.
     Expressions are evaluated with no builtins - this is a local demo fixture,
     not a sandbox, so only ever point it at YAML you wrote yourself.
     """
-    rules = domain.offline_rules.get(version, [])
+    rules = domain.rules_for(version)
     scope = dict(_SAFE)
     scope.update({k: _coerce(v) for k, v in case.payload.items()})
     for rule in rules:
@@ -68,9 +71,30 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
                     confidence=float(rule.get("confidence", 0.9)),
                     policy_clause=str(rule.get("clause", "")),
                 )
-        except Exception:  # a rule referencing a field this case lacks simply does not match
-            continue
+        except Exception as exc:
+            # A rule naming a field this case genuinely lacks does not match,
+            # which is by design. But a *typo* in a field name fails exactly
+            # the same way and would otherwise change every result silently,
+            # so say so once per rule rather than swallowing it.
+            _warn_once(domain.name, version, rule["when"], exc)
     return Verdict(outcome=domain.outcomes[0], rationale="No rule matched; default outcome.", confidence=0.6)
+
+
+_WARNED: set[tuple[str, str, str]] = set()
+_log = logging.getLogger(__name__)
+
+
+def _warn_once(domain: str, version: str, expr: str, exc: Exception) -> None:
+    """Surface a broken rule without drowning a 600-case replay in log lines."""
+    key = (domain, version, expr)
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    _log.warning(
+        "offline rule for %s/%s did not evaluate: %r raised %s: %s. Expected if the "
+        "field is absent from this case; a typo in a field name looks identical.",
+        domain, version, expr, type(exc).__name__, exc,
+    )
 
 
 def _coerce(v):
