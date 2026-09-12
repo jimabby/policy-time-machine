@@ -368,10 +368,14 @@ def _print_joint(result: dict) -> None:
     # The row label is the first dial's setting; the column label is the
     # second's. One prefix width for both, so the grid lines up under its own
     # header - a table a reader has to count across is a table nobody reads.
-    label = f"{first['field'][:11]} \\ {second['field'][:11]}"
+    # Both labels built outside the f-string. A backslash inside an f-string's
+    # expression part is a SyntaxError before Python 3.12, and the engine job
+    # runs 3.10 - so this module would not import there at all.
+    label = "{} \\ {}".format(first["field"][:11], second["field"][:11])
+    subhead = "(rows \\ columns)"
     width = max(len(label) + 2, 20)
     print(f"{label:<{width}}" + "".join(f"{v:>12}" for v in seconds))
-    print(f"{'(rows \\ columns)':<{width}}" + "".join(f"{'flips':>12}" for _ in seconds))
+    print(f"{subhead:<{width}}" + "".join(f"{'flips':>12}" for _ in seconds))
     for a in dict.fromkeys(p["first_value"] for p in result["points"]):
         cells = []
         for b in seconds:
