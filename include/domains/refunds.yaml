@@ -20,8 +20,6 @@ case_template: |
   Outstanding balance:  GBP {outstanding_balance_gbp}
   Member's note:        {note}
 
-cohort_fields: [tier, reason]
-
 judge_instructions: |
   - "partial_refund" means the final month is charged and the remainder
     returned. Use it wherever the policy charges rather than forfeits.
@@ -33,6 +31,15 @@ review:
   below_confidence: 0.75
   above_impact: 300
   always_review_directions: [loosening]
+  max_deviation_reviews: 2
+  exclude_unstable: true
+
+# tier is the point-in-time fact here, captured as of the cancellation date.
+segment_fields: [reason, tier]
+
+conflicts:
+  key: [reason, documentation, contract_months, outstanding_balance_gbp]
+  impact_band: 200
 
 offline_rules:
   v1:
@@ -52,6 +59,11 @@ offline_rules:
       outcome: partial_refund
       clause: "1.1"
       because: "Short notice: the final month is charged, the remainder refunded."
+    - when: "months_elapsed >= contract_months and notice_days >= 30"
+      outcome: full_refund
+      clause: "4.1"
+      confidence: 0.9
+      because: "Outside the minimum term with 30 days' notice: full refund."
   v2:
     - when: "months_elapsed < contract_months and reason == 'medical' and documentation == 'yes'"
       outcome: full_refund
@@ -74,4 +86,11 @@ offline_rules:
       outcome: partial_refund
       clause: "1.1"
       because: "Below the reduced 14-day notice threshold, the final month is charged."
+    # Explicit rather than falling through to the default outcome, so that a
+    # clean out-of-term cancellation is attributed to the clause that decides it.
+    - when: "months_elapsed >= contract_months and notice_days >= 14"
+      outcome: full_refund
+      clause: "4.1"
+      confidence: 0.9
+      because: "Outside the minimum term with proper notice: full refund."
 pit_field: tier

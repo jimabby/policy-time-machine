@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine:
+    name: Engine (no Airflow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -r requirements-dev.txt
+
+      # The domain YAML must still implement the policies it cites. This is the
+      # check that catches an offline rule quietly no longer matching anything.
+      - name: Lint domain configuration
+        run: python -m ptm.lint
+        env:
+          PTM_INCLUDE_DIR: ./include
+
+      - name: Test suite
+        run: python -m pytest -q
+
+      # Proves the whole loop runs end to end with no Airflow and no API key,
+      # which is also how the demo is rehearsed.
+      - name: Whole loop end to end
+        run: |
+          python -m ptm.selftest
+          python -m ptm.selftest refunds v2
+          python -m ptm.pit_check
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # Attribution stops at "clause 1.1 moves 48 decisions". This is the step
+      # after it, and it runs here because it is pure computation over the
+      # shipped fixture - no model, no key, no bill.
+      - name: Threshold sweep
+        run: |
+          python -m ptm.sweep expenses v2
+          python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The checks that need no model and no key, run against the shipped
+      # fixture so a change that breaks one of them fails here rather than in
+      # front of an audience. The proposal step deliberately omits --write:
+      # proposing and adopting are separate acts, and CI does not adopt.
+      - name: Policy and judge checks
+        run: |
+          python -m ptm.preflight expenses
+          python -m ptm.preflight refunds
+          python -m ptm.rules expenses v2
+          python -m ptm.calibration expenses v2
+          python -m ptm.proposal expenses v2
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+  dags:
+    name: DAGs parse under Airflow 3.1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Airflow 3.1 and providers
+        run: pip install -r requirements.txt pytest
+
+      # Proves the install actually produced an importable Airflow. Without
+      # this the DAG-parse tests below just skip, and the job reports success
+      # having run none of them.
+      - name: Airflow imports
+        run: |
+          python -c "import airflow; print('airflow', airflow.__version__)"
+          python -c "import airflow.sdk; print('airflow.sdk ok')"
+          python -c "from airflow.providers.standard.operators.hitl import HITLOperator; print('HITLOperator ok')"
+
+      # Both configurations, because the LLM-backed branch imports operators the
+      # offline branch never touches - so offline-only parsing proves half of it.
+      - name: Parse with the offline judge
+        run: python -m pytest tests/test_dags.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+          PTM_REQUIRE_AIRFLOW: "1"
+
+      - name: Parse with the LLM judge
+        run: python -m pytest tests/test_dags.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "0"
+          PYTHONPATH: .
+          PTM_REQUIRE_AIRFLOW: "1"
+
+      # The plugin is meant to be nothing but routing, which is why the read
+      # models are covered without a web framework. Status codes, query bounds,
+      # download headers and the exact URLs the page asks for only exist here.
+      - name: Plugin routes
+        run: python -m pytest tests/test_plugin.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+          PTM_REQUIRE_PLUGIN: "1"
+
+  dashboard:
+    name: Diff Explorer renders in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Airflow, the plugin's dependencies and Playwright
+        run: |
+          pip install -r requirements.txt pytest playwright
+          playwright install --with-deps chromium
+
+      # Every other job proves the data is right. None of them proves the page
+      # renders it - a renderer reading a field the API no longer returns
+      # leaves the suite green and the dashboard blank.
+      - name: Load the dashboard and click through it
+        run: python -m pytest tests/test_dashboard.py -q
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+          PYTHONPATH: .
+          PTM_REQUIRE_BROWSER: "1"

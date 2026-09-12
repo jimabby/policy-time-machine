@@ -1,65 +1,84 @@
 """Test fixtures.
 
-``ptm.config`` resolves paths from the environment at import time, so tests
-redirect the database by patching the name ``ptm.store`` actually reads rather
-than by setting env vars after the fact.
+The environment has to be set before anything under ``ptm`` is imported, because
+:mod:`ptm.config` resolves its paths at import time. pytest loads ``conftest.py``
+ahead of the test modules, so this is the one place that can do it.
+
+Domain configuration and policies come from the real ``include/`` directory -
+these tests check the *shipped* fixtures, not a parallel set that could drift
+from them. Only the database is disposable.
 """
 
 from __future__ import annotations
 
 import os
-import sys
-from datetime import datetime
-from pathlib import Path
+import pathlib
+import tempfile
 
-import pytest
+REPO = pathlib.Path(__file__).resolve().parents[1]
+_TMP = pathlib.Path(tempfile.mkdtemp(prefix="ptm-tests-"))
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("PTM_INCLUDE_DIR", str(ROOT / "include"))
+os.environ["PTM_INCLUDE_DIR"] = str(REPO / "include")
+os.environ["PTM_DB"] = str(_TMP / "ptm.db")
+# Not forced: the DAG-parse test has to be runnable in both configurations,
+# because the LLM-backed branch imports operators the offline branch never
+# touches - so parsing offline only ever proves half the module.
 os.environ.setdefault("PTM_OFFLINE", "1")
+# A price override in the developer's shell would otherwise change what the
+# cost assertions expect.
+os.environ.pop("PTM_PRICE", None)
 
-from ptm import store  # noqa: E402
+import pytest  # noqa: E402
+
+from ptm import cost, diff, store  # noqa: E402
 from ptm.config import load_domain  # noqa: E402
-from ptm.models import Case  # noqa: E402
+from ptm.judge import offline_verdict  # noqa: E402
+from ptm.seed import seed_all  # noqa: E402
 
 
-@pytest.fixture
-def db(tmp_path, monkeypatch):
-    """An empty, schema'd database isolated to one test."""
-    monkeypatch.setattr(store, "DB_PATH", tmp_path / "ptm.db")
+@pytest.fixture(scope="session")
+def seeded() -> dict:
+    """Both shipped domains, seeded once for the whole session."""
     store.init_db()
-    return store
+    return seed_all()
 
 
-@pytest.fixture
-def expenses():
+@pytest.fixture(scope="session")
+def expenses(seeded):
     return load_domain("expenses")
 
 
+@pytest.fixture(scope="session")
+def replayed(seeded):
+    """A full point-in-time replay of expenses under v2, with a baseline pass.
+
+    Mirrors what a backfill of ``replay_expenses`` produces, so the assertions
+    below are about the pipeline's real output rather than a toy input.
+    """
+    from datetime import datetime
+
+    domain = load_domain("expenses")
+    cases = store.load_cases("expenses", until=datetime(2026, 9, 1))
+    candidate = {c.case_id: offline_verdict(c, domain, "v2") for c in cases}
+    baseline = {c.case_id: offline_verdict(c, domain, "v1") for c in cases}
+    flips = diff.flips(cases, candidate, domain, baseline=baseline)
+    store.save_replay("pytest__full", "expenses", "v2", "actual", len(cases), flips,
+                      diff.summarise(flips, len(cases), domain)["net_impact"], candidate,
+                      segments=diff.segment_stats(cases, flips, domain),
+                      ledger=cost.zero(), baseline_version="v1",
+                      baseline_verdicts=baseline)
+    return {"domain": domain, "cases": cases, "candidate": candidate,
+            "baseline": baseline, "flips": flips}
+
+
 @pytest.fixture
-def refunds():
-    return load_domain("refunds")
+def fresh_db(monkeypatch, tmp_path):
+    """An empty database, isolated from the session one.
 
-
-def insert_case(db, case_id: str, decided_at: str, payload: dict, outcome: str,
-                subject_id: str = "sub-1", domain: str = "expenses") -> None:
-    with db.conn() as c:
-        c.execute(
-            "INSERT INTO cases (case_id, domain, subject_id, decided_at, payload, "
-            "actual_outcome, actual_rationale) VALUES (?,?,?,?,?,?,'')",
-            (case_id, domain, subject_id, decided_at, __import__("json").dumps(payload), outcome),
-        )
-
-
-def insert_fact(db, subject_id: str, key: str, value: str, known_from: str) -> None:
-    with db.conn() as c:
-        c.execute(
-            "INSERT OR REPLACE INTO subject_facts (subject_id, key, value, known_from) VALUES (?,?,?,?)",
-            (subject_id, key, value, known_from),
-        )
-
-
-def case(case_id="c-1", payload=None, outcome="approve", decided="2025-06-15T12:00:00"):
-    return Case(case_id=case_id, domain="expenses", decided_at=datetime.fromisoformat(decided),
-                payload=payload or {}, actual_outcome=outcome)
+    ``store`` binds ``DB_PATH`` at import, so the patch has to land on the
+    ``store`` module's own name rather than on ``config``.
+    """
+    path = tmp_path / "isolated.db"
+    monkeypatch.setattr(store, "DB_PATH", path)
+    store.init_db()
+    return path

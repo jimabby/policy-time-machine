@@ -25,10 +25,6 @@ case_template: |
   Client-driven:       {client_driven}
   Employee's note:     {note}
 
-# Break the impact down by these, to show who bears the change. Grade is a
-# point-in-time fact, so a cohort is the grade held on the day of the claim.
-cohort_fields: [grade, category]
-
 judge_instructions: |
   - "partial" means the claim is reimbursed only up to the applicable cap or
     only for the compliant portion. Use it whenever the policy caps rather
@@ -41,6 +37,25 @@ review:
   below_confidence: 0.75
   above_impact: 400
   always_review_directions: [loosening]
+  # Deviations are the largest flips by money and would otherwise take the
+  # whole queue, leaving the proposal itself unreviewed. Two of the eight
+  # slots is enough to keep settling them without crowding it out.
+  max_deviation_reviews: 2
+  # Keep flips the judge would not reproduce out of the human queue. Needs a
+  # confirmation pass (judge_stability with target=flips); with nothing
+  # measured, nothing is excluded.
+  exclude_unstable: true
+
+# Who the change lands on. grade is the point-in-time fact, so this segment is
+# resolved as of each claim's own date - not as of today.
+segment_fields: [category, grade]
+
+# Two rulings on materially identical claims that disagree are a human
+# inconsistency, not a policy bug. Amount is banded so GBP 104 and GBP 111 count
+# as the same kind of claim; note and submitted_by are deliberately excluded.
+conflicts:
+  key: [category, receipt, director_approval, amount_gbp]
+  impact_band: 250
 
 # Fixtures for PTM_OFFLINE=1 so the demo runs with no API key. The real judge
 # reads the markdown policy instead; these are a stand-in for it.
@@ -76,14 +91,6 @@ offline_rules:
       outcome: deny
       clause: "3.1"
       because: "Short-notice travel without a client-driven reason still requires prior approval."
-    # Clause 6.1 must decide these explicitly rather than letting them fall
-    # through unruled: the exemption is the headline of v2, and a fixture that
-    # never cites it reports the clause as untested.
-    - when: "amount_gbp > 75 and receipt == 'no' and grade >= 3"
-      outcome: approve
-      clause: "6.1"
-      confidence: 0.8
-      because: "Grade 3 and above are exempt from the receipt requirement under clause 6.1."
     - when: "amount_gbp > 75 and receipt == 'no' and grade < 3"
       outcome: deny
       clause: "1.1"
@@ -98,4 +105,13 @@ offline_rules:
       outcome: partial
       clause: "4.1"
       because: "Alcohol remains excluded under the proposed policy."
+    # Placed last so the meals cap and the alcohol exclusion still bite for
+    # senior staff: the exemption is from receipts only. Without this rule the
+    # exemption shows up as an unattributed approval, which hides the single
+    # biggest driver of change in the whole proposal.
+    - when: "amount_gbp > 75 and receipt == 'no' and grade >= 3"
+      outcome: approve
+      clause: "6.1"
+      confidence: 0.9
+      because: "Grade 3+ is exempt from the receipt requirement in clause 1.1."
 pit_field: grade

@@ -6,175 +6,176 @@ supports `react_apps`, but those are still marked experimental, so the
 dashboard is served as a single dependency-free page - see README for how to
 switch to the React registration instead.
 
+This module is deliberately nothing but routing: every read model lives in
+:mod:`ptm.report`, so the whole API surface is covered by the test suite without
+FastAPI installed, and is callable from a script without starting Airflow.
+
 Note: FastAPI plugin endpoints are NOT covered by Airflow's own auth. These
 routes are read-only and this is a demo, but do not expose them as-is.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from airflow.plugins_manager import AirflowPlugin
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
-from ptm import analysis, store
-from ptm.config import available_domains, load_domain
+from ptm import report
 
 app = FastAPI(title="Policy Time Machine")
 
-#: The dashboard is read-only, but it is the first thing a new checkout opens,
-#: and every query below needs the schema to exist. Creating it on import is
-#: cheap and turns "no such table: runs" into an empty state.
-store.init_db()
 
-
-def _domain_or_404(name: str):
+def found(fn, *args, **kwargs):
+    """Turn a read model's LookupError into a 404 instead of an opaque 500."""
     try:
-        return load_domain(name)
-    except FileNotFoundError as exc:
+        return fn(*args, **kwargs)
+    except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/domains")
 def domains() -> list[dict]:
-    out = []
-    for name in available_domains():
-        d = load_domain(name)
-        candidates = store.candidate_versions(name)
-        out.append({"name": name, "label": d.label, "outcomes": d.outcomes,
-                    # Drafted candidates are selectable like any other version.
-                    "policies": d.all_versions(),
-                    "written": sorted(d.policies),
-                    "candidates": [c["version"] for c in candidates],
-                    "cohort_fields": d.cohort_fields,
-                    "impact_unit": d.impact_unit})
-    return out
-
-
-@app.get("/api/coverage/{domain}/{version}")
-def coverage(domain: str, version: str) -> dict:
-    """Which rules of this policy history has actually exercised."""
-    d = _domain_or_404(domain)
-    try:
-        return analysis.clause_coverage(d, version)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/api/cohorts/{domain}/{version}")
-def cohorts(domain: str, version: str) -> dict:
-    """Who bears the change, broken down by the domain's declared cohort fields."""
-    d = _domain_or_404(domain)
-    report = analysis.cohort_report(d, version)
-    return {"breakdowns": report, "disproportionate": analysis.disproportionate(report)}
-
-
-@app.get("/api/compare/{domain}/{left}/{right}")
-def compare(domain: str, left: str, right: str) -> dict:
-    """Two candidate policies against the same history and the same precedents."""
-    d = _domain_or_404(domain)
-    try:
-        return analysis.compare(d, left, right)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/api/candidates/{domain}")
-def candidates(domain: str) -> list[dict]:
-    """Policy versions drafted by the amendment gate, with what forced them."""
-    _domain_or_404(domain)
-    import json as _json
-    rows = store.candidate_versions(domain)
-    for r in rows:
-        r["forced_by"] = _json.loads(r["forced_by"]) if isinstance(r["forced_by"], str) else r["forced_by"]
-    return rows
+    return report.domains()
 
 
 @app.get("/api/summary/{domain}/{version}")
 def summary(domain: str, version: str) -> dict:
-    d = _domain_or_404(domain)
-    # store.policy_summary is the single source the brief also quotes, so the
-    # tiles and the brief cannot disagree. It counts per case, not per run.
-    s = store.policy_summary(domain, version)
-    prec = store.query("SELECT COUNT(*) n FROM precedents WHERE domain=?", (domain,))[0]["n"]
-    rows = store.flips_for_policy(domain, version)
-    # A cluster of low-confidence flips is a drafting problem, not a cost one,
-    # so the dashboard surfaces it as a headline number of its own.
-    unsure = sum(1 for r in rows if r["confidence"] < d.review.below_confidence)
-    return {"runs": s["runs"], "cases": s["cases_replayed"],
-            "flips": s["flips"], "net_impact": s["net_impact"],
-            "by_direction": [
-                {"direction": "loosening", "n": s["loosening"], "impact": s["impact_loosening"]},
-                {"direction": "tightening", "n": s["tightening"], "impact": s["impact_tightening"]},
-            ],
-            "precedents": prec, "low_confidence": unsure,
-            "confidence_threshold": d.review.below_confidence,
-            "impact_unit": d.impact_unit}
-
-
-@app.get("/api/timeline/{domain}/{version}")
-def timeline(domain: str, version: str) -> list[dict]:
-    """Flips and impact per month of replayed history - one point per backfill run."""
-    _domain_or_404(domain)
-    return store.query(
-        """SELECT substr(c.decided_at, 1, 7) AS month,
-                  COUNT(*) AS flips,
-                  SUM(CASE WHEN f.direction='loosening' THEN f.impact ELSE 0 END) AS loosening,
-                  SUM(CASE WHEN f.direction='tightening' THEN f.impact ELSE 0 END) AS tightening
-           FROM flips f JOIN cases c ON c.case_id = f.case_id
-           WHERE f.domain=? AND f.policy_version=?
-           GROUP BY month ORDER BY month""",
-        (domain, version))
+    return found(report.summary, domain, version)
 
 
 @app.get("/api/flips/{domain}/{version}")
-def flips(domain: str, version: str, limit: int = 200) -> list[dict]:
-    _domain_or_404(domain)
-    rows = store.query(
-        """SELECT f.case_id, f.actual_outcome, f.new_outcome, f.direction, f.impact,
-                  f.confidence, f.rationale, f.reviewed, f.policy_clause,
-                  c.decided_at, c.payload, c.actual_rationale,
-                  (SELECT correct_outcome FROM precedents p
-                    WHERE p.case_id = f.case_id AND p.domain = f.domain) AS precedent
-           FROM flips f JOIN cases c ON c.case_id = f.case_id
-           WHERE f.domain=? AND f.policy_version=? ORDER BY f.impact DESC LIMIT ?""",
-        (domain, version, limit))
-    for r in rows:
-        r["payload"] = json.loads(r["payload"])
-    return rows
+def flips(domain: str, version: str, limit: int = Query(default=200, ge=1, le=500)) -> list[dict]:
+    return found(report.flips, domain, version, limit)
+
+
+@app.get("/api/clauses/{domain}/{version}")
+def clauses(domain: str, version: str) -> list[dict]:
+    """Which clause is responsible for which share of the change."""
+    return found(report.clauses, domain, version)
+
+
+@app.get("/api/segments/{domain}/{version}")
+def segments(domain: str, version: str) -> list[dict]:
+    """Blast radius: who the change lands on, with denominators."""
+    return found(report.segments, domain, version)
+
+
+@app.get("/api/compare/{domain}/{left}/{right}")
+def compare(domain: str, left: str, right: str,
+            limit: int = Query(default=200, ge=1, le=500)) -> dict:
+    """Two candidate policies side by side: did the edit to clause 1.1 help?"""
+    return found(report.compare, domain, left, right, limit)
+
+
+@app.get("/api/cost/{domain}/{version}")
+def cost_report(domain: str, version: str) -> dict:
+    """What judging has cost, and what a full replay would cost."""
+    return found(report.cost_report, domain, version)
+
+
+@app.get("/api/stability/{domain}/{version}")
+def stability(domain: str, version: str) -> dict:
+    """The error bar on this policy's flip rate."""
+    return found(report.stability, domain, version)
+
+
+@app.get("/api/conflicts/{domain}")
+def conflicts(domain: str) -> list[dict]:
+    """Human rulings that contradict each other rather than the policy."""
+    return found(report.conflicts, domain)
 
 
 @app.get("/api/precedents/{domain}")
 def precedents(domain: str) -> list[dict]:
-    _domain_or_404(domain)
-    return store.query(
-        "SELECT * FROM precedents WHERE domain=? ORDER BY established_at DESC", (domain,))
+    return found(report.precedents, domain)
 
 
-@app.get("/api/insights/{domain}/{version}")
-def insights(domain: str, version: str) -> dict:
-    """The AI analysis of this policy: the brief, the themes, any amendment."""
-    _domain_or_404(domain)
-    return store.load_insights(domain, version)
+@app.get("/api/deviations/{domain}/{version}")
+def deviations(domain: str, version: str,
+               limit: int = Query(default=200, ge=1, le=500)) -> dict:
+    """Recorded outcomes the policy in force already disagreed with."""
+    return found(report.deviations, domain, version, limit)
 
 
-@app.get("/api/policy/{domain}/{version}")
-def policy(domain: str, version: str) -> dict:
-    """The policy text itself, so the brief can be read beside what it describes."""
-    d = _domain_or_404(domain)
-    try:
-        return {"version": version, "text": d.policy_text(version)}
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=404, detail=f"policy file missing: {exc}") from exc
+@app.get("/api/precedent-check/{domain}/{version}")
+def precedent_check(domain: str, version: str) -> dict:
+    """Which precedents this policy reverses, and which the status quo already does."""
+    return found(report.precedent_check, domain, version)
+
+
+@app.get("/api/calibration/{domain}/{version}")
+def calibration(domain: str, version: str) -> dict:
+    """Is the judge right? Scored against the humans who ruled on the same cases."""
+    return found(report.calibration, domain, version)
+
+
+@app.get("/api/disparity/{domain}/{version}")
+def disparity(domain: str, version: str) -> dict:
+    """Segments the change lands on far harder than the rest of their field."""
+    return found(report.disparity, domain, version)
+
+
+@app.get("/api/preflight/{domain}/{version}")
+def preflight(domain: str, version: str) -> dict:
+    """Problems readable in the policy text itself, before a replay is paid for."""
+    return found(report.preflight, domain, version)
+
+
+@app.get("/api/rules/{domain}/{version}")
+def rule_agreement(domain: str, version: str) -> dict:
+    """Do the offline rules implement the policy? The number the sweep rests on."""
+    return found(report.rule_agreement, domain, version)
+
+
+@app.get("/api/drafts/{domain}")
+def drafts(domain: str) -> list[dict]:
+    """Amendments drafted by the proposal DAG, with the evidence behind each."""
+    return found(report.drafts, domain)
+
+
+@app.get("/api/thresholds/{domain}/{version}")
+def thresholds(domain: str, version: str) -> list[dict]:
+    """The numeric dials in this version's offline rules that a sweep can move."""
+    return found(report.thresholds, domain, version)
+
+
+@app.get("/api/sweep/{domain}/{version}")
+def sweep(domain: str, version: str,
+          field: str = Query(..., min_length=1, max_length=64),
+          values: str = Query(..., min_length=1, max_length=256),
+          clause: str = Query(default="", max_length=16)) -> dict:
+    """Re-run the replay at each candidate threshold. ``values`` is comma-separated."""
+    return found(report.sweep, domain, version, field, values, clause)
+
+
+@app.get("/api/export/{domain}/{version}.json")
+def export_json(domain: str, version: str) -> JSONResponse:
+    """Everything the Explorer shows, in one file, with the caveats attached."""
+    bundle = found(report.export_bundle, domain, version)
+    return JSONResponse(
+        bundle,
+        headers={"Content-Disposition":
+                 f'attachment; filename="ptm-{domain}-{version}.json"'},
+    )
+
+
+@app.get("/api/export/{domain}/{version}.csv")
+def export_csv(domain: str, version: str) -> PlainTextResponse:
+    """The flip set as CSV, for the spreadsheet the decision gets argued in."""
+    body = found(report.flips_csv, domain, version)
+    return PlainTextResponse(
+        body,
+        media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="ptm-{domain}-{version}-flips.csv"'},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
-    return (Path(__file__).parent / "dashboard.html").read_text()
+    return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 
 
 class PolicyTimeMachinePlugin(AirflowPlugin):

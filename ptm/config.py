@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -19,8 +18,14 @@ from pydantic import BaseModel, Field
 
 INCLUDE_DIR = Path(os.environ.get("PTM_INCLUDE_DIR", "/opt/airflow/include"))
 DB_PATH = Path(os.environ.get("PTM_DB", str(INCLUDE_DIR / "ptm.db")))
-OFFLINE = os.environ.get("PTM_OFFLINE", "0") == "1"
+# The project is designed to be runnable at a booth with no credentials. The
+# compose file and .env.example agree with this default; setting 0 opts into a
+# real Common AI connection.
+OFFLINE = os.environ.get("PTM_OFFLINE", "1") == "1"
 LLM_CONN_ID = os.environ.get("PTM_LLM_CONN_ID", "pydanticai_default")
+#: Model identifier used for the cost ledger. Mirrors the ``host`` half of the
+#: pydantic-ai connection; it never selects the model, it only prices it.
+JUDGE_MODEL = os.environ.get("PTM_JUDGE_MODEL", "anthropic:claude-sonnet-5")
 
 
 class ReviewPolicy(BaseModel):
@@ -33,6 +38,57 @@ class ReviewPolicy(BaseModel):
     below_confidence: float = 0.75
     above_impact: float = 0.0
     always_review_directions: list[str] = Field(default_factory=lambda: ["loosening"])
+    #: Cap on how many of ``max_reviews`` may go to flips the proposal did not
+    #: cause. A deviation - both policies agree, the recorded outcome did not -
+    #: is a finding about your reviewers, not about the rule being proposed, and
+    #: left uncapped the biggest of them crowd out the cases the proposal is
+    #: actually responsible for. They are still worth a few slots, because the
+    #: ruling settles a case the *current* policy already gets wrong.
+    max_deviation_reviews: int = 2
+    #: Whether to keep flips the judge would not reproduce out of the human
+    #: queue. Requires a confirmation pass (``judge_stability`` with
+    #: ``target=flips``); with no measurement on file nothing is excluded.
+    exclude_unstable: bool = True
+
+
+class ConflictPolicy(BaseModel):
+    """How to tell whether two human rulings contradict each other.
+
+    Two precedents conflict when they agree on every field in ``key`` (with the
+    impact field bucketed into ``impact_band``-wide bands) yet a human gave them
+    different outcomes. Leaving ``key`` empty disables the check.
+    """
+
+    #: Payload fields that make two cases materially alike. Free-text fields
+    #: and identifiers must stay out of this list or nothing ever matches.
+    key: list[str] = Field(default_factory=list)
+    #: Width of the band the impact field is rounded into before comparison, so
+    #: a GBP 104 claim and a GBP 111 claim count as the same kind of case.
+    impact_band: float = 100.0
+
+
+class DisparityPolicy(BaseModel):
+    """When a change landing unevenly is worth stopping for.
+
+    Blast radius reports the rates; this decides which of them somebody has to
+    account for. See :mod:`ptm.disparity` for why the comparison is pooled and
+    why small buckets are excluded rather than reported quietly.
+    """
+
+    #: Segment fields to check. Empty means every field in ``segment_fields``.
+    fields: list[str] = Field(default_factory=list)
+    #: How many times the rest of its field a segment may move before it is a
+    #: finding. Also read the other way: a segment moving less than
+    #: ``1 / max_ratio`` is a group the change largely passes over.
+    max_ratio: float = 2.0
+    #: Below this, a segment is not compared at all. Nine of twelve cases is a
+    #: 75% rate and almost no evidence; publishing it as a finding is how a
+    #: panel stops being read.
+    min_cases: int = 30
+    #: ``warn`` prints and carries on. ``fail`` stops the replay when a
+    #: concentration is both large and statistically supported - for a domain
+    #: where shipping the rule first and explaining afterwards is not an option.
+    gate: str = "warn"
 
 
 class DomainConfig(BaseModel):
@@ -48,54 +104,45 @@ class DomainConfig(BaseModel):
     #: ptm.pit_check to demonstrate what a naive replay gets wrong.
     pit_field: str | None = None
     judge_instructions: str = ""
-    #: Payload/fact keys worth breaking the impact down by - "who bears this
-    #: change". Declared per domain because only the domain knows which of its
-    #: fields describe a person rather than a transaction.
-    cohort_fields: list[str] = Field(default_factory=list)
     policies: dict[str, str]
+    #: The policy actually in force today. Replays judge each case under *both*
+    #: this and the candidate, which is what lets a change be attributed to the
+    #: clause responsible - including a clause that stopped applying - and what
+    #: separates "the policy changed" from "a reviewer deviated from the policy".
+    in_force: str = "v1"
     review: ReviewPolicy = Field(default_factory=ReviewPolicy)
+    #: Payload dimensions to break the blast radius down by. These are the
+    #: first question a policy owner asks after "how many": *who does this hit?*
+    #: Point-in-time facts (``pit_field``) are legitimate segments - they are
+    #: captured as of the decision date, not as of today.
+    segment_fields: list[str] = Field(default_factory=list)
+    conflicts: ConflictPolicy = Field(default_factory=ConflictPolicy)
+    #: Whether a change landing unevenly across segments is worth stopping for.
+    disparity: DisparityPolicy = Field(default_factory=DisparityPolicy)
     #: Fixtures for PTM_OFFLINE=1 only; the real judge never reads these.
     offline_rules: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    #: Versions that were drafted by :mod:`ptm.proposal` rather than written by
+    #: a person. Merged in from ``include/drafts/<domain>/`` at load time, and
+    #: kept as a separate list so nothing can present a machine's draft as an
+    #: approved policy - the dashboard and the lint both say which is which.
+    draft_versions: list[str] = Field(default_factory=list)
+
+    def validate_outcome(self, outcome: str) -> str:
+        """Reject a judge response that is outside this domain's contract."""
+        if outcome not in self.outcomes:
+            raise ValueError(
+                f"invalid outcome {outcome!r} for {self.name!r}; expected one of {self.outcomes}"
+            )
+        return outcome
 
     def policy_text(self, version: str) -> str:
-        if version in self.policies:
-            return (INCLUDE_DIR / self.policies[version]).read_text()
-        candidate = self._candidate(version)
-        if candidate:
-            return candidate["text"]
-        raise KeyError(f"domain {self.name!r} has no policy version {version!r}; "
-                       f"have {sorted(self.all_versions())}")
-
-    def rules_for(self, version: str) -> list[dict[str, Any]]:
-        """Offline fixture rules for a version, hand-written or drafted."""
-        if version in self.offline_rules:
-            return self.offline_rules[version]
-        candidate = self._candidate(version)
-        return candidate["offline_rules"] if candidate else []
-
-    def all_versions(self) -> list[str]:
-        """Hand-written versions plus any candidate drafted into the registry."""
-        return sorted(set(self.policies) | {c["version"] for c in self._candidates()})
-
-    def _candidate(self, version: str) -> dict[str, Any] | None:
-        return _registry(lambda: _store().load_policy_version(self.name, version))
-
-    def _candidates(self) -> list[dict[str, Any]]:
-        return _registry(lambda: _store().candidate_versions(self.name)) or []
-
-    def declared_clauses(self, version: str) -> list[str]:
-        """Every clause number the policy text defines, in document order.
-
-        Clauses are what the judge cites, so this is the denominator for "which
-        rules has history actually exercised?". Matches a leading ``N.N`` at the
-        start of a line, which is how the policies in include/ are written.
-        """
-        seen: list[str] = []
-        for line in self.policy_text(version).splitlines():
-            m = re.match(r"\s*(\d+\.\d+)\s", line)
-            if m and m.group(1) not in seen:
-                seen.append(m.group(1))
-        return seen
+        if version not in self.policies:
+            raise KeyError(f"domain {self.name!r} has no policy version {version!r}; have {sorted(self.policies)}")
+        # Explicit encoding, not the platform default: policies are UTF-8 and
+        # contain typographic punctuation. Read as cp1252 on a Windows checkout
+        # they load without error and come back mojibake, which then reaches the
+        # judge's prompt and any draft written from them.
+        return (INCLUDE_DIR / self.policies[version]).read_text(encoding="utf-8")
 
     def render_case(self, payload: dict[str, Any]) -> str:
         """Render a case payload as text for the judge. Missing keys render empty."""
@@ -108,6 +155,45 @@ class DomainConfig(BaseModel):
             return float(payload.get(self.impact_field, 0) or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    def segments_of(self, payload: dict[str, Any]) -> dict[str, str]:
+        """The segment values for one case, as strings.
+
+        Stringified deliberately: a segment is a label to group by, and
+        ``grade: 3`` arriving as an int from one source and a str from another
+        must not split into two buckets.
+        """
+        out: dict[str, str] = {}
+        for field in self.segment_fields:
+            value = payload.get(field)
+            out[field] = "unknown" if value is None or value == "" else str(value)
+        return out
+
+    def conflict_signature(self, payload: dict[str, Any]) -> tuple | None:
+        """A hashable description of "cases like this one", or None if disabled."""
+        if not self.conflicts.key:
+            return None
+        band = self.conflicts.impact_band or 0
+        sig: list[tuple[str, str]] = []
+        for field in self.conflicts.key:
+            value = payload.get(field)
+            if field == self.impact_field and band > 0:
+                try:
+                    value = f"{int(float(value or 0) // band) * int(band)}+"
+                except (TypeError, ValueError):
+                    value = "unknown"
+            sig.append((field, "unknown" if value is None or value == "" else str(value)))
+        return tuple(sig)
+
+    def clauses(self, version: str) -> list[str]:
+        """Clause identifiers declared by a policy version's markdown.
+
+        Used by the lint to catch an offline fixture citing a clause the policy
+        does not contain, which is how an offline demo silently stops
+        implementing the policy it claims to.
+        """
+        pattern = re.compile(r"^\s*(\d+\.\d+)\s", re.MULTILINE)
+        return sorted(set(pattern.findall(self.policy_text(version))))
 
     def direction(self, old: str, new: str) -> str:
         """Loosening = the new policy is more generous than history was."""
@@ -122,28 +208,45 @@ class DomainConfig(BaseModel):
         return "lateral"
 
 
-def _store():
-    # Imported late: ptm.store reads DB_PATH from this module, so importing it
-    # at the top would be circular.
-    from . import store
-    return store
-
-
-def _registry(read):
-    """Read the candidate registry, tolerating its absence.
-
-    A domain is fully usable before any database exists - the engine runs from
-    YAML alone - so "no table yet" means "no candidates", not a failure.
-    """
-    try:
-        return read()
-    except sqlite3.Error:
-        return None
-
-
 class _Blank(dict):
     def __missing__(self, key: str) -> str:  # noqa: D105
         return ""
+
+
+#: Where :mod:`ptm.proposal` writes drafted policy versions. Deliberately not
+#: ``policies/``: a draft a model wrote must never sit in the same folder as the
+#: text a person approved, and keeping them apart makes discarding every draft
+#: one delete rather than an audit.
+DRAFTS_DIR = "drafts"
+
+
+def merge_drafts(config: DomainConfig) -> DomainConfig:
+    """Register drafted versions found on disk as policy versions of this domain.
+
+    A draft is ``include/drafts/<domain>/<version>.md``, optionally beside a
+    ``<version>.rules.yaml`` holding the offline rules that let the
+    deterministic judge evaluate it. Merging them at load time is what makes a
+    drafted policy immediately replayable, gateable and sweepable by every DAG
+    and every endpoint, with no new code path - and without the proposer having
+    to rewrite the hand-maintained domain YAML, a file that is mostly comments
+    explaining decisions a person made.
+
+    A draft never shadows a declared version. If the YAML names it, the YAML
+    wins: that file is the one somebody is accountable for.
+    """
+    folder = INCLUDE_DIR / DRAFTS_DIR / config.name
+    if not folder.is_dir():
+        return config
+    for path in sorted(folder.glob("*.md")):
+        version = path.stem
+        if version in config.policies:
+            continue
+        config.policies[version] = f"{DRAFTS_DIR}/{config.name}/{path.name}"
+        config.draft_versions.append(version)
+        rules = path.with_suffix(".rules.yaml")
+        if rules.exists():
+            config.offline_rules[version] = yaml.safe_load(rules.read_text(encoding="utf-8")) or []
+    return config
 
 
 @lru_cache(maxsize=None)
@@ -152,7 +255,7 @@ def load_domain(name: str) -> DomainConfig:
     if not path.exists():
         available = sorted(p.stem for p in (INCLUDE_DIR / "domains").glob("*.yaml"))
         raise FileNotFoundError(f"no domain config {name!r} at {path}; available: {available}")
-    return DomainConfig(**yaml.safe_load(path.read_text()))
+    return merge_drafts(DomainConfig(**yaml.safe_load(path.read_text(encoding="utf-8"))))
 
 
 def available_domains() -> list[str]:

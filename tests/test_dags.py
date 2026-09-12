@@ -1,0 +1,213 @@
+"""The DAG module: it must import cleanly and build what it claims to build.
+
+Airflow is a heavy dependency, so the import-dependent checks skip when it is
+absent and the structural ones run either way. CI installs Airflow, which is
+what backs the README's claim of zero import errors.
+"""
+
+from __future__ import annotations
+
+import os
+import pathlib
+
+import pytest
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+DAG_FILE = REPO / "dags" / "policy_time_machine.py"
+
+#: Why Airflow could not be imported, if it could not. Kept rather than
+#: discarded: a bare "not installed" skip is what let the CI job whose entire
+#: purpose is running these tests report success without ever running one.
+airflow_import_error: str | None = None
+try:  # pragma: no cover - depends on the environment
+    import airflow  # noqa: F401
+except Exception as exc:  # pragma: no cover - any failure means we cannot parse
+    airflow_import_error = f"{type(exc).__name__}: {exc}"
+
+has_airflow = airflow_import_error is None
+
+# Locally, Airflow is a heavy optional dependency and skipping is right. In the
+# job that installs it on purpose, a skip is a false pass - so CI sets this and
+# the skip becomes a failure that says why.
+if not has_airflow and os.environ.get("PTM_REQUIRE_AIRFLOW") == "1":  # pragma: no cover
+    raise RuntimeError(
+        "PTM_REQUIRE_AIRFLOW=1 but Airflow could not be imported, so the DAG-parse "
+        f"tests would have silently skipped. Import failed with: {airflow_import_error}"
+    )
+
+needs_airflow = pytest.mark.skipif(
+    not has_airflow, reason=f"Airflow could not be imported ({airflow_import_error})")
+
+
+class TestStatic:
+    """Runs with or without Airflow installed."""
+
+    def test_the_module_compiles(self):
+        import py_compile
+
+        py_compile.compile(str(DAG_FILE), doraise=True)
+
+    def test_no_domain_knowledge_leaks_into_the_dag_layer(self):
+        """The engine's central claim: swapping the YAML swaps the application.
+
+        A domain word hard-coded here would mean the pipeline only looks generic.
+        """
+        source = DAG_FILE.read_text(encoding="utf-8").lower()
+        for word in ("expense", "refund", "receipt", "gbp", "grade", "tier", "claim"):
+            assert word not in source, f"{word!r} is domain knowledge, it belongs in the YAML"
+
+    def test_prompts_are_not_carried_in_the_case_payload(self):
+        """Every prompt embeds the whole policy text. Putting one in the dict that
+        fans out to each judge task duplicates the policy per case, through XCom,
+        for a value the offline judge never reads."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert '"prompt": build_prompt' not in source
+        assert '"prompt_chars"' in source
+
+    def test_human_answers_are_never_zipped_against_a_short_list(self):
+        """``record`` runs on all_done so a failed review does not strand the
+        others - but a short response list zipped positionally against the full
+        flip list would file one reviewer's ruling against somebody else's
+        case. Precedent cannot be recomputed, so it has to refuse."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "if len(responses) != len(flips):" in source
+        assert "attribute a ruling to the wrong case" in source
+
+    def test_the_gate_loads_precedent_cases_by_id(self):
+        """Loading everything and filtering is subject to the default limit, so
+        past that many cases the gate would check a subset and still pass."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "case_ids=ids" in source
+        assert "if c.case_id in ids" not in source, "the filtered load is the truncating one"
+
+    def test_the_stability_fan_out_is_the_one_that_never_carries_a_cache_key(self):
+        """Judging the same prompt repeatedly *is* the stability measurement. A
+        cached answer would be served to every repeat and report a judge that
+        never contradicts itself - not a wrong number, a reassuring one."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        stability_dag = source.split("def judge_stability():", 1)[1]
+        everything_else = source.split("def judge_stability():", 1)[0]
+        assert "cacheable=False" in stability_dag
+        assert "cache_key" not in stability_dag
+        assert "cacheable=False" not in everything_else.split("def _ledger", 1)[1], \
+            "only the stability fan-out opts out; the others must all be cached"
+
+    def test_nothing_tries_to_map_over_one_key_of_a_multiple_output_task(self):
+        """Airflow refuses it - *cannot map over XCom with custom key* - and it
+        refuses at DAG import, so the whole file fails to parse and every DAG in
+        it disappears. It is valid Python, so `py_compile` above says nothing;
+        only an Airflow-installed environment catches it, which is a slow place
+        to find out. A task whose output is expanded over returns a plain list.
+        """
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "multiple_outputs" not in source
+
+    def test_the_proposer_can_be_run_without_it_writing_anything(self):
+        """Proposing and adopting are separate acts, and the directory it writes
+        into is the one a person is accountable for."""
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert '"publish": Param(' in source
+        assert 'ctx["params"].get("publish")' in source
+
+    def test_per_case_segments_are_persisted(self):
+        """Summing the per-run aggregates counts a case once per run that saw
+        it, and manual runs overlap backfills on purpose."""
+        assert "case_segments=diff.case_segment_rows" in DAG_FILE.read_text(encoding="utf-8")
+
+
+@needs_airflow
+class TestParses:
+    @pytest.fixture(scope="class")
+    def dagbag(self):
+        from airflow.models.dagbag import DagBag
+
+        bag = DagBag(dag_folder=str(REPO / "dags"), include_examples=False)
+        assert not bag.import_errors, bag.import_errors
+        return bag
+
+    def test_five_dags_per_domain(self, dagbag, seeded):
+        from ptm.config import available_domains
+
+        for name in available_domains():
+            for prefix in ("replay", "adjudicate", "precedent_gate", "judge_stability",
+                           "propose"):
+                assert f"{prefix}_{name}" in dagbag.dags
+
+    def test_replay_is_schedulable_and_backfillable(self, dagbag):
+        dag = dagbag.dags["replay_expenses"]
+        assert dag.schedule == "@monthly"
+        assert {"policy_version", "max_cases", "baseline_version"} <= set(dag.params)
+
+    def test_replay_reads_the_policy_before_it_judges_anything(self, dagbag):
+        """Free, and it catches the problems that make a paid replay unusable
+        rather than merely expensive."""
+        dag = dagbag.dags["replay_expenses"]
+        assert "read_the_policy" in {t.task_id for t in dag.tasks}
+        assert dag.params.get_param("preflight").schema.get("enum") == ["warn", "fail", "off"]
+
+    def test_replay_can_be_made_to_stop_on_an_uneven_change(self, dagbag):
+        dag = dagbag.dags["replay_expenses"]
+        assert dag.params.get_param("disparity_gate").schema.get("enum") == \
+            ["domain", "warn", "fail", "off"]
+
+    def test_the_cache_sits_in_front_of_both_fan_outs_that_repeat_work(self, dagbag):
+        """The replay re-judges history after every policy edit; the gate
+        re-judges the same precedents every time a ruling is recorded."""
+        for dag_id, task_id in (("replay_expenses", "to_judge"),
+                                ("precedent_gate_expenses", "gate_to_judge")):
+            assert task_id in {t.task_id for t in dagbag.dags[dag_id].tasks}
+
+    def test_the_proposer_is_manual_only(self, dagbag):
+        """It writes a policy version and costs money. It must not fire on a
+        schedule."""
+        assert dagbag.dags["propose_expenses"].schedule is None
+
+    def test_the_proposer_ends_in_the_gate_rather_than_in_a_summary(self, dagbag):
+        """The whole reason a model is allowed to write here: the draft is
+        re-judged against every ruling a human has made."""
+        tasks = {t.task_id for t in dagbag.dags["propose_expenses"].tasks}
+        assert {"verification_items", "record"} <= tasks
+
+    def test_adjudication_wakes_on_the_flips_asset(self, dagbag):
+        """Nothing polls; the replay emitting the asset is what starts this."""
+        dag = dagbag.dags["adjudicate_expenses"]
+        assert [a.uri for a in dag.schedule] == ["ptm://expenses/flips"]
+
+    def test_the_gate_wakes_on_the_precedents_asset(self, dagbag):
+        dag = dagbag.dags["precedent_gate_expenses"]
+        assert [a.uri for a in dag.schedule] == ["ptm://expenses/precedents"]
+
+    def test_stability_is_manual_only(self, dagbag):
+        """It costs real money per run, so it must not fire on a schedule."""
+        assert dagbag.dags["judge_stability_expenses"].schedule is None
+
+    def test_stability_requires_at_least_two_samples(self, dagbag):
+        # dag.params resolves to plain values; get_param returns the Param
+        # itself, which is where the validation schema lives.
+        params = dagbag.dags["judge_stability_expenses"].params
+        assert params.get_param("samples_per_case").schema.get("minimum") == 2
+
+    def test_stability_can_target_the_recorded_flips(self, dagbag):
+        """The aggregate noise floor and per-flip confirmation are two
+        questions sharing one fan-out."""
+        params = dagbag.dags["judge_stability_expenses"].params
+        assert params.get_param("target").schema.get("enum") == ["sample", "flips"]
+
+    def test_the_gate_judges_the_policy_in_force_as_well(self, dagbag):
+        """So a reversal the status quo already makes is not reported as the
+        proposal's doing."""
+        dag = dagbag.dags["precedent_gate_expenses"]
+        assert "baseline_version" in dag.params
+        assert any("baseline" in t.task_id for t in dag.tasks), \
+            [t.task_id for t in dag.tasks]
+
+    def test_adjudication_reports_what_it_held_back(self, dagbag):
+        """A flip silently dropped from the queue looks exactly like a flip
+        that never happened."""
+        dag = dagbag.dags["adjudicate_expenses"]
+        assert "unconfirmed" in {t.task_id for t in dag.tasks}
+
+    def test_every_task_belongs_to_a_domain_tagged_dag(self, dagbag):
+        for dag_id, dag in dagbag.dags.items():
+            assert "policy-time-machine" in dag.tags
+            assert dag.tasks, f"{dag_id} has no tasks"

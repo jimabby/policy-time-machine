@@ -8,7 +8,8 @@ gives up.
 
 from __future__ import annotations
 
-import logging
+import builtins
+from typing import Any
 
 from .config import DomainConfig
 from .models import Case, Verdict
@@ -47,54 +48,51 @@ def build_prompt(case: Case, domain: DomainConfig, version: str) -> str:
     )
 
 
-_SAFE = {"__builtins__": {}, "abs": abs, "len": len, "min": min, "max": max, "float": float, "int": int, "str": str}
+#: Helpers a rule may call. They live in ``__builtins__`` rather than as
+#: top-level globals so the payload merged in below cannot *replace* them by
+#: accident - though a payload field of the same name still shadows one during
+#: name resolution, which is why :mod:`ptm.lint` warns about the collision.
+SAFE_BUILTINS: dict[str, Any] = {
+    name: getattr(builtins, name)
+    for name in ("abs", "len", "min", "max", "float", "int", "str", "round", "sum")
+}
+_SAFE: dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
+#: Every name an expression may use without it being a payload field. Exported
+#: for the lint, which must not report a helper call as an unknown field.
+SAFE_NAMES: frozenset[str] = frozenset(SAFE_BUILTINS) | {"__builtins__"}
+
+
+#: The rationale a defaulted verdict carries. Named rather than inlined because
+#: :mod:`ptm.rules` has to tell "no rule matched" apart from "a rule chose the
+#: most generous outcome", and the two are otherwise identical on the wire.
+NO_RULE_RATIONALE = "No rule matched; default outcome."
 
 
 def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
     """Deterministic rule evaluation, used when PTM_OFFLINE=1.
 
-    Rules come from the domain YAML's ``offline_rules`` block, or from the
-    candidate registry for a drafted version; the first matching rule wins,
-    otherwise the domain's first (most generous) outcome.
-    Expressions are evaluated with no builtins - this is a local demo fixture,
-    not a sandbox, so only ever point it at YAML you wrote yourself.
+    Rules come from the domain YAML's ``offline_rules`` block; the first
+    matching rule wins, otherwise the domain's first (most generous) outcome.
+    Expressions are evaluated against :data:`SAFE_BUILTINS` and nothing else -
+    this is a local demo fixture, not a sandbox, so only ever point it at YAML
+    you wrote yourself.
     """
-    rules = domain.rules_for(version)
+    rules = domain.offline_rules.get(version, [])
     scope = dict(_SAFE)
     scope.update({k: _coerce(v) for k, v in case.payload.items()})
     for rule in rules:
         try:
             if eval(rule["when"], scope):  # noqa: S307 - local fixture, see docstring
                 return Verdict(
-                    outcome=rule["outcome"],
+                    outcome=domain.validate_outcome(rule["outcome"]),
                     rationale=rule.get("because", "Matched offline rule."),
                     confidence=float(rule.get("confidence", 0.9)),
                     policy_clause=str(rule.get("clause", "")),
                 )
-        except Exception as exc:
-            # A rule naming a field this case genuinely lacks does not match,
-            # which is by design. But a *typo* in a field name fails exactly
-            # the same way and would otherwise change every result silently,
-            # so say so once per rule rather than swallowing it.
-            _warn_once(domain.name, version, rule["when"], exc)
-    return Verdict(outcome=domain.outcomes[0], rationale="No rule matched; default outcome.", confidence=0.6)
-
-
-_WARNED: set[tuple[str, str, str]] = set()
-_log = logging.getLogger(__name__)
-
-
-def _warn_once(domain: str, version: str, expr: str, exc: Exception) -> None:
-    """Surface a broken rule without drowning a 600-case replay in log lines."""
-    key = (domain, version, expr)
-    if key in _WARNED:
-        return
-    _WARNED.add(key)
-    _log.warning(
-        "offline rule for %s/%s did not evaluate: %r raised %s: %s. Expected if the "
-        "field is absent from this case; a typo in a field name looks identical.",
-        domain, version, expr, type(exc).__name__, exc,
-    )
+        except Exception:  # a rule referencing a field this case lacks simply does not match
+            continue
+    return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]),
+                   rationale=NO_RULE_RATIONALE, confidence=0.6)
 
 
 def _coerce(v):

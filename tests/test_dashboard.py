@@ -1,118 +1,389 @@
-"""Static guards on the dashboard page.
+"""The Diff Explorer, in a real browser, against the real API.
 
-There is no browser here, so these check the properties that were actually
-wrong rather than trying to render anything: every value interpolated into HTML
-goes through an escaper, and the page pulls in nothing from the network.
+Everything else in this suite proves the *data* is right. None of it proves the
+page renders it: a renderer reading a field the API stopped returning, an id
+that no longer matches, an exception halfway through a panel - all of those
+leave the tests green and the dashboard blank.
+
+So this serves the actual plugin app, loads the actual page in Chromium, and
+fails on any console error as well as on any panel that came up empty. Needs
+Airflow, FastAPI and Playwright, so it skips locally and runs in the CI job
+that installs them; ``PTM_REQUIRE_BROWSER=1`` makes a skip fatal there.
 """
 
 from __future__ import annotations
 
 import os
-import re
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
+import pathlib
+import socket
+import threading
 
 import pytest
 
-PAGE = Path(__file__).resolve().parent.parent / "plugins" / "dashboard.html"
-HTML = PAGE.read_text()
-SCRIPT = re.search(r"<script>\n(.*)</script>", HTML, re.S).group(1)
-STYLE = re.search(r"<style>\n(.*?)</style>", HTML, re.S).group(1)
+REPO = pathlib.Path(__file__).resolve().parents[1]
 
-#: Values that arrive from SQLite or from model output and land inside markup.
-#: Every one of these was interpolated raw before, which is the bug being pinned.
-UNTRUSTED = [
-    "r.case_id", "r.actual_outcome", "r.new_outcome", "r.direction", "r.precedent",
-    "r.rationale", "r.actual_rationale", "r.policy_clause", "r.correct_outcome",
-    "r.ruled_by", "r.note", "r.month", "b.headline", "b.summary", "x.name",
-    "x.explanation", "x.direction", "x.clause", "e.clause", "e.proposed_text",
-    "e.current_text", "e.reason", "a.rationale", "a.residual_risk",
-]
+import_error: str | None = None
+try:  # pragma: no cover - depends on the environment
+    import airflow  # noqa: F401
+    import uvicorn
+    from fastapi import FastAPI
+    from playwright.sync_api import sync_playwright
+except Exception as exc:  # pragma: no cover
+    import_error = f"{type(exc).__name__}: {exc}"
 
+available = import_error is None
 
-def interpolations(field: str) -> list[str]:
-    """Every `${...}` expression in the page that reads ``field``."""
-    return [m for m in re.findall(r"\$\{((?:[^{}]|\{[^{}]*\})*)\}", HTML)
-            if re.search(r"\b" + re.escape(field) + r"\b", m)]
+if not available and os.environ.get("PTM_REQUIRE_BROWSER") == "1":  # pragma: no cover
+    raise RuntimeError(
+        "PTM_REQUIRE_BROWSER=1 but the browser test could not be set up, so it "
+        f"would have silently skipped. Import failed with: {import_error}"
+    )
 
-
-@pytest.mark.parametrize("field", UNTRUSTED)
-def test_untrusted_values_are_escaped_wherever_they_reach_markup(field):
-    """Regression: case_id, outcomes, direction and precedent were interpolated raw."""
-    found = interpolations(field)
-    assert found, f"{field} is no longer interpolated - drop it from UNTRUSTED"
-    for expr in found:
-        assert "esc(" in expr or "money(" in expr or "n(" in expr, \
-            f"unescaped {field} in ${{{expr}}}"
+needs_browser = pytest.mark.skipif(
+    not available, reason=f"Airflow, FastAPI and Playwright are needed ({import_error})")
 
 
-def test_case_payloads_are_escaped():
-    """Payload keys and values are the least trusted data on the page."""
-    assert "esc(caseText(r.payload))" in HTML
+def replay_domain(domain_name: str, version: str) -> None:
+    """A full point-in-time replay, the way conftest does it for expenses."""
+    import datetime
+
+    from ptm import cost, diff, store
+    from ptm.config import load_domain
+    from ptm.judge import offline_verdict
+
+    domain = load_domain(domain_name)
+    cases = store.load_cases(domain_name, until=datetime.datetime(2026, 9, 1))
+    candidate = {c.case_id: offline_verdict(c, domain, version) for c in cases}
+    baseline = {c.case_id: offline_verdict(c, domain, domain.in_force) for c in cases}
+    flips = diff.flips(cases, candidate, domain, baseline=baseline)
+    store.save_replay(
+        f"browsertest__{domain_name}", domain_name, version, "actual", len(cases), flips,
+        diff.summarise(flips, len(cases), domain)["net_impact"], candidate,
+        segments=diff.segment_stats(cases, flips, domain),
+        case_segments=diff.case_segment_rows(cases, domain),
+        ledger=cost.zero(), baseline_version=domain.in_force, baseline_verdicts=baseline)
 
 
-def test_the_escaper_covers_quotes_and_angle_brackets():
-    """Attribute contexts need quotes escaped, not just < and >."""
-    fn = re.search(r"function esc\(s\)\{(.+?)\n\}", HTML, re.S).group(1)
-    for entity in ["&amp;", "&lt;", "&gt;", "&quot;", "&#39;"]:
-        assert entity in fn, f"esc() does not produce {entity}"
-    assert "??" in fn, "null and undefined must render empty, not as the word null"
+def load_plugin():
+    """Import the plugin by path - ``plugins/`` is a DAGs-folder sibling, not a package."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "ptm_plugin_under_browser_test", REPO / "plugins" / "policy_time_machine_plugin.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def test_the_page_loads_nothing_from_the_network():
-    """It is served inside Airflow, possibly offline. No CDNs, no fonts."""
-    for pattern in [r"<script[^>]+src=", r"<link[^>]+href=", r"@import", r"//cdn", r"https?://"]:
-        assert not re.search(pattern, HTML), f"external resource matched {pattern!r}"
+class Dashboard:
+    """A loaded page, plus everything the browser complained about.
 
-
-def test_every_api_call_targets_a_real_plugin_route():
-    """A typo'd path is a silently empty panel, so pin the two lists together."""
-    plugin = (PAGE.parent / "policy_time_machine_plugin.py").read_text()
-    routes = {r.rstrip("/") for r in re.findall(r'@app\.get\("([^"]+)"', plugin)}
-    for call in re.findall(r"api\(`?(/api/[^`')]+)", HTML):
-        # Strip the template placeholders back to the route's parameter shape.
-        shape = re.sub(r"\$\{[^}]+\}", "{p}", call).rstrip("/")
-        pattern = re.sub(r"\{p\}", "{[a-z_]+}", re.escape(shape).replace(r"\{p\}", "{p}"))
-        assert any(re.fullmatch(re.sub(r"\{[a-z_]+\}", "{p}", r), shape) for r in routes) or \
-               any(re.fullmatch(pattern, r) for r in routes), f"no route for {call}"
-
-
-def test_the_page_is_responsive_and_theme_aware():
-    assert 'name="viewport"' in HTML, "needed for any sensible mobile rendering"
-    assert "prefers-color-scheme:dark" in HTML, "it sits inside either Airflow theme"
-    assert "max-width:700px" in HTML, "the wide flips table needs a narrow-screen form"
-    assert "overflow-x:auto" in HTML, "wide content must scroll itself, not the body"
-
-
-def test_no_css_has_leaked_into_the_script():
-    """Regression: a section comment appears in both blocks, so an edit keyed on
-    it inserted a stylesheet into <script> and the whole page stopped running.
-
-    A CSS rule at the start of a line inside the script is never valid JS.
+    A thin wrapper rather than an attribute hung off Playwright's Page, which
+    is not ours to extend.
     """
-    for i, line in enumerate(SCRIPT.splitlines(), start=1):
-        assert not re.match(r"^[.#@][\w-]+[\s{,]", line), \
-            f"CSS rule at script line {i}: {line[:60]!r}"
+
+    def __init__(self, page, errors: list[str]) -> None:
+        self.page = page
+        self.errors = errors
+
+    def __getattr__(self, name):
+        return getattr(self.page, name)
+
+    def text(self, selector: str) -> str:
+        """Panel text, lowercased.
+
+        ``text-transform: uppercase`` is a style, not content - inner_text
+        returns it uppercased and an assertion on the real wording would fail
+        for a page that is rendering perfectly.
+        """
+        return self.page.inner_text(selector).lower()
 
 
-def test_no_script_has_leaked_into_the_stylesheet():
-    for i, line in enumerate(STYLE.splitlines(), start=1):
-        assert not re.match(r"^\s*(function|const|let|var)\s", line), \
-            f"JS at stylesheet line {i}: {line[:60]!r}"
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
-def test_the_script_parses_as_javascript():
-    """Uses node when it is available; skipped rather than faked when it is not."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node not available")
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
-        fh.write(SCRIPT)
-        path = fh.name
-    try:
-        done = subprocess.run([node, "--check", path], capture_output=True, text=True)
-        assert done.returncode == 0, done.stderr
-    finally:
-        os.unlink(path)
+@pytest.fixture(scope="module")
+def adjudicated(replayed):
+    """A replay that has also been ruled on and confirmed.
+
+    Without this the page only ever renders its empty states - no precedent,
+    nothing re-judged - and the branches that draw a reversal or a flip that
+    would not reproduce go untested.
+    """
+    import datetime
+
+    from ptm import report, store
+    from ptm.models import FlipConfirmation, Precedent
+
+    # The other domain is replayed too: switching to it is the demo's closing
+    # move, and a domain with no results exercises the empty states rather than
+    # the rendering this is here to check.
+    replay_domain("refunds", "v2")
+
+    flips = report.flips("expenses", "v2", limit=3)
+    agreed, reversed_, shaky = flips[0], flips[1], flips[2]
+
+    for row, outcome in ((agreed, agreed["new_outcome"]),
+                         (reversed_, reversed_["actual_outcome"])):
+        store.save_precedent(Precedent(
+            case_id=row["case_id"], domain="expenses", correct_outcome=outcome,
+            ruled_by="finance.lead", note="Ruled during the browser test.",
+            established_at=datetime.datetime(2026, 1, 1)))
+
+    store.save_flip_stability("expenses", "v2", [
+        FlipConfirmation(case_id=agreed["case_id"], samples=3,
+                         outcomes={agreed["new_outcome"]: 3},
+                         modal_outcome=agreed["new_outcome"], agreement=1.0,
+                         stable=True, recorded_outcome=agreed["new_outcome"]),
+        FlipConfirmation(case_id=shaky["case_id"], samples=3,
+                         outcomes={shaky["new_outcome"]: 2, shaky["actual_outcome"]: 1},
+                         modal_outcome=shaky["new_outcome"], agreement=0.667,
+                         stable=False, recorded_outcome=shaky["new_outcome"]),
+    ])
+    return {"agreed": agreed["case_id"], "reversed": reversed_["case_id"],
+            "shaky": shaky["case_id"]}
+
+
+@pytest.fixture(scope="module")
+def server(adjudicated):
+    """The plugin app under /ptm, exactly where Airflow mounts it.
+
+    The prefix is load-bearing: the page fetches "/ptm" + path, so serving it
+    anywhere else would pass while the real deployment 404s on every request.
+    """
+    parent = FastAPI()
+    parent.mount("/ptm", load_plugin().app)
+
+    port = free_port()
+    config = uvicorn.Config(parent, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn_server = uvicorn.Server(config)
+    thread = threading.Thread(target=uvicorn_server.run, daemon=True)
+    thread.start()
+    for _ in range(200):  # ~10s
+        if uvicorn_server.started:
+            break
+        threading.Event().wait(0.05)
+    else:  # pragma: no cover
+        raise RuntimeError("the test server never started")
+    yield f"http://127.0.0.1:{port}/ptm/"
+    uvicorn_server.should_exit = True
+    thread.join(timeout=10)
+
+
+@pytest.fixture(scope="module")
+def browser():
+    with sync_playwright() as p:
+        chromium = p.chromium.launch()
+        yield chromium
+        chromium.close()
+
+
+@pytest.fixture
+def page(browser, server):
+    """A loaded dashboard, with every console error collected.
+
+    Errors are asserted on in one place rather than per test, because a page
+    that throws halfway through rendering still leaves most assertions passing.
+    """
+    context = browser.new_context(viewport={"width": 1400, "height": 1000})
+    raw = context.new_page()
+    errors: list[str] = []
+    raw.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    raw.on("console",
+           lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
+    raw.goto(server, wait_until="networkidle")
+    raw.wait_for_selector("#tiles .tile", timeout=15_000)
+    yield Dashboard(raw, errors)
+    context.close()
+
+
+@needs_browser
+class TestItRenders:
+    def test_without_a_single_console_error(self, page):
+        assert page.errors == []
+
+    def test_the_page_is_titled(self, page):
+        assert "Policy Time Machine" in page.title()
+
+    def test_the_status_line_reports_the_replay(self, page):
+        assert "run" in page.text("#status")
+
+    def test_every_panel_has_content(self, page):
+        """An empty panel is the shape a broken renderer takes."""
+        empty = []
+        for panel in ("#tiles", "#preflight", "#clauses", "#segments", "#disparity",
+                      "#deviations", "#flips", "#precedents", "#conflicts", "#stability",
+                      "#calibration", "#drafts", "#sweep", "#rules"):
+            if not page.inner_text(panel).strip():
+                empty.append(panel)
+        assert not empty, f"panels rendered nothing: {empty}"
+
+
+@needs_browser
+class TestTheHeadline:
+    def test_the_tiles_show_the_numbers_the_api_returned(self, page):
+        text = page.text("#tiles")
+        assert "600" in text, "decisions replayed"
+        assert "147" in text, "outcomes that change"
+
+    def test_the_deviation_tile_separates_what_the_policy_did_not_cause(self, page):
+        text = page.text("#tiles")
+        assert "not this policy's doing" in text
+        assert "38" in text and "109 caused by this policy" in text
+
+    def test_the_gate_tile_reports_the_reversal_and_who_caused_it(self, page):
+        text = page.text("#tiles")
+        assert "gate" in text
+        assert "reversed" in text
+        assert "introduced by this policy" in text
+
+    def test_the_confirmation_tile_counts_what_held(self, page):
+        text = page.text("#tiles")
+        assert "flips confirmed" in text
+        assert "would not reproduce" in text, "one flip was seeded as unstable"
+
+
+@needs_browser
+class TestPanels:
+    def test_clause_attribution_names_the_clause_and_the_deviation_bucket(self, page):
+        text = page.text("#clauses")
+        assert "clause 1.1 relaxed" in text
+        assert "reviewer deviated from policy" in text
+        assert "not caused by this policy" in text
+
+    def test_blast_radius_shows_denominators(self, page):
+        text = page.text("#segments")
+        assert "by category" in text and "by grade" in text
+        assert "/" in text, "flips out of cases"
+
+    def test_the_flip_table_has_the_confirmation_column(self, page):
+        headers = page.text("#flips thead")
+        for column in ("case", "was", "becomes", "responsible for", "confirmed",
+                       "precedent"):
+            assert column in headers, column
+
+    def test_the_flip_table_marks_what_reproduced_and_what_did_not(self, page):
+        text = page.text("#flips")
+        assert "reproduced" in text
+        assert "did not reproduce" in text
+
+    def test_a_flip_that_reverses_a_ruling_is_called_out(self, page):
+        assert "violates" in page.text("#flips")
+
+    def test_the_precedent_panel_lists_the_rulings(self, page):
+        text = page.text("#precedents")
+        assert "finance.lead" in text
+        assert "ruled during the browser test" in text
+
+    def test_a_flip_row_expands_to_show_the_case(self, page):
+        """The detail row's colspan has to match the header or it renders wrong."""
+        page.click("#flips tr.row >> nth=0")
+        detail = page.locator("#flips tr.detail >> nth=0")
+        detail.wait_for(state="visible", timeout=5_000)
+        assert "under the proposed policy" in detail.inner_text().lower()
+
+    def test_the_deviation_panel_explains_whose_problem_it_is(self, page):
+        text = page.text("#deviations")
+        assert "in force today" in text
+        assert "both policies say" in text
+
+    def test_the_stability_panel_gives_the_error_bar_or_says_it_is_missing(self, page):
+        text = page.text("#stability")
+        assert "judge" in text or "not measured" in text
+
+    def test_the_preflight_panel_reports_on_the_policy_itself(self, page):
+        """It finds one real thing in the shipped v2 - a clause defined only by
+        reference to v1 - so this panel is never the empty state here."""
+        text = page.text("#preflight")
+        assert "clause 7.1" in text
+        assert "unreachable" in text
+
+    def test_the_disparity_panel_names_the_segment_and_what_it_is_measured_against(self, page):
+        text = page.text("#disparity")
+        assert "meals" in text
+        assert "rest of field" in text
+        assert "question, not a verdict" in text, "it never calls a concentration unfair"
+
+    def test_the_calibration_panel_scores_the_judge_against_the_humans(self, page):
+        """Seeded with two rulings, one of which the policy reverses - so the
+        panel has both an agreement and a disagreement to render."""
+        text = page.text("#calibration")
+        assert "human ruling" in text
+        assert "confident by" in text
+        assert "floor on the judge's accuracy" in text
+
+    def test_the_rules_panel_says_the_offline_figure_measures_nothing(self, page):
+        """The verdicts it scores against were produced by these same rules. A
+        100% that does not say why is worse than no number."""
+        text = page.text("#rules")
+        assert "by construction" in text
+
+    def test_the_drafts_panel_has_an_empty_state_rather_than_a_blank(self, page):
+        assert "no drafts yet" in page.text("#drafts")
+
+
+@needs_browser
+class TestTheSweep:
+    def test_it_offers_the_dials_from_the_policy(self, page):
+        options = page.text("#swdial")
+        assert "clause 1.1" in options and "amount_gbp" in options
+
+    def test_it_prefills_values_around_the_current_setting(self, page):
+        assert page.input_value("#swvalues").strip()
+
+    def test_running_it_renders_the_curve(self, page):
+        page.click("#swgo")
+        page.wait_for_selector("#sweep table tbody tr", timeout=20_000)
+        assert "current" in page.text("#sweep")
+        assert page.locator("#sweep .spark i").count() > 1
+        assert page.errors == []
+
+    def test_a_bad_value_list_fails_visibly_rather_than_silently(self, page):
+        page.fill("#swvalues", "not-a-number")
+        page.click("#swgo")
+        # The idle state is also an .empty div, so wait on the text.
+        page.wait_for_function(
+            "() => document.querySelector('#sweep').innerText.includes('could not be run')",
+            timeout=20_000)
+
+
+@needs_browser
+class TestExportAndNavigation:
+    def test_the_download_links_point_at_the_export_routes(self, page):
+        assert page.get_attribute("#dlcsv", "href") == "/ptm/api/export/expenses/v2.csv"
+        assert page.get_attribute("#dljson", "href") == "/ptm/api/export/expenses/v2.json"
+
+    def test_an_unreplayed_version_says_so_rather_than_blaming_the_config(self, page):
+        """The panel has two empty states and they are not interchangeable:
+        telling someone their segment_fields are missing sends them to edit a
+        YAML file that is already correct."""
+        page.select_option("#version", "v1")
+        page.wait_for_function(
+            "() => document.querySelector('#segments').innerText"
+            ".toLowerCase().includes('no replay results')",
+            timeout=15_000)
+        text = page.text("#segments")
+        assert "declares no" not in text
+        assert "category" in text and "grade" in text, "it still names the segments"
+
+    def test_switching_domain_re_renders_against_the_other_domain(self, page):
+        page.select_option("#domain", "refunds")
+        page.wait_for_function(
+            "() => document.querySelector('#segments').innerText.toLowerCase()"
+            ".includes('by tier')",
+            timeout=15_000)
+        assert "gym membership" in page.text("#label")
+        assert page.get_attribute("#dlcsv", "href") == "/ptm/api/export/refunds/v2.csv"
+        assert page.errors == []
+
+    def test_filtering_narrows_the_flip_table(self, page):
+        before = page.locator("#flips tr.row").count()
+        page.fill("#search", "exp-0084")
+        page.wait_for_function(
+            f"() => document.querySelectorAll('#flips tr.row').length < {before}",
+            timeout=10_000)
+        assert page.locator("#flips tr.row").count() >= 1
+        assert "shown" in page.text("#status")

@@ -1,803 +1,720 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Policy Diff Explorer</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Policy Time Machine</title>
 <style>
-/* Light is the base; every token is redefined for dark so the page sits
-   correctly inside either Airflow theme. */
-:root{
-  --bg:#f7f8fa; --panel:#fff; --panel-2:#fbfcfd; --line:#e3e7ed; --line-2:#eef1f5;
-  --fg:#1a1f2b; --dim:#67707f; --faint:#98a1b0;
-  --loose:#0f8a4d; --loose-bg:#e6f6ed; --tight:#c2321f; --tight-bg:#fdecea;
-  --warn:#9a6400; --warn-bg:#fdf3e0; --accent:#2563eb; --accent-bg:#eaf0fe;
-  --shadow:0 1px 2px rgba(16,24,40,.05),0 1px 3px rgba(16,24,40,.06);
-  --radius:10px;
-}
-@media (prefers-color-scheme:dark){:root{
-  --bg:#0f1115; --panel:#171a21; --panel-2:#13161c; --line:#252a34; --line-2:#1e222b;
-  --fg:#e6e8ec; --dim:#8b93a1; --faint:#6b7280;
-  --loose:#4ade80; --loose-bg:#11291c; --tight:#f87171; --tight-bg:#2a1414;
-  --warn:#fbbf24; --warn-bg:#2a2110; --accent:#60a5fa; --accent-bg:#13203a;
-  --shadow:none;
-}}
+:root{--bg:#0b1020;--panel:#121a2d;--line:#26324b;--fg:#eef3ff;--dim:#9ba8c3;--loose:#48d597;--tight:#ff7b89;--warn:#f9c75d;--accent:#77a7ff;--mute:#6f7c96}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);
-  font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
-  -webkit-font-smoothing:antialiased}
-h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.011em}
-a{color:var(--accent)}
-.num{font-variant-numeric:tabular-nums}
-
-/* ---------------------------------------------------------------- header */
-header{position:sticky;top:0;z-index:20;background:var(--panel);
-  border-bottom:1px solid var(--line);padding:12px 20px}
-.hrow{display:flex;gap:14px;align-items:center;flex-wrap:wrap;max-width:1320px;margin:0 auto}
-.brand{display:flex;align-items:center;gap:9px;margin-right:auto;min-width:0}
-.brand h1{font-size:15px;white-space:nowrap}
-.brand .sub{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis}
-.dot{width:8px;height:8px;border-radius:99px;background:var(--accent);flex:none}
-.ctl{display:flex;align-items:center;gap:6px}
-.ctl label{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
-select,input,button{font:inherit;color:var(--fg);background:var(--panel-2);
-  border:1px solid var(--line);border-radius:7px;padding:6px 9px}
-select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid var(--accent);
-  outline-offset:1px;border-color:var(--accent)}
-button{cursor:pointer}
-button:hover{border-color:var(--faint)}
-@media (max-width:560px){
-  .brand{margin-right:0;width:100%}
-  .hrow{gap:10px}
-  .ctl{flex:1 1 auto}
-  .ctl select{width:100%}
-}
-
-/* ------------------------------------------------------------------ main */
-main{padding:20px;max-width:1320px;margin:0 auto}
-section{margin-bottom:26px}
-.shead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 11px}
-.shead h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)}
-.shead .note{color:var(--faint);font-size:12px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  box-shadow:var(--shadow)}
-.empty{color:var(--dim);padding:18px 16px;text-align:center}
-.empty code{background:var(--panel-2);border:1px solid var(--line);border-radius:5px;
-  padding:1px 5px;font-size:12.5px}
-
-/* ------------------------------------------------------------- AI brief */
-.brief{padding:18px 20px}
-.brief .top{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
-.brief .headline{font-size:17px;font-weight:600;line-height:1.4;flex:1 1 320px;
-  letter-spacing:-.014em;min-width:0}
-.brief p{color:var(--dim);margin:12px 0 0;max-width:78ch}
-.verdict{flex:none;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;
-  border-radius:99px;font-size:11.5px;font-weight:600;text-transform:uppercase;
-  letter-spacing:.05em;border:1px solid transparent;white-space:nowrap}
-.v-ship{background:var(--loose-bg);color:var(--loose);border-color:var(--loose)}
-.v-caveat{background:var(--warn-bg);color:var(--warn);border-color:var(--warn)}
-.v-stop{background:var(--tight-bg);color:var(--tight);border-color:var(--tight)}
-.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;
-  margin-top:18px;padding-top:16px;border-top:1px solid var(--line-2)}
-.cols h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
-  margin-bottom:8px}
-.cols ul{margin:0;padding-left:17px;color:var(--dim)}
-.cols li{margin-bottom:6px}
-.by{color:var(--faint);font-size:11.5px;margin-top:16px;padding-top:12px;
-  border-top:1px solid var(--line-2)}
-
-/* ------------------------------------------------------------------ tiles */
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  padding:13px 15px;box-shadow:var(--shadow)}
-.tile .k{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}
-.tile .v{font-size:21px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;
-  letter-spacing:-.02em;line-height:1.2}
-.tile .s{color:var(--faint);font-size:11.5px;margin-top:3px}
-.loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}
-
-/* ------------------------------------------------------------------ chart */
-.chart{padding:16px 18px 12px}
-.chart svg{display:block;width:100%;height:auto}
-.legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--dim);font-size:11.5px;
-  margin-top:10px}
-.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
-.gl{stroke:var(--line-2);stroke-width:1}
-.axis{fill:var(--faint);font-size:10px}
-
-/* --------------------------------------------------- coverage & cohorts */
-.split{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:11px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  padding:15px 17px;box-shadow:var(--shadow)}
-.panel h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);
-  margin-bottom:11px;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-.panel h3 .r{text-transform:none;letter-spacing:0;font-weight:400;color:var(--faint)}
-.meter{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:center;
-  padding:4px 0;font-variant-numeric:tabular-nums}
-.meter .lab{font-size:12.5px;min-width:44px;max-width:126px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-/* Both must be blocks: .track is blockified by the grid, but a bare inline
-   .fill would ignore its width and the bar would render empty. */
-.meter .track{display:block;height:7px;border-radius:4px;background:var(--line-2);
-  overflow:hidden}
-.meter .fill{display:block;height:100%;border-radius:4px;background:var(--accent);
-  min-width:2px}
-.meter .val{font-size:12px;color:var(--dim);min-width:74px;text-align:right}
-.meter.off .lab,.meter.off .val{color:var(--tight)}
-.meter.off .fill{background:var(--tight)}
-.hint{color:var(--dim);font-size:12.5px;margin-top:11px;padding-top:10px;
-  border-top:1px solid var(--line-2)}
-.hint strong{color:var(--fg)}
-.tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:600;
-  background:var(--tight-bg);color:var(--tight);margin-left:6px}
-.tag.ok{background:var(--loose-bg);color:var(--loose)}
-.tag.warn{background:var(--warn-bg);color:var(--warn)}
-.tag.calc{background:var(--accent-bg);color:var(--accent);font-weight:500}
-
-/* ------------------------------------------------------------- comparison */
-.cmp{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line);
-  border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
-.cmp>div{background:var(--panel);padding:15px 17px}
-.cmp .vh{font-weight:600;font-size:15px;letter-spacing:-.01em;margin-bottom:11px}
-.cmp dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:5px 10px;
-  font-variant-numeric:tabular-nums}
-.cmp dt{color:var(--dim);font-size:12.5px}
-.cmp dd{margin:0;text-align:right;font-size:12.5px;font-weight:500}
-@media (max-width:620px){.cmp{grid-template-columns:1fr}}
-
-/* ----------------------------------------------------------------- themes */
-.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:11px}
-.theme{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-  padding:14px 16px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:7px}
-.theme .th{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
-.theme .nm{font-weight:600;letter-spacing:-.008em}
-.theme .ct{flex:none;color:var(--dim);font-variant-numeric:tabular-nums;font-size:12.5px}
-.theme p{margin:0;color:var(--dim);font-size:13px}
-.theme .ex{color:var(--faint);font-size:11.5px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-
-/* ------------------------------------------------------------------ table */
-.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);
-  background:var(--panel);box-shadow:var(--shadow)}
-table{width:100%;border-collapse:collapse;min-width:760px}
-table.narrow{min-width:560px}
-th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
-  color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line);
-  background:var(--panel-2);white-space:nowrap;position:sticky;top:0;z-index:1}
-th.sortable{cursor:pointer;user-select:none}
-th.sortable:hover{color:var(--fg)}
-th .arrow{opacity:.4;margin-left:3px}
-th[aria-sort] .arrow{opacity:1;color:var(--accent)}
-td{padding:10px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
-tbody tr:last-child td{border-bottom:none}
-tr.row{cursor:pointer}
-tr.row:hover{background:var(--panel-2)}
-tr.row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-td.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.cid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
-.pill{display:inline-block;padding:1.5px 8px;border-radius:99px;font-size:11.5px;
-  border:1px solid var(--line);background:var(--panel-2);white-space:nowrap}
-.pill.g{background:var(--loose-bg);color:var(--loose);border-color:transparent}
-.pill.r{background:var(--tight-bg);color:var(--tight);border-color:transparent}
-.arrow-c{color:var(--faint);padding:0 4px}
-.bar{display:inline-block;height:4px;border-radius:2px;background:var(--accent);
-  vertical-align:middle;margin-left:7px;min-width:2px;opacity:.5}
+body{margin:0;background:radial-gradient(circle at 12% -10%,#1e3a70 0,transparent 32rem),var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+header{padding:18px max(24px,calc((100vw - 1200px)/2));border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#0d1425dd;backdrop-filter:blur(12px);position:sticky;top:0;z-index:1}
+h1{font-size:16px;margin:0 8px 0 0;font-weight:700}
+.mark{color:var(--accent);font-size:18px}
+select,input{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:7px 10px;font:inherit}
+input{min-width:170px}
+.status{margin-left:auto;color:var(--dim);font-size:12px}
+main{padding:28px 24px;max-width:1248px;margin:auto}
+.hero{margin:0 0 22px;color:var(--dim);max-width:720px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}
+.tile{background:linear-gradient(145deg,#17223a,#11192c);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 24px #0000001c}
+.k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.v{font-size:20px;font-weight:600;margin-top:6px;font-variant-numeric:tabular-nums}
+.sub{color:var(--mute);font-size:11px;margin-top:4px}
+.loose{color:var(--loose)}.tight{color:var(--tight)}.warn{color:var(--warn)}.muted{color:var(--mute)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr.row{cursor:pointer}tr.row:hover{background:#1c2944}
+.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;border:1px solid var(--line)}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.detail td{background:#0e1526;color:var(--dim);font-size:13px}
+pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;color:var(--fg)}
 .bad{color:var(--tight);font-weight:600}
-.detail>td{background:var(--panel-2);color:var(--dim);font-size:13px;padding:14px 16px}
-.detail pre{margin:0 0 12px;white-space:pre-wrap;word-break:break-word;
-  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);
-  background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:11px 13px}
-.detail .kv{margin-top:8px}
-.detail .kv strong{color:var(--fg);font-weight:600}
-.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
-.filters input{flex:1 1 180px;min-width:0}
-.chip{padding:5px 11px;border-radius:99px;font-size:12.5px;background:var(--panel);
-  border:1px solid var(--line);cursor:pointer;white-space:nowrap}
-.chip[aria-pressed=true]{background:var(--accent-bg);border-color:var(--accent);
-  color:var(--accent);font-weight:500}
-.count{color:var(--faint);font-size:12px;margin-left:auto;white-space:nowrap}
-
-/* Below this width a wide table is worse than a list, so the flips become
-   cards and the table header is dropped entirely. */
-@media (max-width:700px){
-  main{padding:14px}
-  table,table.narrow,.scroll{min-width:0;border:0;background:none;box-shadow:none;
-    overflow:visible;display:block}
-  /* The card layout re-labels every cell via data-l, so the header row carries
-     nothing a narrow screen needs. Hiding it with position:absolute left it in
-     flow at full table width and scrolled the whole page sideways. */
-  thead{display:none}
-  tbody{display:block}
-  tbody tr:not(.detail){display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:12px 14px;
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    margin-bottom:9px;box-shadow:var(--shadow)}
-  tbody tr td{border:0;padding:0}
-  /* The reasoning column needs the full width rather than a grid half. */
-  tbody td[data-l="Why"],tbody td[data-l="Change"]{grid-column:1/-1}
-  tbody td[data-l]::before{content:attr(data-l);color:var(--faint);font-size:10.5px;
-    text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:1px}
-  td.r{text-align:left}
-  /* :not([hidden]) matters - a bare display:block would override the hidden
-     attribute and leave every case detail expanded on load. */
-  .detail:not([hidden]){display:block;margin:-6px 0 9px}
-  .detail>td{display:block;border:1px solid var(--line);border-radius:var(--radius)}
-  .bar{display:none}
-}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}
+h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;margin-left:8px}
+.empty{color:var(--dim);padding:16px}
+.error{color:var(--tight);padding:16px;border:1px solid #ff7b8955;border-radius:10px;background:#ff7b8910}
+.reviewed{color:var(--dim);font-size:11px}
+.bar{height:6px;border-radius:99px;background:#22304c;overflow:hidden;min-width:60px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.seg{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.group{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:4px 14px 12px}
+.group h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:12px 0 8px}
+.group table{border:0;background:none}
+.group td,.group th{padding:6px 0}
+.cmp{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;color:var(--dim)}
+.dl{margin-left:auto;display:flex;gap:8px}
+.dl a{color:var(--accent);text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;background:var(--panel)}
+.dl a:hover{border-color:var(--accent)}
+button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:7px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}
+.unstable{color:var(--warn);font-size:11px}
+.spark{display:flex;align-items:flex-end;gap:3px;height:44px}
+.spark>i{display:block;flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-height:2px}
+.spark>i.cur{background:var(--warn)}
+@media(max-width:720px){main{padding:20px 14px}header{padding:14px}.status{margin-left:0}}
 </style></head><body>
-
 <header>
-  <div class=hrow>
-    <div class=brand>
-      <span class=dot></span>
-      <h1>Policy Diff Explorer</h1>
-      <span class=sub id=label></span>
-    </div>
-    <div class=ctl><label for=domain>Domain</label><select id=domain></select></div>
-    <div class=ctl><label for=version>Policy</label><select id=version></select></div>
-    <button id=refresh title="Reload from the database">Refresh</button>
-  </div>
+  <span class=mark>&#9719;</span><h1>Policy Time Machine</h1>
+  <select id=domain aria-label="Domain"></select>
+  <select id=version aria-label="Policy version"></select>
+  <input id=search type=search placeholder="Filter case IDs" aria-label="Filter case IDs">
+  <span id=label style="color:var(--dim)"></span>
+  <span class=status id=status></span>
+  <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
-
 <main>
-  <section id=brief-s hidden>
-    <div class=shead><h2>Brief</h2><span class=note id=brief-note></span></div>
-    <div class="card brief" id=brief></div>
-  </section>
+  <p class=hero>Replay real decisions under a proposed rule, attribute every change to the clause
+  that caused it, surface who it lands on, and retain human rulings as regression tests.</p>
+  <p class=hero id=draftnote hidden></p>
+  <div class=tiles id=tiles></div>
 
-  <section>
-    <div class=shead><h2>Impact</h2><span class=note id=runs-note></span></div>
-    <div class=tiles id=tiles></div>
-  </section>
+  <h2>Before you spend anything <span class=note>problems readable in the policy text itself</span></h2>
+  <div id=preflight></div>
 
-  <section id=chart-s hidden>
-    <div class=shead><h2>Impact over replayed history</h2>
-      <span class=note>By the month each decision was originally made</span></div>
-    <div class="card chart" id=chart></div>
-  </section>
+  <h2>What drives the change <span class=note id=clausenote></span></h2>
+  <div id=clauses></div>
 
-  <section id=blind-s hidden>
-    <div class=shead><h2>Blind spots</h2>
-      <span class=note>What the flip list cannot show you</span></div>
-    <div class=split id=blind></div>
-  </section>
+  <h2>Blast radius <span class=note>how many cases in each segment actually move</span></h2>
+  <div id=segments></div>
 
-  <section id=themes-s hidden>
-    <div class=shead><h2>What moved, and why</h2><span class=note id=themes-note></span></div>
-    <div class=themes id=themes></div>
-  </section>
+  <h2>Does it land evenly? <span class=note>segments carrying more of the change than the rest of their field</span></h2>
+  <div id=disparity></div>
 
-  <section id=amend-s hidden>
-    <div class=shead><h2>Proposed amendment</h2>
-      <span class=note>Drafted because the precedent gate failed</span></div>
-    <div class="card brief" id=amend></div>
-  </section>
+  <h2>Where should the threshold be? <span class=note>re-runs the replay at each value, from the offline rules</span></h2>
+  <div class=cmp>
+    <select id=swdial aria-label="Threshold to sweep"></select>
+    <input id=swvalues aria-label="Values to try" placeholder="25,50,75,100,150">
+    <button id=swgo>Sweep</button>
+    <span id=swnote></span>
+  </div>
+  <div id=sweep></div>
 
-  <section id=cmp-s hidden>
-    <div class=shead><h2>Compare</h2>
-      <span class=note id=cmp-note></span>
-      <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
-        <label for=against style="color:var(--dim);font-size:11px;text-transform:uppercase;
-               letter-spacing:.06em">Against</label>
-        <select id=against></select></span></div>
-    <div id=cmp></div>
-  </section>
+  <h2>Can the sweep be trusted? <span class=note>do the offline rules agree with the judge they stand in for</span></h2>
+  <div id=rules></div>
 
-  <section>
-    <div class=shead><h2>Flipped decisions</h2>
-      <span class=note>Every case where the proposed policy disagrees with history</span></div>
-    <div class=filters id=filters hidden>
-      <input id=q type=search placeholder="Filter by case, outcome or reasoning…"
-             aria-label="Filter flipped decisions">
-      <button class=chip id=f-all aria-pressed=true>All</button>
-      <button class=chip id=f-loose aria-pressed=false>More generous</button>
-      <button class=chip id=f-tight aria-pressed=false>More strict</button>
-      <button class=chip id=f-unsure aria-pressed=false>Low confidence</button>
-      <button class=chip id=f-prec aria-pressed=false>Has precedent</button>
-      <span class=count id=count></span>
-    </div>
-    <div id=flips></div>
-  </section>
+  <h2>Not this policy's doing <span class=note>recorded outcomes the rule already in force disagreed with</span></h2>
+  <div id=deviations></div>
 
-  <section>
-    <div class=shead><h2>Established precedent</h2>
-      <span class=note>Human rulings. The only durable output, and the regression suite.</span></div>
-    <div id=precedents></div>
-  </section>
+  <h2>Compare policy versions <span class=note>did the edit help?</span></h2>
+  <div class=cmp>
+    <span>Compare</span><select id=cmpleft aria-label="Left version"></select>
+    <span>against</span><select id=cmpright aria-label="Right version"></select>
+    <span id=cmpsummary></span>
+  </div>
+  <div id=compare></div>
+
+  <h2>Flipped decisions</h2>
+  <div id=flips></div>
+
+  <h2>Established precedent</h2>
+  <div id=precedents></div>
+
+  <h2>Precedent conflicts <span class=note>rulings that contradict each other, not the policy</span></h2>
+  <div id=conflicts></div>
+
+  <h2>Judge stability <span class=note>the error bar under every number above</span></h2>
+  <div id=stability></div>
+
+  <h2>Is the judge right? <span class=note>scored against the humans who ruled on the same cases</span></h2>
+  <div id=calibration></div>
+
+  <h2>Drafted amendments <span class=note>written by the proposal DAG, checked by the gate, approved by nobody</span></h2>
+  <div id=drafts></div>
 </main>
-
 <script>
-'use strict';
+"use strict";
 const $ = s => document.querySelector(s);
-// Absolute, so the page works whether it is served at /ptm or /ptm/.
-const api = p => fetch('/ptm' + p).then(r => {
-  if (!r.ok) throw new Error(p + ' -> ' + r.status);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = n => Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+const money = (unit, n) => (unit ? unit + " " : "") + num(n);
+const pct = n => (Number(n || 0) * 100).toFixed(1) + "%";
+const api = async path => {
+  const r = await fetch("/ptm" + path);
+  if (!r.ok) throw new Error(r.status);
   return r.json();
-});
-
-const PAGE = 25;
-let DOMAINS = [], STATE = {flips: [], sort: {key: 'impact', dir: -1}, filter: 'all',
-                           q: '', shown: PAGE};
-
-/* ------------------------------------------------------------------ utils */
-function esc(s){
-  return String(s ?? '').replace(/[&<>"']/g, c =>
-    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function n(x){ return Number(x || 0).toLocaleString(undefined, {maximumFractionDigits:0}); }
-function money(unit, v){ return (unit ? unit + ' ' : '') + n(v); }
-function pct(x){ return Math.round((x || 0) * 100) + '%'; }
-// The flip rate is quoted to a decimal in the brief; the tile should agree.
-function pct1(x){ return ((x || 0) * 100).toFixed(1) + '%'; }
-const VERDICTS = {
-  ship:              ['v-ship',   'Ship'],
-  ship_with_caveats: ['v-caveat', 'Ship with caveats'],
-  do_not_ship:       ['v-stop',   'Do not ship'],
 };
 
-/* ------------------------------------------------------------------- boot */
-async function boot(){
-  try { DOMAINS = await api('/api/domains'); }
-  catch (e) { return fail('Could not reach the Policy Time Machine API. ' + e.message); }
-  if (!DOMAINS.length) return fail('No domains configured. Add a YAML to include/domains/.');
-  $('#domain').innerHTML = DOMAINS.map(d =>
-    `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join('');
-  $('#domain').onchange = onDomain;
-  $('#version').onchange = render;
-  $('#refresh').onclick = render;
-  $('#q').oninput = e => { STATE.q = e.target.value.toLowerCase(); STATE.shown = PAGE; paintFlips(); };
-  for (const [id, key] of [['#f-all','all'],['#f-loose','loosening'],['#f-tight','tightening'],
-                           ['#f-unsure','unsure'],['#f-prec','precedent']]) {
-    $(id).onclick = () => {
-      STATE.filter = key; STATE.shown = PAGE;
-      document.querySelectorAll('.chip').forEach(c =>
-        c.setAttribute('aria-pressed', String(c === $(id))));
-      paintFlips();
-    };
+let DOMAINS = [];
+const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep","#rules",
+                "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
+                "#calibration","#drafts"];
+
+function fail(message) {
+  $("#tiles").innerHTML = `<div class=error>${esc(message)}</div>`;
+  PANELS.slice(1).forEach(id => { $(id).innerHTML = ""; });
+  $("#cmpsummary").textContent = "";
+  $("#swnote").textContent = "";
+  $("#status").textContent = "Unavailable";
+}
+
+const table = (head, rows, empty) => rows.length
+  ? `<table><thead><tr>${head.map(h => `<th class="${h.num ? "num" : ""}">${h.label}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
+  : `<div class=empty>${esc(empty)}</div>`;
+
+// ---------------------------------------------------------------- tiles
+function renderTiles(summary, costs, gate, calibration) {
+  const dir = d => summary.by_direction.find(x => x.direction === d) || {n: 0, impact: 0};
+  const loose = dir("loosening"), tight = dir("tightening");
+  const unit = summary.impact_unit;
+  const stability = summary.stability;
+  const confirm = summary.flip_confirmation || {measured: 0, stable: 0, unstable: 0};
+  const tiles = [
+    ["Decisions replayed", num(summary.cases), "", `${summary.runs} run${summary.runs === 1 ? "" : "s"}`],
+    ["Outcomes that change", num(summary.flips), summary.flips ? "warn" : "",
+      // The rate and its sampling band, because the count alone invites a
+      // comparison between two runs that differ by nothing but how many cases
+      // they saw. This band is sample size only - the judge's noise floor is a
+      // separate tile and the two do not add.
+      `${pct(summary.flip_rate)} of cases (${pct(summary.flip_rate_lo)}-${pct(summary.flip_rate_hi)}), ` +
+      (summary.deviation_flips
+        ? `${num(summary.policy_driven_flips)} caused by this policy`
+        : "attribution needs a baseline pass")],
+    ["Not this policy's doing", num(summary.deviation_flips), "muted",
+      "recorded outcome broke the old rule too"],
+    ["More generous", `${loose.n} &middot; ${money(unit, loose.impact)}`, "loose", ""],
+    ["More strict", `${tight.n} &middot; ${money(unit, tight.impact)}`, "tight", ""],
+    ["Net cost of the change", money(unit, summary.policy_driven_net_impact),
+      summary.policy_driven_net_impact > 0 ? "loose" : "tight",
+      `${money(unit, summary.net_impact)} including deviations`],
+    ["Precedents on file", num(summary.precedents),
+      summary.precedent_conflicts ? "warn" : "",
+      summary.precedent_conflicts ? `${summary.precedent_conflicts} conflict(s)` : "self-consistent"],
+    ["Judge noise floor", stability ? pct(stability.disagreement_rate) : "not measured",
+      stability && stability.disagreement_rate > 0 ? "warn" : "muted",
+      stability ? `${stability.cases_sampled} cases x ${stability.samples_per_case}` : "run the stability DAG"],
+    ["Judge accuracy", calibration && calibration.measured
+        ? pct(calibration.report.accuracy) : "not measured",
+      calibration && calibration.measured
+        ? (calibration.report.overconfidence > 0.05 ? "warn" : "loose") : "muted",
+      calibration && calibration.measured
+        ? `agreed with ${calibration.report.agreed} of ${calibration.report.judged} human rulings` +
+          (calibration.report.overconfidence > 0
+            ? `, ${pct(calibration.report.overconfidence)} overconfident` : "")
+        : "needs precedents judged by the gate"],
+    ["Judging spend", costs ? `USD ${Number(costs.ledger.cost_usd).toFixed(2)}` : "-", "",
+      costs ? `full replay forecast USD ${Number(costs.forecast.estimated_cost_usd).toFixed(2)}` +
+        (costs.cache && costs.cache.hits
+          ? ` · cache saved USD ${Number(costs.cache.estimated_saved_usd).toFixed(2)}`
+          : "") : ""],
+    ["Flips confirmed", confirm.measured
+        ? `${num(confirm.stable)} / ${num(confirm.measured)}`
+        : "not measured",
+      confirm.unstable ? "warn" : "muted",
+      confirm.measured
+        ? (confirm.unstable
+            ? `${num(confirm.unstable)} would not reproduce - held back from review`
+            : "every re-judged flip reproduced")
+        : "run the stability DAG with target=flips"],
+    ["Gate", gate && gate.precedents
+        ? `${num(gate.violations.length)} reversed`
+        : "no precedents",
+      gate && gate.violations.length ? "tight" : "loose",
+      gate && gate.precedents
+        ? `${num(gate.introduced.length)} introduced by this policy; ` +
+          `${num(gate.in_force_violations.length)} by ${esc(gate.in_force)}, in force` +
+          (gate.unchecked.length ? ` - ${gate.unchecked.length} unchecked` : "")
+        : "adjudicate some flips first"],
+  ];
+  $("#tiles").innerHTML = tiles.map(([k, v, cls, sub]) =>
+    `<div class=tile><div class=k>${k}</div><div class="v ${cls}">${v}</div>${
+      sub ? `<div class=sub>${esc(sub)}</div>` : ""}</div>`).join("");
+}
+
+// ------------------------------------------------- clause attribution
+function renderClauses(rows, unit, summary) {
+  const max = Math.max(1, ...rows.map(r => r.flips));
+  $("#clausenote").textContent = summary.baseline_versions.length
+    ? `baseline: policy ${summary.baseline_versions.join(", ")}`
+    : "no baseline pass recorded - set baseline_version on the replay DAG to attribute changes";
+  $("#clauses").innerHTML = table(
+    [{label: "Responsible for"}, {label: "Share"}, {label: "Flips", num: 1},
+     {label: "More generous", num: 1}, {label: "More strict", num: 1},
+     {label: "Net", num: 1}, {label: "Mean conf.", num: 1}],
+    rows.map(r => {
+      const net = (r.impact_loosening || 0) - (r.impact_tightening || 0);
+      return `<tr${r.policy_driven ? "" : ' class=muted'}>
+        <td>${esc(r.clause)}${r.policy_driven ? "" : " <span class=sub>not caused by this policy</span>"}</td>
+        <td><div class=bar><i style="width:${(r.flips / max * 100).toFixed(1)}%"></i></div></td>
+        <td class=num>${num(r.flips)}</td>
+        <td class="num loose">${num(r.loosening)}</td>
+        <td class="num tight">${num(r.tightening)}</td>
+        <td class=num>${money(unit, net)}</td>
+        <td class=num>${pct(r.mean_confidence)}</td></tr>`;
+    }),
+    "No attributed changes yet - run or backfill the replay DAG.");
+}
+
+// ------------------------------------------------------ blast radius
+function renderSegments(rows, unit, declared) {
+  // Two different reasons for an empty panel, and saying the wrong one sends
+  // someone to edit a YAML file that is already correct.
+  if (!declared.length) {
+    $("#segments").innerHTML = `<div class=empty>This domain declares no <code>segment_fields</code>.</div>`;
+    return;
   }
-  onDomain();
+  if (!rows.length) {
+    $("#segments").innerHTML = `<div class=empty>No replay results for this policy version yet
+      &mdash; run or backfill the replay DAG. This domain segments by
+      <code>${declared.map(esc).join("</code>, <code>")}</code>.</div>`;
+    return;
+  }
+  const fields = [...new Set(rows.map(r => r.field))];
+  $("#segments").innerHTML = `<div class=seg>${fields.map(field => {
+    const group = rows.filter(r => r.field === field);
+    const max = Math.max(1, ...group.map(r => r.flip_rate));
+    return `<div class=group><h3>by ${esc(field)}</h3><table><tbody>${group.map(r =>
+      `<tr><td>${esc(r.value)}</td>
+        <td style="width:34%"><div class=bar><i style="width:${(r.flip_rate / max * 100).toFixed(1)}%"></i></div></td>
+        <td class=num>${num(r.flips)} / ${num(r.cases)}</td>
+        <td class=num>${pct(r.flip_rate)}</td>
+        <td class="num ${r.net_impact >= 0 ? "loose" : "tight"}">${money(unit, r.net_impact)}</td></tr>`
+    ).join("")}</tbody></table></div>`;
+  }).join("")}</div>`;
 }
-function fail(msg){
-  $('#flips').innerHTML = `<div class="card empty">${esc(msg)}</div>`;
+
+// --------------------------------------------------------- comparison
+async function renderCompare() {
+  const domain = $("#domain").value, left = $("#cmpleft").value, right = $("#cmpright").value;
+  if (!left || !right || left === right) {
+    $("#cmpsummary").textContent = "pick two different versions";
+    $("#compare").innerHTML = "";
+    return;
+  }
+  let result;
+  try { result = await api(`/api/compare/${domain}/${left}/${right}`); }
+  catch (e) { $("#compare").innerHTML = `<div class=empty>Comparison unavailable.</div>`; return; }
+  $("#cmpsummary").innerHTML = result.compared
+    ? `<span class=muted>${num(result.compared)} cases judged under both &middot; </span>
+       <strong>${num(result.differ)}</strong> differ <span class=muted>(${num(result.agree)} agree)</span>`
+    : `<span class=muted>no cases judged under both versions yet</span>`;
+  $("#compare").innerHTML = table(
+    [{label: "Case"}, {label: "Recorded"}, {label: esc(left)}, {label: esc(right)},
+     {label: "Clause " + esc(left)}, {label: "Clause " + esc(right)}],
+    result.differences.map(d => `<tr>
+      <td>${esc(d.case_id)}</td>
+      <td><span class=pill>${esc(d.actual_outcome)}</span></td>
+      <td><span class=pill>${esc(d.left_outcome)}</span></td>
+      <td><span class=pill>${esc(d.right_outcome)}</span></td>
+      <td>${esc(d.left_clause || "-")}</td>
+      <td>${esc(d.right_clause || "-")}</td></tr>`),
+    result.compared ? "These two versions agree on every case judged under both."
+                    : "Judge both versions to compare them - the replay DAG's baseline pass does this automatically.");
 }
-function onDomain(){
-  const d = DOMAINS.find(x => x.name === $('#domain').value);
-  $('#version').innerHTML = d.policies.map(v =>
-    `<option${v === 'v2' ? ' selected' : ''}>${esc(v)}</option>`).join('');
-  $('#label').textContent = d.label;
+
+// -------------------------------------------------------------- flips
+function renderFlips(rows, total, unit) {
+  $("#flips").innerHTML = table(
+    [{label: "Case"}, {label: "Decided"}, {label: "Was"}, {label: "Becomes"},
+     {label: "Old policy"}, {label: "Responsible for"}, {label: "Impact", num: 1},
+     {label: "Conf.", num: 1}, {label: "Confirmed"}, {label: "Precedent"}],
+    rows.map((r, i) => `<tr class=row onclick="toggle(${i})">
+      <td>${esc(r.case_id)}${r.reviewed ? " <span class=reviewed>reviewed</span>" : ""}</td>
+      <td>${esc(r.decided_at.slice(0, 10))}</td>
+      <td><span class=pill>${esc(r.actual_outcome)}</span></td>
+      <td><span class=pill>${esc(r.new_outcome)}</span></td>
+      <td>${r.baseline_outcome ? `<span class=pill>${esc(r.baseline_outcome)}</span>` : "<span class=muted>-</span>"}</td>
+      <td class="${r.direction === "loosening" ? "loose" : "tight"}">${esc(r.attribution || r.policy_clause || "-")}</td>
+      <td class=num>${num(r.impact)}</td>
+      <td class=num>${Math.round(r.confidence * 100)}%</td>
+      <td>${r.stability === "stable" ? "<span class=loose>reproduced</span>"
+            : r.stability === "unstable" ? "<span class=unstable>did not reproduce</span>"
+            : "<span class=muted>&mdash;</span>"}</td>
+      <td>${r.precedent
+            ? (r.precedent === r.new_outcome
+                ? "<span class=loose>consistent</span>"
+                : `<span class=bad>VIOLATES &rarr; ${esc(r.precedent)}</span>`)
+            : "&mdash;"}</td></tr>
+      <tr class=detail id=d${i} hidden><td colspan=10>
+        <pre>${esc(Object.entries(r.payload).map(([k, v]) => `${(k + ":").padEnd(20)}${v}`).join("\n"))}</pre>
+        ${Object.keys(r.segments).length ? `<div><strong>Segments at decision time:</strong> ${
+          esc(Object.entries(r.segments).map(([k, v]) => `${k}=${v}`).join(", "))}</div>` : ""}
+        <div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || "-")}</div>
+        <div><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div>
+      </td></tr>`),
+    total ? "No flipped cases match this filter."
+          : "No replay results yet - trigger or backfill the replay DAG.");
+}
+
+function toggle(i) { const el = document.getElementById("d" + i); el.hidden = !el.hidden; }
+window.toggle = toggle;
+
+// --------------------------------------------------------- precedents
+function renderPrecedents(rows) {
+  $("#precedents").innerHTML = table(
+    [{label: "Case"}, {label: "Correct outcome"}, {label: "Ruled by"}, {label: "When"}, {label: "Note"}],
+    rows.map(r => `<tr>
+      <td>${esc(r.case_id)}</td>
+      <td><span class=pill>${esc(r.correct_outcome)}</span></td>
+      <td>${esc(r.ruled_by)}</td>
+      <td>${esc(r.established_at.slice(0, 10))}</td>
+      <td>${esc(r.note || "")}</td></tr>`),
+    "No precedents yet - run the adjudication DAG and answer the human-in-the-loop tasks.");
+}
+
+function renderConflicts(rows) {
+  $("#conflicts").innerHTML = table(
+    [{label: "Materially identical cases"}, {label: "Rulings given"}, {label: "Ruled by"}],
+    rows.map(r => `<tr>
+      <td>${esc(r.signature.map(([k, v]) => `${k}=${v}`).join(", "))}</td>
+      <td class=bad>${esc(Object.entries(r.outcomes).map(([o, ids]) => `${o} (${ids.join(", ")})`).join("  vs  "))}</td>
+      <td>${esc(r.ruled_by.join(", "))}</td></tr>`),
+    "No contradictions among the rulings on file.");
+}
+
+// ----------------------------------------------------- threshold sweep
+function renderDials(dials) {
+  const select = $("#swdial");
+  if (!dials.length) {
+    select.innerHTML = `<option value="">no numeric dials in this version</option>`;
+    select.disabled = $("#swgo").disabled = true;
+    $("#sweep").innerHTML = `<div class=empty>This version's <code>offline_rules</code> compare
+      no fields against numbers, so there is nothing to sweep.</div>`;
+    return;
+  }
+  select.disabled = $("#swgo").disabled = false;
+  // Same field in two clauses is two different dials; label them as such.
+  select.innerHTML = dials.map(d =>
+    `<option value="${esc(d.clause)}|${esc(d.field)}">clause ${esc(d.clause || "-")} &middot; ${
+      esc(d.field)} (now ${esc(d.value)})</option>`).join("");
+  const first = dials[0].value;
+  $("#swvalues").value = [0.5, 0.75, 1, 1.5, 2]
+    .map(m => Math.round(first * m * 100) / 100).join(",");
+  $("#sweep").innerHTML = `<div class=empty>Pick a dial and press Sweep.</div>`;
+}
+
+async function runSweep() {
+  const domain = $("#domain").value, version = $("#version").value;
+  const [clause, field] = ($("#swdial").value || "|").split("|");
+  const values = $("#swvalues").value.trim();
+  if (!field || !values) { $("#swnote").textContent = "pick a dial and some values"; return; }
+  $("#swnote").textContent = "running...";
+  let result;
+  try {
+    result = await api(`/api/sweep/${domain}/${version}?field=${encodeURIComponent(field)}` +
+                       `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}`);
+  } catch (e) {
+    $("#swnote").textContent = "";
+    $("#sweep").innerHTML = `<div class=empty>That sweep could not be run. Values must be
+      comma-separated numbers, and the dial must exist in this version.</div>`;
+    return;
+  }
+  const unit = result.impact_unit;
+  const max = Math.max(1, ...result.points.map(p => p.flips));
+  $("#swnote").innerHTML = `<span class=muted>${num(result.cases)} cases &middot; from the
+    offline rules, not the markdown policy</span>`;
+  $("#sweep").innerHTML =
+    `<div class=spark>${result.points.map(p =>
+      `<i class="${p.is_current ? "cur" : ""}" style="height:${(p.flips / max * 100).toFixed(1)}%"
+        title="${esc(p.value)}: ${p.flips} flips"></i>`).join("")}</div>` +
+    table(
+      [{label: esc(result.field)}, {label: "Flips", num: 1}, {label: "Rate", num: 1},
+       {label: "More generous", num: 1}, {label: "More strict", num: 1},
+       {label: "Net", num: 1}, {label: "Caused by this policy", num: 1}],
+      result.points.map(p => `<tr${p.is_current ? ' class=warn' : ""}>
+        <td>${esc(p.value)}${p.is_current ? " <span class=sub>current</span>" : ""}</td>
+        <td class=num>${num(p.flips)}</td>
+        <td class=num>${pct(p.flip_rate)}</td>
+        <td class="num loose">${num(p.loosening)}</td>
+        <td class="num tight">${num(p.tightening)}</td>
+        <td class=num>${money(unit, p.net_impact)}</td>
+        <td class=num>${num(p.policy_driven_flips)}</td></tr>`),
+      "No points returned.");
+}
+
+// ------------------------------------------------------------ deviations
+function renderDeviations(result, unit) {
+  const note = result.count
+    ? `<p class=hero>${num(result.count)} recorded outcomes worth ${money(unit, result.total_impact)}
+       disagree with policy <strong>${esc(result.in_force)}</strong>, which is in force today.
+       The proposal did not cause these and is not measured by them - but somebody departed
+       from the rulebook they already had.</p>` : "";
+  $("#deviations").innerHTML = note + table(
+    [{label: "Case"}, {label: "Recorded"}, {label: "Both policies say"},
+     {label: "Impact", num: 1}, {label: "Conf.", num: 1}],
+    result.cases.map(r => `<tr>
+      <td>${esc(r.case_id)}</td>
+      <td><span class=pill>${esc(r.actual_outcome)}</span></td>
+      <td><span class=pill>${esc(r.new_outcome)}</span></td>
+      <td class=num>${num(r.impact)}</td>
+      <td class=num>${Math.round(r.confidence * 100)}%</td></tr>`),
+    "Every change here is attributable to the proposal - no reviewer deviations found.");
+}
+
+// ------------------------------------------------------- judge stability
+function renderStability(result, summary) {
+  if (!result.measured) {
+    $("#stability").innerHTML = `<div class=empty>${esc(result.hint ||
+      "Not measured.")} Without it, the flip rate above has no error bar.</div>`;
+    return;
+  }
+  const share = summary.flips && summary.cases
+    ? result.disagreement_rate / (summary.flips / summary.cases) : 0;
+  const cases = Object.entries(result.disagreeing_cases || {});
+  const reading = result.disagreement_rate === 0
+    ? `<p class=hero>The judge reproduced itself on every sampled case. If this ran offline the
+       judge is deterministic, so 0% measures nothing - it means the check is inert until you
+       point it at a real model.</p>`
+    : `<p class=hero>The judge contradicted itself on <strong>${pct(result.disagreement_rate)}</strong>
+       of sampled cases. Against the measured flip rate, up to <strong>${pct(share)}</strong> of the
+       change above could be the model rather than the policy.</p>`;
+  $("#stability").innerHTML = reading + table(
+    [{label: "Case"}, {label: "Verdicts it gave across repeats"}],
+    cases.map(([id, outcomes]) => `<tr>
+      <td>${esc(id)}</td>
+      <td class=bad>${esc(Object.entries(outcomes)
+        .map(([o, n]) => `${o} x${n}`).join("   "))}</td></tr>`),
+    `${result.cases_sampled} cases x ${result.samples_per_case} judgements, no disagreements.`);
+}
+
+// --------------------------------------------------------- policy preflight
+function renderPreflight(result) {
+  if (!result.findings.length) {
+    $("#preflight").innerHTML = `<div class=empty>Policy <strong>${esc(result.version)}</strong>
+      is structurally sound: every rule carries a clause number, no number is used twice,
+      and every cross-reference points at a clause that exists.</div>`;
+    return;
+  }
+  const note = result.blocking
+    ? `<p class=hero><strong class=bad>${num(result.blocking)} blocking</strong> problem(s).
+       A replay would run and its results would not be attributable to any sentence.</p>`
+    : `<p class=hero>Nothing blocking. These are worth reading before the next edit.</p>`;
+  $("#preflight").innerHTML = note + table(
+    [{label: "Severity"}, {label: "Clause"}, {label: "Kind"}, {label: "What is wrong"}],
+    result.findings.map(f => `<tr>
+      <td class="${f.severity === "error" ? "bad" : "warn"}">${esc(f.severity)}</td>
+      <td>${esc(f.clause || "—")}</td>
+      <td class=muted>${esc(f.kind)}</td>
+      <td>${esc(f.detail)}</td></tr>`),
+    "Nothing to report.");
+}
+
+// ------------------------------------------------------------- disparity
+function renderDisparity(result, unit) {
+  if (!result.fields.length) {
+    $("#disparity").innerHTML = `<div class=empty>This domain declares no
+      <code>segment_fields</code>, so there is nothing to compare.</div>`;
+    return;
+  }
+  if (!result.findings.length) {
+    $("#disparity").innerHTML = `<div class=empty>No segment moves more than
+      ${esc(result.max_ratio)}x the rest of its field &mdash; or no segment has the
+      ${esc(result.min_cases)} cases needed to say so. Checked:
+      <code>${result.fields.map(esc).join("</code>, <code>")}</code>.</div>`;
+    return;
+  }
+  const note = `<p class=hero>A concentration is a question, not a verdict &mdash; segments
+    differ in what they contain. These are the ones somebody should be able to explain
+    before the rule ships.</p>`;
+  $("#disparity").innerHTML = note + table(
+    [{label: "Segment"}, {label: "Moves"}, {label: "Rate (95%)"}, {label: "Rest of field"},
+     {label: "Ratio", num: 1}, {label: "Direction"}, {label: "Net", num: 1}],
+    result.findings.map(f => `<tr>
+      <td>${esc(f.field)}=<strong>${esc(f.value)}</strong>${f.significant ? ""
+        : " <span class=unstable>not significant</span>"}</td>
+      <td class=num>${num(f.flips)} / ${num(f.cases)}</td>
+      <td>${pct(f.flip_rate)} <span class=muted>(${pct(f.flip_rate_lo)}-${pct(f.flip_rate_hi)})</span></td>
+      <td class=muted>${num(f.rest_flips)} / ${num(f.rest_cases)} = ${pct(f.rest_flip_rate)}</td>
+      <td class="num ${f.ratio >= result.max_ratio || f.ratio === 0 ? "warn" : ""}">${
+        f.ratio ? f.ratio.toFixed(2) + "x" : "no comparison"}</td>
+      <td class="${f.direction === "loosening" ? "loose" : f.direction === "tightening" ? "tight" : ""}">${esc(f.direction)}</td>
+      <td class=num>${money(unit, f.net_impact)}</td></tr>`),
+    "Nothing to report.");
+}
+
+// ------------------------------------------------- rules vs the judge
+function renderRules(result) {
+  if (!result.compared) {
+    $("#rules").innerHTML = `<div class=empty>${esc(result.hint ||
+      "Not measured.")} Until it is, the threshold curve above is worth exactly what the
+      offline rules are worth, and nobody knows what that is.</div>`;
+    return;
+  }
+  const inert = result.inert
+    ? `<p class="hero muted">These verdicts were produced by the offline judge, which
+       <em>is</em> these rules &mdash; so the agreement below is 100% by construction and
+       measures nothing. Set <code>PTM_OFFLINE=0</code> for a real figure.</p>` : "";
+  $("#rules").innerHTML = inert + `<p class=hero>The rules reached the same outcome as the
+    judge on <strong>${num(result.agreed)} of ${num(result.compared)}</strong> cases
+    (${pct(result.rate)}, ${pct(result.rate_lo)}-${pct(result.rate_hi)}), and cited the same
+    clause on <strong>${num(result.clause_agreed)} of ${num(result.clause_compared)}</strong>
+    &mdash; that second number is the one the sweep rests on.${
+      result.unmatched ? ` ${num(result.unmatched)} case(s) matched no rule at all and took
+      the default outcome; agreement on those is agreement by accident.` : ""}</p>` + table(
+    [{label: "Case"}, {label: "Rules say"}, {label: "Judge says"}, {label: "Rule clause"},
+     {label: "Judge clause"}],
+    (result.disagreements || []).map(d => `<tr>
+      <td>${esc(d.case_id)}</td>
+      <td><span class=pill>${esc(d.rule_outcome)}</span></td>
+      <td><span class=pill>${esc(d.judge_outcome)}</span></td>
+      <td>${esc(d.rule_clause || "—")}</td>
+      <td>${esc(d.judge_clause || "—")}</td></tr>`),
+    "The rules and the judge agree on every case compared.");
+}
+
+// ----------------------------------------------------------- calibration
+function renderCalibration(result) {
+  if (!result.measured) {
+    $("#calibration").innerHTML = `<div class=empty>${esc(result.hint || "Not measured.")}
+      Stability says the judge repeats itself. Only this says whether repeating itself is
+      worth anything.</div>`;
+    return;
+  }
+  const r = result.report;
+  const threshold = r.below_threshold.n && r.above_threshold.n
+    ? (r.threshold_separates
+        ? `<p class=hero>Confidence is doing its job: above the ${pct(r.review_threshold)}
+           review threshold the judge is right ${pct(r.above_threshold.accuracy)} of the time
+           (${r.above_threshold.n} cases), below it ${pct(r.below_threshold.accuracy)}
+           (${r.below_threshold.n}).</p>`
+        : `<p class=hero><strong class=bad>The review threshold does not separate.</strong>
+           Above ${pct(r.review_threshold)} the judge is right ${pct(r.above_threshold.accuracy)}
+           of the time (${r.above_threshold.n} cases); below it, ${pct(r.below_threshold.accuracy)}
+           (${r.below_threshold.n}). A confidence that does not predict correctness is routing
+           the review budget at random.</p>`)
+    : "";
+  $("#calibration").innerHTML =
+    `<p class=hero>The judge agreed with <strong>${num(r.agreed)} of ${num(r.judged)}</strong>
+     human rulings (${pct(r.accuracy)}, ${pct(r.accuracy_lo)}-${pct(r.accuracy_hi)}) while
+     claiming ${pct(r.mean_confidence)} confidence &mdash;
+     ${r.overconfidence > 0 ? "over" : "under"}confident by ${pct(Math.abs(r.overconfidence))}.
+     ${esc(result.caveat)}</p>` + threshold + table(
+      [{label: "Claimed confidence"}, {label: "Cases", num: 1}, {label: "Actually right", num: 1},
+       {label: "Said", num: 1}, {label: "Gap", num: 1}],
+      r.buckets.map(b => `<tr>
+        <td>${pct(b.lo)} &ndash; ${pct(b.hi)}</td>
+        <td class=num>${num(b.n)}</td>
+        <td class=num>${num(b.agreed)} (${pct(b.accuracy)})</td>
+        <td class=num>${pct(b.mean_confidence)}</td>
+        <td class="num ${b.gap > 0.1 ? "bad" : ""}">${b.gap > 0 ? "+" : ""}${pct(b.gap)}</td></tr>`),
+      "No cases scored.") +
+    (r.confusion.length ? table(
+      [{label: "Human ruled"}, {label: "Judge said"}, {label: "Times", num: 1}, {label: "Cases"}],
+      r.confusion.map(c => `<tr>
+        <td><span class=pill>${esc(c.ruled)}</span></td>
+        <td class=bad><span class=pill>${esc(c.judged)}</span></td>
+        <td class=num>${num(c.n)}</td>
+        <td class=muted>${esc((c.case_ids || []).join(", "))}</td></tr>`),
+      "") : "");
+}
+
+// ---------------------------------------------------------------- drafts
+function renderDrafts(rows) {
+  $("#drafts").innerHTML = table(
+    [{label: "Version"}, {label: "From"}, {label: "What it changes"}, {label: "Drafted by"},
+     {label: "Against precedent"}, {label: "When"}],
+    rows.map(r => {
+      const v = r.verification || {};
+      const checked = v.precedents
+        ? `${num((v.violations || []).length)} reversed &middot; fixed ${
+            num((v.fixed || []).length)}, introduced ${num((v.introduced || []).length)}`
+        : "not checked";
+      return `<tr>
+        <td>${esc(r.version)}${r.available ? "" : " <span class=unstable>files gone</span>"}</td>
+        <td class=muted>${esc(r.base_version)}</td>
+        <td>${esc(r.summary || "—")}</td>
+        <td class=muted>${esc(r.drafted_by || "—")}</td>
+        <td class="${(v.introduced || []).length ? "bad" : "loose"}">${checked}</td>
+        <td class=muted>${esc((r.created_at || "").slice(0, 10))}</td></tr>`;
+    }),
+    "No drafts yet — run the propose DAG to have the next version written from the evidence.");
+}
+
+// --------------------------------------------------------------- boot
+async function render() {
+  const domain = $("#domain").value, version = $("#version").value;
+  $("#status").textContent = "Loading...";
+  let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
+      deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
+      preflightDetail, ruleDetail, draftRows;
+  try {
+    [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
+     deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
+     preflightDetail, ruleDetail, draftRows] =
+      await Promise.all([
+        api(`/api/summary/${domain}/${version}`),
+        api(`/api/flips/${domain}/${version}`),
+        api(`/api/precedents/${domain}`),
+        api(`/api/clauses/${domain}/${version}`),
+        api(`/api/segments/${domain}/${version}`),
+        api(`/api/conflicts/${domain}`),
+        api(`/api/cost/${domain}/${version}`),
+        api(`/api/deviations/${domain}/${version}`),
+        api(`/api/precedent-check/${domain}/${version}`),
+        api(`/api/stability/${domain}/${version}`),
+        api(`/api/thresholds/${domain}/${version}`),
+        api(`/api/calibration/${domain}/${version}`),
+        api(`/api/disparity/${domain}/${version}`),
+        api(`/api/preflight/${domain}/${version}`),
+        api(`/api/rules/${domain}/${version}`),
+        api(`/api/drafts/${domain}`),
+      ]);
+  } catch (e) {
+    fail("Could not load this replay. Please refresh or check the Airflow logs.");
+    return;
+  }
+  const query = $("#search").value.trim().toLowerCase();
+  const shown = query ? flipRows.filter(r => r.case_id.toLowerCase().includes(query)) : flipRows;
+  $("#status").textContent =
+    `${summary.runs} run${summary.runs === 1 ? "" : "s"} - ${shown.length}${
+      shown.length === flipRows.length ? " flips" : " shown"}`;
+
+  const draftnote = $("#draftnote");
+  draftnote.hidden = !summary.is_draft;
+  if (summary.is_draft) {
+    draftnote.innerHTML = `<strong class=warn>${esc(version)} is a drafted amendment</strong>,
+      written by the proposal DAG from the evidence below and approved by nobody. Everything
+      on this page measures it exactly as it would measure a policy somebody wrote.`;
+  }
+  renderTiles(summary, costs, gate, calibrationDetail);
+  renderPreflight(preflightDetail);
+  renderClauses(clauseRows, summary.impact_unit, summary);
+  renderSegments(segmentRows, summary.impact_unit,
+                 (DOMAINS.find(d => d.name === domain) || {}).segment_fields || []);
+  renderDisparity(disparityDetail, summary.impact_unit);
+  renderDials(dials);
+  renderRules(ruleDetail);
+  renderDeviations(deviationRows, summary.impact_unit);
+  renderFlips(shown, flipRows.length, summary.impact_unit);
+  renderPrecedents(precedentRows);
+  renderConflicts(conflictRows);
+  renderStability(stabilityDetail, summary);
+  renderCalibration(calibrationDetail);
+  renderDrafts(draftRows);
+  $("#dlcsv").href = `/ptm/api/export/${domain}/${version}.csv`;
+  $("#dljson").href = `/ptm/api/export/${domain}/${version}.json`;
+  renderCompare();
+}
+
+function onDomainChange() {
+  const d = DOMAINS.find(x => x.name === $("#domain").value);
+  // Drafts are labelled in every list they appear in. A version a model wrote
+  // must never be indistinguishable from one a person approved.
+  const drafts = d.draft_versions || [];
+  const options = sel => d.policies.map(v =>
+    `<option value="${esc(v)}"${v === sel ? " selected" : ""}>${esc(v)}${
+      drafts.includes(v) ? " (draft)" : ""}</option>`).join("");
+  const candidate = d.policies.includes("v2") ? "v2" : d.policies[d.policies.length - 1];
+  $("#version").innerHTML = options(candidate);
+  $("#cmpleft").innerHTML = options(d.in_force);
+  $("#cmpright").innerHTML = options(candidate);
+  $("#label").textContent = d.label;
   render();
 }
 
-/* ----------------------------------------------------------------- render */
-async function render(){
-  const dom = $('#domain').value, ver = $('#version').value;
-  const d = DOMAINS.find(x => x.name === dom);
-  let s, f, p, tl, ins, cov, coh;
-  try {
-    [s, f, p, tl, ins, cov, coh] = await Promise.all([
-      api(`/api/summary/${dom}/${ver}`), api(`/api/flips/${dom}/${ver}`),
-      api(`/api/precedents/${dom}`),    api(`/api/timeline/${dom}/${ver}`),
-      api(`/api/insights/${dom}/${ver}`), api(`/api/coverage/${dom}/${ver}`),
-      api(`/api/cohorts/${dom}/${ver}`),
-    ]);
-  } catch (e) { return fail('Failed to load ' + dom + '/' + ver + '. ' + e.message); }
-
-  STATE.flips = f; STATE.unit = s.impact_unit; STATE.threshold = s.confidence_threshold;
-  STATE.shown = PAGE;
-  paintBrief(ins.brief, s);
-  paintTiles(s);
-  paintChart(tl, s.impact_unit);
-  paintBlindSpots(cov, coh);
-  paintThemes(ins.themes);
-  paintAmendment(ins.amendment, ins.amendment_verification);
-  paintCompare(d, dom, ver);
-  paintFlips();
-  paintPrecedents(p);
-  $('#runs-note').textContent = s.runs
-    ? `${n(s.runs)} replay run${s.runs === 1 ? '' : 's'} on record`
-    : 'No replay runs yet';
-}
-
-/* ------------------------------------------------------------------ brief */
-function paintBrief(b, s){
-  $('#brief-s').hidden = !b;
-  if (!b) return;
-  const [cls, text] = VERDICTS[b.verdict] || ['v-caveat', b.verdict || 'unrated'];
-  const list = (items, title) => !items || !items.length ? '' :
-    `<div><h3>${esc(title)}</h3><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`;
-  $('#brief').innerHTML = `
-    <div class=top>
-      <div class=headline>${esc(b.headline || '')}</div>
-      <span class="verdict ${cls}">${esc(text)}</span>
-    </div>
-    <p>${esc(b.summary || '')}</p>
-    <div class=cols>${list(b.risks, 'Risks')}${list(b.watch_items, 'Watch after shipping')}</div>
-    ${(b.blind_spots || []).length ? `<div class=cols style="grid-template-columns:1fr">
-      ${list(b.blind_spots, 'Blind spots — what the replay could not test')}</div>` : ''}`;
-  $('#brief-note').textContent = source(b);
-}
-function source(x){
-  if (!x) return '';
-  const who = x.generated_by === 'offline'
-    ? 'Generated offline (deterministic stand-in, no model called)'
-    : `Generated by ${x.generated_by}`;
-  return x.created_at ? `${who} · ${x.created_at.slice(0, 16).replace('T', ' ')}` : who;
-}
-
-/* ------------------------------------------------------------------ tiles */
-function paintTiles(s){
-  const u = s.impact_unit;
-  const dir = k => s.by_direction.find(x => x.direction === k) || {n:0, impact:0};
-  const loose = dir('loosening'), tight = dir('tightening');
-  const rate = s.cases ? s.flips / s.cases : 0;
-  const tiles = [
-    ['Decisions replayed', n(s.cases), '', ''],
-    ['Outcomes that change', n(s.flips), s.flips ? 'warn' : '', s.cases ? pct1(rate) + ' of the population' : ''],
-    ['More generous', n(loose.n), 'loose', money(u, loose.impact)],
-    ['More strict', n(tight.n), 'tight', money(u, tight.impact)],
-    ['Net effect', money(u, Math.abs(s.net_impact)), s.net_impact > 0 ? 'tight' : 'loose',
-      s.net_impact > 0 ? 'additional cost' : s.net_impact < 0 ? 'saving' : 'no change'],
-    ['Ambiguous', n(s.low_confidence), s.low_confidence ? 'warn' : '',
-      `judged below ${pct(s.confidence_threshold)} confidence`],
-    ['Precedents on file', n(s.precedents), '', 'binding on future changes'],
-  ];
-  $('#tiles').innerHTML = tiles.map(([k, v, c, sub]) =>
-    `<div class=tile><div class=k>${esc(k)}</div><div class="v ${c}">${esc(v)}</div>
-     ${sub ? `<div class=s>${esc(sub)}</div>` : ''}</div>`).join('');
-}
-
-/* ------------------------------------------------------------------ chart */
-function paintChart(tl, unit){
-  $('#chart-s').hidden = tl.length < 2;
-  if (tl.length < 2) return;
-  const W = 1000, H = 240, PL = 58, PR = 12, PT = 14, PB = 30;
-  const iw = W - PL - PR, ih = H - PT - PB;
-  const peak = Math.max(1, ...tl.map(r => Math.max(r.loosening || 0, r.tightening || 0)));
-  const bw = Math.max(2, (iw / tl.length) * 0.62);
-  // Loosening above the baseline, tightening below: the shape of the change
-  // is the thing to read, so it gets a diverging axis rather than a stack.
-  const mid = PT + ih / 2, half = ih / 2 - 6;
-  const x = i => PL + (iw / tl.length) * (i + 0.5);
-  const h = v => (Math.abs(v) / peak) * half;
-
-  const bars = tl.map((r, i) => {
-    const lh = h(r.loosening || 0), th = h(r.tightening || 0);
-    const t = `${esc(r.month)}: ${r.flips} flip(s), +${money(unit, r.loosening)} generous, -${money(unit, r.tightening)} strict`;
-    return `<g><title>${t}</title>
-      <rect x="${(x(i) - bw/2).toFixed(1)}" y="${(mid - lh).toFixed(1)}" width="${bw.toFixed(1)}"
-            height="${lh.toFixed(1)}" rx="1.5" fill="var(--loose)" opacity=".85"/>
-      <rect x="${(x(i) - bw/2).toFixed(1)}" y="${mid.toFixed(1)}" width="${bw.toFixed(1)}"
-            height="${th.toFixed(1)}" rx="1.5" fill="var(--tight)" opacity=".85"/></g>`;
-  }).join('');
-
-  // Label roughly six months so the axis stays legible at any width.
-  const every = Math.max(1, Math.round(tl.length / 6));
-  const labels = tl.map((r, i) => i % every ? '' :
-    `<text class=axis x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor=middle>${esc(r.month)}</text>`).join('');
-
-  $('#chart').innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role=img
-         aria-label="Monthly impact of the policy change across replayed history">
-      <line class=gl x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + ih}"/>
-      <line class=gl x1="${PL}" y1="${mid}" x2="${W - PR}" y2="${mid}"/>
-      <text class=axis x="${PL - 8}" y="${PT + 10}" text-anchor=end>${esc(money(unit, peak))}</text>
-      <text class=axis x="${PL - 8}" y="${mid + 4}" text-anchor=end>0</text>
-      <text class=axis x="${PL - 8}" y="${PT + ih}" text-anchor=end>${esc(money(unit, peak))}</text>
-      ${bars}${labels}
-    </svg>
-    <div class=legend>
-      <span><i style="background:var(--loose)"></i>More generous than history</span>
-      <span><i style="background:var(--tight)"></i>More strict than history</span>
-      <span>Peak month ${esc(money(unit, peak))}</span>
-    </div>`;
-}
-
-
-/* ----------------------------------------------------- coverage & cohorts */
-function paintBlindSpots(cov, coh){
-  const panels = [];
-
-  if (cov && cov.declared) {
-    const peak = Math.max(1, ...cov.clauses.map(c => c.cases));
-    const rows = cov.clauses.map(c => `
-      <div class="meter ${c.exercised ? '' : 'off'}">
-        <span class=lab>${esc(c.clause)}</span>
-        <span class=track><span class=fill style="width:${(c.cases / peak * 100).toFixed(1)}%"></span></span>
-        <span class=val>${c.exercised ? n(c.cases) + ' cases' : 'never'}</span>
-      </div>`).join('');
-    const never = cov.unexercised || [];
-    panels.push(`<div class=panel>
-      <h3>Rules history exercised
-        <span class=r>${cov.exercised} of ${cov.declared}${
-          never.length ? `<span class=tag>${never.length} untested</span>`
-                       : '<span class="tag ok">all tested</span>'}</span></h3>
-      ${rows}
-      <div class=hint>${never.length
-        ? `<strong>Clause ${never.map(esc).join(', ')}</strong> decided no case in the whole
-           replay. Shipping ${never.length > 1 ? 'them' : 'it'} is a guess, not a measurement.`
-        : 'Every clause decided at least one real case.'}
-        ${cov.decided_by_no_clause
-          ? `<br><strong>${n(cov.decided_by_no_clause)}</strong> case${cov.decided_by_no_clause===1?'':'s'}
-             (${pct1(cov.no_clause_share)}) reached no clause at all and took the default outcome.`
-          : ''}
-      </div></div>`);
-  }
-
-  for (const b of (coh && coh.breakdowns) || []) {
-    if (!b.cohorts.length) continue;
-    const peak = Math.max(...b.cohorts.map(c => c.flip_rate), 0.0001);
-    const rows = b.cohorts.map(c => {
-      const hot = c.cases >= 20 && c.disproportion >= 1.5;
-      return `<div class="meter">
-        <span class=lab title="${esc(c.cohort)}">${esc(c.cohort)}</span>
-        <span class=track><span class=fill style="width:${(c.flip_rate / peak * 100).toFixed(1)}%
-          ${hot ? ';background:var(--tight)' : ''}"></span></span>
-        <span class=val>${pct1(c.flip_rate)}${hot ? ` <span class=tag>${c.disproportion}x</span>` : ''}</span>
-      </div>`;
-    }).join('');
-    const worst = b.cohorts.filter(c => c.cases >= 20 && c.disproportion >= 1.5)
-                           .sort((x, y) => y.disproportion - x.disproportion)[0];
-    panels.push(`<div class=panel>
-      <h3>Who bears it, by ${esc(b.field)}
-        <span class=r>population ${pct1(b.baseline_flip_rate)}</span></h3>
-      ${rows}
-      <div class=hint>${worst
-        ? `<strong>${esc(b.field)} = ${esc(worst.cohort)}</strong> absorbs
-           ${pct1(worst.flip_rate)} of its ${n(worst.cases)} cases changing —
-           ${worst.disproportion}x the population rate, net
-           ${esc(money(b.impact_unit, worst.net_impact))}.`
-        : 'No group is disproportionately affected, on a 20-case floor.'}</div></div>`);
-  }
-
-  $('#blind-s').hidden = !panels.length;
-  $('#blind').innerHTML = panels.join('');
-}
-
-/* ----------------------------------------------------------------- themes */
-function paintThemes(t){
-  const themes = (t && t.themes) || [];
-  $('#themes-s').hidden = !themes.length;
-  if (!themes.length) return;
-  $('#themes').innerHTML = themes.map(x => {
-    const c = x.direction === 'loosening' ? 'loose' : x.direction === 'tightening' ? 'tight' : '';
-    return `<div class=theme>
-      <div class=th><span class=nm>${esc(x.name)}</span>
-        <span class=ct>${n(x.case_count)} case${x.case_count === 1 ? '' : 's'}</span></div>
-      <div><span class="pill ${c === 'loose' ? 'g' : c === 'tight' ? 'r' : ''}">${esc(x.direction)}</span>
-        ${x.clause ? `<span class=pill>clause ${esc(x.clause)}</span>` : ''}</div>
-      <p>${esc(x.explanation)}</p>
-      ${(x.example_case_ids || []).length
-        ? `<div class=ex>${x.example_case_ids.map(esc).join('  ')}</div>` : ''}
-    </div>`;
-  }).join('')
-    + (t.unexplained ? `<div class=theme><div class=th><span class=nm>Long tail</span>
-        <span class=ct>${n(t.unexplained)} cases</span></div>
-        <p>Changed without fitting a named pattern.</p></div>` : '');
-  $('#themes-note').textContent = source(t);
-}
-
-/* -------------------------------------------------------------- amendment */
-function paintAmendment(a, v){
-  $('#amend-s').hidden = !a;
-  if (!a) return;
-  const edits = (a.edits || []).map(e => `
-    <div style="margin-top:14px;padding-top:13px;border-top:1px solid var(--line-2)">
-      <h3 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)">
-        Clause ${esc(e.clause)}</h3>
-      ${e.current_text ? `<div class=kv style="margin-top:7px"><strong>Currently:</strong>
-        <span style="color:var(--dim)">${esc(e.current_text)}</span></div>` : ''}
-      <div class=kv style="margin-top:7px"><strong>Proposed:</strong> ${esc(e.proposed_text)}</div>
-      <div class=kv style="color:var(--dim);margin-top:5px">${esc(e.reason)}</div>
-    </div>`).join('');
-  // An untested amendment is an opinion; say which one this is.
-  const tested = v
-    ? `<span class="verdict ${v.clears_gate ? 'v-ship' : 'v-stop'}">${
-         v.clears_gate ? 'Verified' : 'Fix fails'}</span>`
-    : `<span class="verdict v-caveat">Untested</span>`;
-
-  $('#amend').innerHTML = `
-    <div class=top>
-      <div class=headline>${a.feasible
-        ? 'A narrower version of this policy clears the gate'
-        : 'No single policy can satisfy these precedents'}</div>
-      ${tested}
-    </div>
-    <p>${esc(a.rationale || '')}</p>
-    ${v ? `<div class=hint style="margin-top:14px;padding:11px 13px;border:1px solid var(--line);
-             border-radius:8px;background:var(--panel-2)">
-        <strong>${esc(v.candidate || 'candidate')}</strong> — ${esc(v.summary || '')}
-        <div style="margin-top:7px;color:var(--faint);font-size:11.5px">
-          ${n(v.precedents_checked)} precedent(s) re-judged ·
-          ${n(v.collateral_changed)} of ${n(v.collateral_checked)} other settled decisions moved ·
-          ${n((v.intended_changes || []).length)} case(s) the fix was written for
-        </div></div>`
-      : `<div class=hint style="margin-top:14px">This amendment has not been tested.
-           Run <code>amend_${esc($('#domain').value)}</code> to judge it against every precedent
-           and measure what it disturbs.</div>`}
-    ${edits}
-    ${a.residual_risk ? `<div class=by><strong style="color:var(--fg)">Residual risk:</strong>
-      ${esc(a.residual_risk)}</div>` : ''}
-    <div class=by>${esc(source(a))}${v ? ` · verified ${esc(source(v))}` : ''}</div>`;
-}
-
-/* ------------------------------------------------------------- comparison */
-async function paintCompare(d, dom, ver){
-  const others = (d.policies || []).filter(v => v !== ver);
-  $('#cmp-s').hidden = !others.length;
-  if (!others.length) return;
-
-  const sel = $('#against');
-  // Default to the policy currently in force, which is the comparison that
-  // actually matters: what does the proposal change relative to today?
-  const keep = others.includes(sel.value) ? sel.value
-             : (others.includes('v1') ? 'v1' : others[0]);
-  sel.innerHTML = others.map(v =>
-    `<option${v === keep ? ' selected' : ''}>${esc(v)}</option>`).join('');
-  sel.onchange = () => paintCompare(d, dom, ver);
-
-  let c;
-  try { c = await api(`/api/compare/${dom}/${sel.value}/${ver}`); }
-  catch (e) { $('#cmp').innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
-
-  const side = (x, isProposal) => {
-    const row = (k, v, cls) => `<dt>${esc(k)}</dt><dd class="${cls || ''}">${v}</dd>`;
-    return `<div>
-      <div class=vh>${esc(x.version)}
-        ${isProposal ? '<span class="tag calc">proposed</span>'
-                     : '<span class=tag style="background:var(--panel-2);color:var(--dim)">baseline</span>'}</div>
-      <dl>
-        ${row('Decisions replayed', n(x.cases_replayed))}
-        ${row('Differ from history', `${n(x.flips)} · ${pct1(x.flip_rate)}`)}
-        ${row('Net effect', esc(money(c.impact_unit, x.net_impact)),
-              x.net_impact > 0 ? 'tight' : 'loose')}
-        ${row('Reverses precedent', x.precedents_checked
-              ? `${n(x.violations)} of ${n(x.precedents_checked)}`
-              : '<span style="color:var(--faint)">none on file</span>',
-              x.violations ? 'tight' : 'loose')}
-        ${row('Clauses exercised', `${x.clauses_exercised} of ${x.clauses_declared}`,
-              x.clauses_exercised < x.clauses_declared ? 'warn' : '')}
-      </dl></div>`;
-  };
-
-  $('#cmp').innerHTML = `
-    <div class=cmp>${side(c.left, false)}${side(c.right, true)}</div>
-    <div class="panel" style="margin-top:11px">
-      <div><strong>${esc(c.verdict)}</strong></div>
-      <div class=hint style="border:0;margin:7px 0 0;padding:0">
-        The two decide <strong>${n(c.disagreements)}</strong> of
-        ${n(c.compared_cases)} shared cases differently.
-        ${(c.left.unexercised || []).length || (c.right.unexercised || []).length
-          ? `Untested clauses — ${esc(c.left.version)}:
-             ${(c.left.unexercised || []).map(esc).join(', ') || 'none'};
-             ${esc(c.right.version)}:
-             ${(c.right.unexercised || []).map(esc).join(', ') || 'none'}.`
-          : ''}
-        ${c.caveat ? `<div style="margin-top:8px;color:var(--faint)">${esc(c.caveat)}</div>` : ''}
-      </div></div>`;
-  $('#cmp-note').textContent = `${sel.value} vs ${ver}, same history and same precedents`;
-}
-
-/* ------------------------------------------------------------------ flips */
-const COLS = [
-  ['case_id',        'Case',      0],
-  ['decided_at',     'Decided',   1],
-  ['actual_outcome', 'Was → becomes', 0],
-  ['direction',      'Direction', 1],
-  ['impact',         'Impact',    1],
-  ['confidence',     'Conf.',     1],
-  ['precedent',      'Precedent', 0],
-];
-function visible(){
-  const {filter, q, threshold} = STATE;
-  return STATE.flips.filter(r => {
-    if (filter === 'loosening' && r.direction !== 'loosening') return false;
-    if (filter === 'tightening' && r.direction !== 'tightening') return false;
-    if (filter === 'unsure' && !(r.confidence < threshold)) return false;
-    if (filter === 'precedent' && !r.precedent) return false;
-    if (!q) return true;
-    return [r.case_id, r.actual_outcome, r.new_outcome, r.rationale, r.policy_clause]
-      .join(' ').toLowerCase().includes(q);
-  }).sort((a, b) => {
-    const {key, dir} = STATE.sort, x = a[key], y = b[key];
-    if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir;
-    return String(x ?? '').localeCompare(String(y ?? '')) * dir;
-  });
-}
-function paintFlips(){
-  const rows = visible(), total = STATE.flips.length, unit = STATE.unit;
-  $('#filters').hidden = !total;
-  if (!total) {
-    $('#flips').innerHTML = `<div class="card empty">No replay results for this policy yet.<br>
-      Trigger or backfill the <code>replay_${esc($('#domain').value)}</code> DAG.</div>`;
+async function boot() {
+  try { DOMAINS = await api("/api/domains"); }
+  catch (e) {
+    fail("Could not load Policy Time Machine data. Start the Airflow demo, then refresh.");
     return;
   }
-  $('#count').textContent = rows.length === total
-    ? `${n(total)} flips` : `${n(rows.length)} of ${n(total)} flips`;
-  if (!rows.length) {
-    $('#flips').innerHTML = '<div class="card empty">Nothing matches that filter.</div>';
-    return;
-  }
-  const peak = Math.max(1, ...rows.map(r => r.impact || 0));
-  const page = rows.slice(0, STATE.shown);
-  const head = COLS.map(([k, lbl, right]) => {
-    const on = STATE.sort.key === k;
-    return `<th class="sortable${right ? ' r' : ''}" data-k="${k}"
-      ${on ? `aria-sort="${STATE.sort.dir < 0 ? 'descending' : 'ascending'}"` : ''}
-      ${right ? 'style="text-align:right"' : ''}>${esc(lbl)}<span class=arrow>${
-      on ? (STATE.sort.dir < 0 ? '↓' : '↑') : '↕'}</span></th>`;
-  }).join('');
-
-  $('#flips').innerHTML = `<div class=scroll><table><thead><tr>${head}</tr></thead><tbody>
-    ${page.map((r, i) => {
-      const lo = r.direction === 'loosening';
-      const w = Math.round((r.impact || 0) / peak * 34);
-      return `<tr class=row tabindex=0 data-i="${i}">
-        <td class=cid data-l="Case">${esc(r.case_id)}</td>
-        <td class=num data-l="Decided">${esc(String(r.decided_at).slice(0, 10))}</td>
-        <td data-l="Change"><span class=pill>${esc(r.actual_outcome)}</span
-          ><span class=arrow-c>→</span><span class="pill ${lo ? 'g' : 'r'}">${esc(r.new_outcome)}</span></td>
-        <td class="${lo ? 'loose' : 'tight'}" data-l="Direction">${esc(r.direction)}</td>
-        <td class=r data-l="Impact">${esc(money('', r.impact))}<span class=bar
-          style="width:${w}px;background:var(--${lo ? 'loose' : 'tight'})"></span></td>
-        <td class=r data-l="Confidence"><span class="${
-          r.confidence < STATE.threshold ? 'warn' : ''}">${pct(r.confidence)}</span></td>
-        <td data-l="Precedent">${r.precedent
-          ? (r.precedent === r.new_outcome
-              ? '<span class=loose>consistent</span>'
-              : `<span class=bad>reverses → ${esc(r.precedent)}</span>`)
-          : '<span style="color:var(--faint)">—</span>'}</td>
-      </tr>
-      <tr class=detail hidden><td colspan=7>
-        <pre>${esc(caseText(r.payload))}</pre>
-        <div class=kv><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || '—')}</div>
-        <div class=kv><strong>Under the proposed policy${
-          r.policy_clause ? ` (clause ${esc(r.policy_clause)})` : ''}:</strong> ${esc(r.rationale)}</div>
-      </td></tr>`;
-    }).join('')}
-  </tbody></table></div>
-  ${rows.length > page.length
-    ? `<div style="text-align:center;margin-top:11px">
-         <button id=more>Show ${n(Math.min(PAGE, rows.length - page.length))} more
-           · ${n(rows.length - page.length)} remaining</button></div>`
-    : ''}`;
-
-  const more = $('#more');
-  if (more) more.onclick = () => { STATE.shown += PAGE; paintFlips(); };
-
-  $('#flips').querySelectorAll('th.sortable').forEach(th => {
-    th.onclick = () => {
-      const k = th.dataset.k;
-      STATE.sort = {key: k, dir: STATE.sort.key === k ? -STATE.sort.dir
-        : (['impact', 'confidence', 'decided_at'].includes(k) ? -1 : 1)};
-      paintFlips();  // STATE.shown is deliberately kept: re-sorting is not a reset
-    };
-  });
-  $('#flips').querySelectorAll('tr.row').forEach(tr => {
-    const open = () => { const d = tr.nextElementSibling; d.hidden = !d.hidden; };
-    tr.onclick = open;
-    tr.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
-  });
+  if (!DOMAINS.length) { fail("No policy domains are configured yet."); return; }
+  $("#domain").innerHTML = DOMAINS.map(d =>
+    `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join("");
+  $("#domain").onchange = onDomainChange;
+  $("#version").onchange = render;
+  $("#search").oninput = render;
+  $("#cmpleft").onchange = $("#cmpright").onchange = renderCompare;
+  $("#swgo").onclick = runSweep;
+  $("#swvalues").onkeydown = e => { if (e.key === "Enter") runSweep(); };
+  onDomainChange();
 }
-function caseText(p){
-  const w = Math.max(...Object.keys(p || {}).map(k => k.length), 0) + 2;
-  return Object.entries(p || {}).map(([k, v]) => (k + ':').padEnd(w) + v).join('\n');
-}
-
-/* ------------------------------------------------------------- precedents */
-function paintPrecedents(p){
-  if (!p.length) {
-    $('#precedents').innerHTML = `<div class="card empty">No precedents yet.<br>
-      Run <code>adjudicate_${esc($('#domain').value)}</code> and answer the human-in-the-loop tasks.</div>`;
-    return;
-  }
-  $('#precedents').innerHTML = `<div class=scroll><table class=narrow><thead><tr>
-    <th>Case</th><th>Correct outcome</th><th>Ruled by</th><th>When</th><th>Why</th>
-    </tr></thead><tbody>${p.map(r => `<tr>
-      <td class=cid data-l="Case">${esc(r.case_id)}</td>
-      <td data-l="Outcome"><span class=pill>${esc(r.correct_outcome)}</span></td>
-      <td data-l="Ruled by">${esc(r.ruled_by)}</td>
-      <td class=num data-l="When">${esc(String(r.established_at).slice(0, 10))}</td>
-      <td data-l="Why" style="color:var(--dim)">${esc(r.note || '—')}</td>
-    </tr>`).join('')}</tbody></table></div>`;
-}
-
 boot();
 </script></body></html>

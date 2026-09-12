@@ -3,3 +3,11 @@ apache-airflow-providers-standard>=1.10.0
 apache-airflow-providers-common-ai>=0.8.0
 pydantic>=2.7
 PyYAML>=6.0
+
+# Airflow 3.1.0's logging setup imports Styles from structlog.dev, which
+# structlog dropped in 25.5.0 - so a resolve from scratch installs 25.5+ and
+# `import airflow` raises ImportError before any DAG is read. The published
+# base image ships a working pin, which is why the in-container check passed
+# and only a clean install exposed this. Airflow's own constraints file for
+# 3.1.0 pins 25.4.0.
+structlog<25.5

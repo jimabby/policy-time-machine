@@ -38,14 +38,29 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
             (domain.pit_field,),
         )
     }
-    subject = {r["case_id"]: r["subject_id"] for r in query("SELECT case_id, subject_id FROM cases WHERE domain = ?", (domain_name,))}
-    for c in cases:
-        c.payload[domain.pit_field] = latest[subject[c.case_id]]
-    naive = {c.case_id: offline_verdict(c, domain, version) for c in cases}
+    subject = {r["case_id"]: r["subject_id"]
+               for r in query("SELECT case_id, subject_id FROM cases WHERE domain = ?",
+                              (domain_name,))}
+    # Count the point-in-time flips before the payloads are overwritten below.
+    pit_flips = len(flips(cases, correct, domain))
 
-    wrong = [k for k in correct if correct[k].outcome != naive[k].outcome]
-    print(f"point-in-time replay : {len(flips(cases, correct, domain))} flips")
-    print(f"naive replay         : wrong on {len(wrong)} / {len(cases)} cases")
+    # A subject with no recorded fact has nothing to join on, naively or
+    # otherwise. Skipping is right and silence is not: the comparison is only
+    # meaningful over the cases both replays actually saw.
+    ungrounded = [c.case_id for c in cases
+                  if subject.get(c.case_id) not in latest]
+    comparable = [c for c in cases if c.case_id not in set(ungrounded)]
+    for c in comparable:
+        c.payload[domain.pit_field] = latest[subject[c.case_id]]
+    naive = {c.case_id: offline_verdict(c, domain, version) for c in comparable}
+
+    wrong = [c.case_id for c in comparable
+             if correct[c.case_id].outcome != naive[c.case_id].outcome]
+    print(f"point-in-time replay : {pit_flips} flips")
+    print(f"naive replay         : wrong on {len(wrong)} / {len(comparable)} cases")
+    if ungrounded:
+        print(f"  ({len(ungrounded)} case(s) skipped: no {domain.pit_field!r} fact on file "
+              f"for the subject, so there is nothing for a naive join to get wrong)")
     for k in wrong[:5]:
         print(f"  {k}: correct '{correct[k].outcome}', naive '{naive[k].outcome}'")
     if len(wrong) > 5:
