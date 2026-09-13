@@ -35,7 +35,7 @@ from __future__ import annotations
 import sys
 
 from . import stats
-from .config import DomainConfig, load_domain
+from .config import DomainConfig, clauses_in, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
 from .lint import payload_fields
 from .safe_eval import check_expression
@@ -108,13 +108,26 @@ def as_offline_rules(ruleset: RuleSet) -> list[dict]:
     ]
 
 
-def validate(rules: list[dict], domain: DomainConfig, version: str) -> list[str]:
+def validate(rules: list[dict], domain: DomainConfig, version: str,
+             policy_text: str | None = None) -> list[str]:
     """Reject a rule set before it is allowed anywhere near a replay.
 
     The same checks :mod:`ptm.lint` runs over hand-written rules, applied to
     generated ones at the moment they arrive. A generated rule reading a field
     that does not exist is exactly the failure the lint was written for, and a
     model is a far more prolific source of it than a person editing YAML.
+
+    ``policy_text`` overrides what is on disk, and matters for exactly the same
+    reason it does on :func:`build_prompt`: the proposer asks for rules covering
+    a draft it has written but not yet published, so there is no version to
+    resolve. Validating them against the *base* version instead - which is what
+    this did - rejects every rule implementing a clause the draft introduces,
+    and since a rule set is ordered and first-match-wins, one rejection drops
+    the whole set. The draft then ships with no offline rules at all, and an
+    offline replay of it returns the most generous outcome for every case:
+    a policy nobody wrote, looking wildly permissive. Adding a clause is the
+    normal case for a drafter - :func:`ptm.proposal.apply_to_markdown` appends
+    one under its own heading on purpose - so this had to read the draft.
 
     This is a report, not the containment. :mod:`ptm.safe_eval` computes a rule
     by walking it rather than by calling ``eval``, so an expression that gets
@@ -123,7 +136,8 @@ def validate(rules: list[dict], domain: DomainConfig, version: str) -> list[str]
     a gap, and a gap in this one used to mean handing over the interpreter.
     """
     known = payload_fields(domain)
-    declared = set(domain.clauses(version))
+    declared = set(clauses_in(policy_text) if policy_text is not None
+                   else domain.clauses(version))
     problems: list[str] = []
     for i, rule in enumerate(rules):
         at = f"rule[{i}]"

@@ -505,7 +505,13 @@ def materialise(domain_name: str, draft_version: str, markdown: str,
 
 
 def discard(domain_name: str, draft_version: str) -> list[str]:
-    """Delete a draft's files. Drafts are cheap to make and must be cheap to drop."""
+    """Delete a draft's files. Drafts are cheap to make and must be cheap to drop.
+
+    The ``policy_drafts`` row is deliberately left behind. It is the provenance -
+    what was proposed, from what evidence, and what checking it found - and a
+    draft somebody looked at and rejected is a more useful record than no record
+    at all. :func:`ptm.report.drafts` reports such a row as unavailable.
+    """
     folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
     removed = []
     for path in (folder / f"{draft_version}.md", folder / f"{draft_version}.rules.yaml"):
@@ -514,6 +520,220 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
             removed.append(str(path))
     load_domain.cache_clear()
     return removed
+
+
+def drafts_on_disk(domain_name: str) -> list[dict]:
+    """Every draft this domain has, from the files and from the provenance table.
+
+    Joined rather than read from either alone, because the two go out of step in
+    both directions and each direction means something different: files with no
+    row were written by a hand that bypassed the DAG, and a row with no files is
+    a draft somebody discarded - which is a decision, not an absence.
+    """
+    folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
+    on_disk = {path.stem for path in folder.glob("*.md")} if folder.is_dir() else set()
+    rows = {row["version"]: row for row in store.drafts(domain_name)}
+    out = []
+    for version in sorted(on_disk | set(rows)):
+        row = rows.get(version, {})
+        verification = row.get("verification") or {}
+        out.append({
+            "version": version,
+            "available": version in on_disk,
+            "recorded": version in rows,
+            "base_version": row.get("base_version", ""),
+            "summary": row.get("summary", ""),
+            "drafted_by": row.get("drafted_by", ""),
+            "created_at": row.get("created_at", ""),
+            "has_rules": (folder / f"{version}.rules.yaml").exists(),
+            "reverses": len(verification.get("violations", [])),
+            "fixed": len(verification.get("fixed", [])),
+            "introduced": len(verification.get("introduced", [])),
+            "checked": bool(verification.get("precedents")),
+            "adopted_as": row.get("adopted_as", ""),
+            "adopted_by": row.get("adopted_by", ""),
+            "adopted_at": row.get("adopted_at", ""),
+        })
+    return out
+
+
+def describe_drafts(domain_name: str, rows: list[dict]) -> str:
+    """The draft list as the CLI prints it."""
+    if not rows:
+        return (f"no drafts for {domain_name}. Run `python -m ptm.proposal {domain_name} "
+                f"<version> --write`, or trigger propose_{domain_name}.")
+    lines = [f"{len(rows)} draft(s) for {domain_name}:"]
+    for row in rows:
+        if row["adopted_as"]:
+            state = (f"   [adopted as {row['adopted_as']} by {row['adopted_by']} "
+                     f"on {row['adopted_at'][:10]}]")
+        elif row["available"]:
+            state = ""
+        else:
+            state = "   [discarded - files gone, provenance kept]"
+        lines.append(f"  {row['version']:<16} from {row['base_version'] or '?':<8} "
+                     f"by {row['drafted_by'] or '?':<28} {row['created_at'][:10]}{state}")
+        if row["summary"]:
+            lines.append(f"      {row['summary']}")
+        if row["checked"]:
+            lines.append(f"      gate: reverses {row['reverses']} ruling(s), "
+                         f"fixed {row['fixed']}, introduced {row['introduced']}")
+        elif row["recorded"]:
+            lines.append("      gate: not checked against any human ruling")
+        if row["available"] and not row["has_rules"]:
+            lines.append("      no offline rules: PTM_OFFLINE=1 would return the most "
+                         "generous outcome for every case, and it cannot be swept")
+    lines.append(f"\n  adopt one:   python -m ptm.proposal {domain_name} --adopt <version> "
+                 f"--by <your name>")
+    lines.append(f"  drop one:    python -m ptm.proposal {domain_name} --discard <version>")
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------------- adoption
+
+def next_policy_version(domain: DomainConfig) -> str:
+    """The next free ``vN`` for a domain - the name an adopted draft takes.
+
+    Not the draft's own name. ``v2-draft1`` says "the first attempt at amending
+    v2", which is the truth about a proposal and a lie about a policy in the
+    book; and adopting it *as* ``v2`` would overwrite the text people are
+    currently accountable for.
+    """
+    taken = {int(m.group(1)) for m in
+             (re.fullmatch(r"v(\d+)", v) for v in domain.policies) if m}
+    return f"v{max(taken, default=0) + 1}"
+
+
+def _register(yaml_text: str, domain_name: str, version: str,
+              rules: list[dict] | None) -> str:
+    """Add a policy version to the domain YAML in place, keeping every comment.
+
+    A round trip through ``yaml.safe_load`` and ``yaml.safe_dump`` would be two
+    lines and would destroy the file. ``include/domains/*.yaml`` is mostly
+    comments explaining decisions a person made - which rule stands in for which
+    clause, why a threshold is where it is - and a command that silently deletes
+    all of them is a command nobody runs a second time. So the edit is textual:
+    one line appended to the ``policies`` block, and one block inserted under
+    ``offline_rules``.
+    """
+    lines = yaml_text.splitlines()
+
+    def block_end(header: str) -> int | None:
+        """Index just past the last line of a top-level block, or None."""
+        try:
+            start = next(i for i, line in enumerate(lines)
+                         if line.rstrip() == header or line.startswith(header + " "))
+        except StopIteration:
+            return None
+        end = start + 1
+        last = end
+        while end < len(lines):
+            line = lines[end]
+            if line.strip() and not line.startswith((" ", "\t")):
+                break
+            if line.strip():
+                last = end + 1
+            end += 1
+        return last
+
+    at = block_end("policies:")
+    if at is None:
+        raise ValueError(f"{domain_name}.yaml has no 'policies:' block to register into")
+    lines.insert(at, f"  {version}: policies/{domain_name}/{version}.md")
+
+    if rules:
+        body = yaml.safe_dump(rules, sort_keys=False, allow_unicode=True,
+                              default_flow_style=False)
+        indented = ["    " + line if line.strip() else line
+                    for line in body.rstrip("\n").splitlines()]
+        at = block_end("offline_rules:")
+        if at is None:
+            lines += ["", "offline_rules:"]
+            at = len(lines)
+        lines.insert(at, "\n".join([f"  {version}:", *indented]))
+    return "\n".join(lines) + "\n"
+
+
+#: The line :func:`apply_to_markdown` stamps on a draft. Rewritten on adoption
+#: rather than left in place: "approved by nobody" sitting at the top of a
+#: policy in force is the single most misleading sentence this project could
+#: ship, and deleting the provenance instead would lose where it came from.
+DRAFT_STAMP = "Not approved by anyone."
+
+
+def adopt(domain_name: str, draft_version: str, by: str,
+          as_version: str | None = None) -> dict:
+    """Promote a draft to a policy version somebody is accountable for.
+
+    This is the step the whole pipeline defers to a person, so it asks for the
+    person: ``by`` is recorded in the adopted document and is not optional.
+    Everything else is mechanical - move the markdown into ``include/policies/``,
+    register it and its offline rules in the domain YAML, and drop the draft -
+    and doing it by hand is three fiddly edits in two directories where the
+    common failure is registering the policy and forgetting the rules, which
+    leaves an offline replay approving everything.
+
+    It refuses to adopt anything that is not a draft, and refuses to write over
+    a version that already exists. Adopting does not make the policy *in force*:
+    that is ``in_force`` in the domain YAML, one more deliberate edit, because
+    a version existing and a version governing are different claims.
+    """
+    domain = reload_domain(domain_name)
+    if draft_version not in domain.draft_versions:
+        known = sorted(domain.draft_versions)
+        raise LookupError(
+            f"{draft_version!r} is not a draft of {domain_name}; drafts on file: "
+            f"{known or 'none'}. Only a draft can be adopted - a version in the YAML "
+            f"is already somebody's.")
+    if not by.strip():
+        raise ValueError("adopting a policy records who adopted it; pass --by <name>")
+
+    version = (as_version or next_policy_version(domain)).strip()
+    if version in domain.policies:
+        raise LookupError(
+            f"{domain_name} already has a policy version {version!r}. Adopting over it "
+            f"would replace text somebody is accountable for; pass --as <version> with "
+            f"a free name.")
+
+    folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
+    markdown = (folder / f"{draft_version}.md").read_text(encoding="utf-8")
+    adopted = (f"Adopted as {version} by {by} on {datetime.now():%Y-%m-%d}, "
+               f"from draft {draft_version}.")
+    if DRAFT_STAMP in markdown:
+        markdown = markdown.replace(DRAFT_STAMP, adopted)
+    else:
+        # A draft written by hand rather than by the proposer carries no stamp
+        # to replace, and drafts_on_disk deliberately lists those. The line
+        # recording who took responsibility is the point of this command, so it
+        # is added rather than skipped for want of something to overwrite.
+        markdown = f"<!-- {adopted} -->\n{markdown}"
+    markdown = _retitle(markdown, draft_version, version)
+
+    rules_path = folder / f"{draft_version}.rules.yaml"
+    rules = (yaml.safe_load(rules_path.read_text(encoding="utf-8")) or []
+             if rules_path.exists() else [])
+
+    policy_dir = config.INCLUDE_DIR / "policies" / domain_name
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    policy_path = policy_dir / f"{version}.md"
+    policy_path.write_text(markdown, encoding="utf-8")
+
+    yaml_path = config.INCLUDE_DIR / "domains" / f"{domain_name}.yaml"
+    yaml_path.write_text(
+        _register(yaml_path.read_text(encoding="utf-8"), domain_name, version, rules),
+        encoding="utf-8")
+
+    removed = discard(domain_name, draft_version)
+    # Recorded beside the provenance rather than over it. The patch, the
+    # evidence and the gate result are why this text exists, and an adopted
+    # draft is the one case where they matter most - so adoption adds a field
+    # and rewrites nothing. It is also what lets the draft list tell a version
+    # somebody took responsibility for from one somebody threw away, which the
+    # files alone cannot say: both leave include/drafts/ empty.
+    store.mark_adopted(domain_name, draft_version, version, by)
+    return {"draft": draft_version, "version": version, "by": by,
+            "policy": str(policy_path), "domain_yaml": str(yaml_path),
+            "offline_rules": len(rules), "removed": removed}
 
 
 # ------------------------------------------------------------- verification
@@ -611,19 +831,68 @@ def describe(patch: PolicyPatch, verification: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """``python -m ptm.proposal [domain] [version] [--write]``.
+USAGE = """usage:
+  python -m ptm.proposal <domain> [version] [--write]
+        Draft the next version of the policy from the evidence. Without
+        --write nothing touches the disk.
 
-    Prints the offline draft. Without ``--write`` nothing touches the disk:
-    proposing and adopting are separate acts, and a command that quietly grew
-    the policy set every time somebody ran it to look would be the wrong default
-    for the one directory in this project a person is accountable for.
+  python -m ptm.proposal <domain> --list
+        Every draft this domain has, with what the gate made of it.
+
+  python -m ptm.proposal <domain> --discard <version>
+        Delete a draft's files. The provenance row is kept.
+
+  python -m ptm.proposal <domain> --adopt <version> --by <name> [--as <version>]
+        Promote a draft into include/policies/ and register it, with its
+        offline rules, in the domain YAML. Records who adopted it."""
+
+
+def _flag(args: list[str], name: str) -> str | None:
+    """The value after ``--name``, or None. Empty string if the flag ends the line."""
+    if name not in args:
+        return None
+    index = args.index(name)
+    value = args[index + 1] if index + 1 < len(args) else ""
+    return "" if value.startswith("--") else value
+
+
+def main(argv: list[str] | None = None) -> int:
+    """The draft lifecycle, end to end. See :data:`USAGE`.
+
+    Drafting prints and, with ``--write``, writes. Proposing and adopting are
+    separate acts and separate flags: a command that quietly grew the policy set
+    every time somebody ran it to look would be the wrong default for the one
+    directory in this project a person is accountable for.
+
+    The lint tells a reader to discard a draft "with ptm.proposal.discard" and
+    the .gitignore tells them to adopt one by moving files and editing YAML.
+    Both were true and neither was a command anybody could run, which is how a
+    drafts folder fills up with amendments nobody will decide about.
     """
     args = list(argv if argv is not None else sys.argv[1:])
     write = "--write" in args
-    args = [a for a in args if not a.startswith("--")]
-    domain_name = args[0] if args else "expenses"
-    version = args[1] if len(args) > 1 else "v2"
+    listing = "--list" in args
+    discarding = _flag(args, "--discard")
+    adopting = _flag(args, "--adopt")
+    adopter = _flag(args, "--by") or ""
+    adopt_as = _flag(args, "--as")
+
+    flags = {"--write", "--list", "--discard", "--adopt", "--by", "--as"}
+    positional, skip = [], False
+    for i, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg in flags:
+            skip = arg != "--write" and arg != "--list"
+            continue
+        if arg.startswith("--"):
+            print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
+            return 2
+        positional.append(arg)
+
+    domain_name = positional[0] if positional else "expenses"
+    version = positional[1] if len(positional) > 1 else "v2"
 
     store.init_db()
     try:
@@ -631,6 +900,47 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
+
+    if listing:
+        print(describe_drafts(domain_name, drafts_on_disk(domain_name)))
+        return 0
+
+    if discarding is not None:
+        if not discarding:
+            print(f"ERROR --discard needs a version\n\n{USAGE}", file=sys.stderr)
+            return 2
+        removed = discard(domain_name, discarding)
+        if not removed:
+            print(f"ERROR no draft {discarding!r} on disk for {domain_name}; "
+                  f"`--list` shows what there is", file=sys.stderr)
+            return 2
+        for path in removed:
+            print(f"removed {path}")
+        print(f"{discarding} is no longer a policy version of {domain_name}. Its "
+              f"provenance is kept - what was proposed and why is still on record.")
+        return 0
+
+    if adopting is not None:
+        if not adopting:
+            print(f"ERROR --adopt needs a version\n\n{USAGE}", file=sys.stderr)
+            return 2
+        try:
+            result = adopt(domain_name, adopting, adopter, adopt_as)
+        except (LookupError, ValueError) as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
+        print(f"adopted {result['draft']} as {result['version']}, by {result['by']}")
+        print(f"  wrote    {result['policy']}")
+        print(f"  registered it in {result['domain_yaml']}"
+              + (f" with {result['offline_rules']} offline rule(s)"
+                 if result["offline_rules"] else
+                 " with no offline rules - PTM_OFFLINE=1 will return the most generous "
+                 "outcome for every case under it"))
+        print(f"\n{result['version']} is a policy version like any other now: lint it, "
+              f"replay it, gate it. It is not yet the policy *in force* - that is "
+              f"`in_force` in the domain YAML, and one more deliberate edit.")
+        return 0
+
     if version not in domain.policies:
         print(f"ERROR unknown policy version {version!r}; have {sorted(domain.policies)}",
               file=sys.stderr)

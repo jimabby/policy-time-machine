@@ -65,6 +65,7 @@ if not OFFLINE:
     # why it wraps the hook rather than re-implementing execute.
     LLMOperator = metered_operator()
 from airflow.providers.standard.operators.hitl import HITLOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 START = pendulum.datetime(2024, 9, 1, tz="UTC")
 SYSTEM_PROMPT = (
@@ -230,7 +231,21 @@ def _measured_usage(judge_task_id: str) -> list[dict]:
     return [row for row in pulled if isinstance(row, dict)]
 
 
-@task
+# none_failed, and on the task rather than at the call sites. A fan-out with
+# nothing in it - every case already answered - expands to zero mapped instances
+# and Airflow marks the judge *skipped*, which under the default all_success
+# rule skips this too and leaves the run with no verdicts at all. That is not a
+# corner case, it is the steady state of both callers: the gate re-asks the same
+# questions about the same precedents every time a ruling is recorded, and a
+# replay re-run after an edit that reaches none of its cases asks nothing new
+# either. ptm.selftest prints the state as the headline win - "600 of 600
+# verdicts come from cache, 0 would be judged again" - and it was the one thing
+# this DAG could not survive.
+#
+# Declared here so a future call site cannot forget it. merge itself already
+# handles the empty pass correctly: no misses and no fresh verdicts is a length
+# match of zero, and every case is then served from the cache below.
+@task(trigger_rule="none_failed")
 def merge(items: list[dict], misses: list[dict], fresh: list,
           key_field: str = "cache_key", chars_field: str = "prompt_chars",
           judge_task_id: str = "") -> dict:
@@ -591,8 +606,7 @@ def build(domain_name: str) -> None:
 
         candidate = merge(items, candidate_misses, verdicts,
                           judge_task_id="" if OFFLINE else "judge")
-        baseline_pass = merge.override(task_id="merge_baseline",
-                                       trigger_rule="none_failed")(
+        baseline_pass = merge.override(task_id="merge_baseline")(
             baseline_case_items, baseline_misses, baseline_verdicts,
             "baseline_cache_key", "baseline_prompt_chars",
             judge_task_id="" if OFFLINE else "judge_baseline")
@@ -614,15 +628,86 @@ def build(domain_name: str) -> None:
         catchup=False,
         max_active_runs=1,
         default_args=DEFAULTS,
-        params={"policy_version": policy_param},
+        params={
+            "policy_version": policy_param,
+            # Two queues, one operator. "flips" is what the asset triggers and
+            # what the replay produces. "stale" is the other half of the same
+            # job and had nowhere to go: the gate has always warned that a
+            # ruling was made about a clause since rewritten, and enforced it
+            # anyway, and the README has always said re-adjudicating is how
+            # that stops being a guess. Nothing could do it.
+            "target": Param(
+                "flips", type="string", enum=["flips", "stale"],
+                title="What to put in front of a human",
+                description="flips: contested changes this policy causes. stale: rulings "
+                            "made about a clause that has since been rewritten, re-asked "
+                            "against the policy as it now reads."),
+            "max_reviews": Param(
+                0, type="integer", minimum=0,
+                title="Cap on the queue (0 = the domain's review policy)",
+                description="Only read for target=stale; the flip queue is sized by the "
+                            "domain's review block."),
+        },
         tags=["policy-time-machine", domain_name, "human-in-the-loop"],
-        doc_md="Ask a human to settle only the contested flips, and keep their answers forever.",
+        doc_md=(
+            "Ask a human to settle only the contested cases, and keep their answers "
+            "forever.\n\n"
+            "`target=flips` (what the flips asset triggers) queues the changes this "
+            "policy causes. `target=stale` queues the opposite problem: rulings already "
+            "on file that were made about a clause the policy has since rewritten. The "
+            "gate enforces those exactly as hard as a ruling made this morning, so "
+            "re-confirming one is the only thing that turns it back into evidence - and "
+            "the ruling it replaces is archived, never overwritten."
+        ),
     )
     def adjudicate():
+        def _stale_queue(version: str, cap: int) -> list[dict]:
+            """Rulings that are no longer about the text they were made about.
+
+            Read entirely from what is already on file - the precedents, the
+            cases, and whatever the gate last stored for this version - so
+            queueing these costs nothing. A case the candidate has never been
+            judged on is skipped rather than judged here: asking a reviewer to
+            re-confirm a ruling against a policy nothing has applied is asking
+            them to guess, and the fix is to run the gate.
+            """
+            precedents = store.load_precedents(domain_name)
+            stale = diff.stale_precedents(precedents, domain, version)
+            if not stale:
+                print(diff.describe_readjudication([], version))
+                return []
+            cases = store.load_cases(domain_name, until=pendulum.now("UTC"),
+                                     case_ids=[r["case_id"] for r in stale])
+            stored = store.latest_verdicts(domain_name, version)
+            verdicts = {
+                case_id: Verdict(outcome=row["outcome"], rationale=row["rationale"],
+                                 confidence=row["confidence"],
+                                 policy_clause=row["policy_clause"] or "")
+                for case_id, row in stored.items()
+            }
+            items = diff.stale_review_items(
+                stale, precedents, cases, verdicts, domain,
+                limit=cap or domain.review.max_reviews)
+            print(diff.describe_readjudication(items, version))
+            unjudged = {r["case_id"] for r in stale} - set(verdicts)
+            if unjudged:
+                print(f"{len(unjudged)} stale ruling(s) not queued because {version} has "
+                      f"no verdict on file for them: {sorted(unjudged)[:10]}. Run "
+                      f"precedent_gate_{domain_name} under {version} first.")
+            return items
+
         @task
         def contested(**ctx) -> list[dict]:
-            """The few flips worth a human's attention, across all replay runs."""
+            """The few cases worth a human's attention, from whichever queue is asked for.
+
+            Both targets return the same shape, so everything downstream - the
+            HITL fan-out, the rendering, the recording of precedent - is one
+            path. A re-adjudication carries an extra ``readjudication`` block
+            that the body renders and nothing else has to know about.
+            """
             version = ctx["params"]["policy_version"]
+            if (ctx["params"].get("target") or "flips").strip() == "stale":
+                return _stale_queue(version, int(ctx["params"].get("max_reviews") or 0))
             rows = store.flips_for_policy(domain_name, version)
             import json as _json
             flips = [
@@ -661,7 +746,17 @@ def build(domain_name: str) -> None:
 
         @task
         def subjects(flips: list[dict]) -> list[str]:
-            return [f"{f['case_id']}: should this have been '{f['new_outcome']}' rather than '{f['actual_outcome']}'?" for f in flips]
+            out = []
+            for f in flips:
+                again = f.get("readjudication")
+                if again:
+                    out.append(f"{f['case_id']}: does '{again['precedent_outcome']}' still "
+                               f"hold, now that clause {again['clause'] or '?'} reads "
+                               f"differently?")
+                else:
+                    out.append(f"{f['case_id']}: should this have been "
+                               f"'{f['new_outcome']}' rather than '{f['actual_outcome']}'?")
+            return out
 
         @task
         def bodies(flips: list[dict]) -> list[str]:
@@ -669,7 +764,7 @@ def build(domain_name: str) -> None:
             for f in flips:
                 clause = f.get("attribution") or (
                     f"clause {f['policy_clause']}" if f.get("policy_clause") else "")
-                out.append(
+                body = (
                     f"### The case, as decided on {f['decided_at'][:10]}\n\n"
                     f"```\n{domain.render_case(f['payload'])}```\n\n"
                     f"**What actually happened:** `{f['actual_outcome']}`\n\n"
@@ -679,9 +774,36 @@ def build(domain_name: str) -> None:
                     # argue with the rule rather than just the result.
                     + (f"**Driven by:** `{clause}`\n\n" if clause else "")
                     + f"> {f['rationale']}\n\n"
-                    f"Pick the outcome that is *actually* correct for this case. Your answer "
-                    f"becomes a permanent precedent that every future policy change is tested against."
                 )
+                again = f.get("readjudication")
+                if not again:
+                    out.append(body + (
+                        "Pick the outcome that is *actually* correct for this case. Your "
+                        "answer becomes a permanent precedent that every future policy "
+                        "change is tested against."))
+                    continue
+                # A re-adjudication is a different question and has to look like
+                # one. The reviewer is not settling a case, they are deciding
+                # whether somebody else's answer survives a rewrite - which they
+                # cannot do without seeing that answer, the reason given for it,
+                # and both versions of the sentence it was about.
+                body += (
+                    f"---\n\n### This case has already been ruled on\n\n"
+                    f"**{again['ruled_by']}** ruled `{again['precedent_outcome']}` on "
+                    f"{again['ruled_at']}"
+                    + (f", against policy {again['ruled_under']}" if again["ruled_under"] else "")
+                    + ".\n\n"
+                    + (f"> {again['note']}\n\n" if again["note"]
+                       else "_No reason was recorded with that ruling._\n\n")
+                    + f"**Why you are being asked again:** {again['detail']}\n\n")
+                if again["was"] and again["now"]:
+                    body += (f"**Clause {again['clause']} then:**\n\n> {again['was']}\n\n"
+                             f"**Clause {again['clause']} now:**\n\n> {again['now']}\n\n")
+                out.append(body + (
+                    "Pick the outcome that is correct under the policy **as it now reads**. "
+                    "Confirming the earlier answer is a real and useful result - it turns a "
+                    "ruling the gate was enforcing on trust into one that has been checked. "
+                    "The earlier ruling is kept either way."))
             return out
 
         flips = contested()
@@ -728,11 +850,20 @@ def build(domain_name: str) -> None:
                     f"the failed review task(s) instead."
                 )
             version = ctx["params"]["policy_version"]
-            saved = []
+            saved, reconfirmed, revised = [], [], []
             for f, resp in zip(flips, responses):
                 chosen = (resp or {}).get("chosen_options") or []
                 if not chosen:
                     continue
+                # A re-adjudication replaces a ruling rather than making a first
+                # one, and which of those happened is the result: a reviewer
+                # confirming the earlier answer has turned a ruling the gate was
+                # enforcing on trust into one that has been checked, and a
+                # reviewer changing it has moved the regression suite.
+                again = f.get("readjudication")
+                if again:
+                    (reconfirmed if chosen[0] == again["precedent_outcome"]
+                     else revised).append(f["case_id"])
                 store.save_precedent(Precedent(
                     case_id=f["case_id"], domain=domain_name, correct_outcome=chosen[0],
                     ruled_by=(resp.get("user_id") or "unknown"),
@@ -749,8 +880,15 @@ def build(domain_name: str) -> None:
                 ))
                 saved.append(f["case_id"])
             store.mark_reviewed(domain_name, version, saved)
+            if reconfirmed or revised:
+                print(f"{len(reconfirmed)} ruling(s) re-confirmed against {version}, "
+                      f"{len(revised)} changed. Each earlier ruling is archived, not "
+                      f"replaced - store.precedent_history has what it said.")
+                for case_id in revised:
+                    print(f"  {case_id}: the ruling on file has been superseded")
             return {"precedents_recorded": len(saved), "case_ids": saved,
-                    "held_back_unconfirmed": len(held_back)}
+                    "held_back_unconfirmed": len(held_back),
+                    "reconfirmed": reconfirmed, "revised": revised}
 
         record(flips, reviews.output, held_back)
 
@@ -878,8 +1016,7 @@ def build(domain_name: str) -> None:
         gate_candidate = merge.override(task_id="gate_merge")(
             cases, gate_misses, gate_verdicts,
             judge_task_id="" if OFFLINE else "gate_judge")
-        gate_baseline = merge.override(task_id="gate_merge_baseline",
-                                       trigger_rule="none_failed")(
+        gate_baseline = merge.override(task_id="gate_merge_baseline")(
             gate_baseline_case_items, gate_baseline_misses, gate_baseline_verdicts,
             "baseline_cache_key", "baseline_prompt_chars",
             judge_task_id="" if OFFLINE else "gate_judge_baseline")
@@ -1287,6 +1424,13 @@ def build(domain_name: str) -> None:
                 True, type="boolean", title="Write the draft to include/drafts/",
                 description="Off drafts and prints without creating a policy version. "
                             "Proposing and adopting are separate acts."),
+            "replay": Param(
+                False, type="boolean",
+                title="Replay the draft over all of history once it is written",
+                description="The gate below checks the draft against the precedent set, "
+                            "which is a handful of cases. This answers what it does to "
+                            "every other one - and costs a full replay to do it, which "
+                            "is why it is off by default."),
         },
         tags=["policy-time-machine", domain_name, "proposal"],
         doc_md=(
@@ -1417,6 +1561,13 @@ def build(domain_name: str) -> None:
             that does not exist never matches, and never matching is silent - the
             exact failure ptm.lint was written for, from a far more prolific
             source than a person editing YAML.
+
+            Validated against the *drafted markdown*, not against the version it
+            was derived from. The draft is not a resolvable version yet - it is
+            written a few lines below this - and a drafter adding a clause is the
+            normal case, so checking the citations against the base policy
+            rejected every rule implementing the new clause and, because a rule
+            set is ordered, dropped the whole set with it.
             """
             draft_version = composed["draft_version"]
             raw = list(rulesets or [])
@@ -1425,7 +1576,8 @@ def build(domain_name: str) -> None:
                          else [r.model_dump() for r in first.rules])
             candidate = [r if isinstance(r, dict) else r.model_dump() for r in (candidate or [])]
 
-            problems = rules.validate(candidate, domain, composed["version"]) if candidate else []
+            problems = rules.validate(candidate, domain, draft_version,
+                                      policy_text=composed["markdown"]) if candidate else []
             if problems:
                 for problem in problems:
                     print(f"REJECTED {problem}")
@@ -1542,7 +1694,46 @@ def build(domain_name: str) -> None:
                     "fixed": len(verification.get("fixed", [])),
                     "introduced": len(verification.get("introduced", []))}
 
-        record(written, vitems, vverdicts, found)
+        reported = record(written, vitems, vverdicts, found)
+
+        # The step the draft's own caveat names. verify() re-judges the
+        # precedent set - a handful of contested cases - which answers "does
+        # this reverse a human ruling" and nothing else; what the draft does to
+        # the other several hundred still costs a replay, and until now that
+        # was a sentence in the output rather than something the pipeline could
+        # do. Off by default because it is a full replay and a full bill.
+        @task.short_circuit
+        def should_replay(written: dict, **ctx) -> bool:
+            if not written.get("written"):
+                return False
+            if not ctx["params"].get("replay"):
+                print(f"replay=false: {written['draft_version']} has been checked against "
+                      f"the precedent set only. Replay it to find out what it does to "
+                      f"every other case.")
+                return False
+            print(f"triggering replay_{domain_name} for {written['draft_version']} over "
+                  f"all of history")
+            return True
+
+        replay_the_draft = TriggerDagRunOperator(
+            task_id="replay_the_draft",
+            trigger_dag_id=f"replay_{domain_name}",
+            # Templated, so the version comes from the task that wrote it rather
+            # than from a second guess at what it was named.
+            conf={
+                "policy_version":
+                    "{{ ti.xcom_pull(task_ids='write_draft')['draft_version'] }}",
+                "baseline_version": domain.in_force,
+                # A triggered run has no data interval, so replay treats it as
+                # "all of history" and applies its manual cap. Zero turns the cap
+                # off: a draft measured on the most recent 250 cases would be
+                # compared against a backfill that saw every one of them.
+                "max_cases": 0,
+            },
+            wait_for_completion=False,
+        )
+
+        reported >> should_replay(written) >> replay_the_draft
 
     propose()
 

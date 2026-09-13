@@ -224,7 +224,7 @@ class TestItRenders:
         for panel in ("#tiles", "#preflight", "#clauses", "#segments", "#disparity",
                       "#deviations", "#flips", "#precedents", "#conflicts", "#stability",
                       "#calibration", "#drafts", "#sweep", "#sweepgrid", "#crosscheck",
-                      "#rules"):
+                      "#rules", "#history", "#superseded"):
             if not page.inner_text(panel).strip():
                 empty.append(panel)
         assert not empty, f"panels rendered nothing: {empty}"
@@ -351,6 +351,22 @@ class TestPanels:
 
     def test_the_drafts_panel_has_an_empty_state_rather_than_a_blank(self, page):
         assert "no drafts yet" in page.text("#drafts")
+
+    def test_the_history_panel_puts_the_versions_side_by_side(self, page):
+        """The question no single-version panel can answer: did the edit help?"""
+        text = page.text("#history")
+        assert "v1" in text and "v2" in text
+        assert "in force" in text, "which one is the status quo has to be visible"
+
+    def test_the_superseded_panel_says_so_when_nothing_was_re_adjudicated(self, page):
+        """Re-adjudication is the only thing that overwrites a precedent, so an
+        empty panel here is the normal state and has to read as one."""
+        assert "no ruling has been re-adjudicated" in page.text("#superseded")
+
+    def test_the_history_panel_says_what_it_is_not_claiming(self, page):
+        """Two versions measured on different numbers of cases differ by
+        sample size before they differ by policy."""
+        assert "only comparable over the same cases" in page.text("#history")
 
 
 @needs_browser

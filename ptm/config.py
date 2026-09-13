@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 import os
 import re
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -228,8 +227,7 @@ class DomainConfig(BaseModel):
         does not contain, which is how an offline demo silently stops
         implementing the policy it claims to.
         """
-        pattern = re.compile(r"^\s*(\d+\.\d+)\s", re.MULTILINE)
-        return sorted(set(pattern.findall(self.policy_text(version))))
+        return clauses_in(self.policy_text(version))
 
     def clause_text(self, version: str, clause: str) -> str:
         """One clause's text, joined across its continuation lines.
@@ -255,6 +253,20 @@ class DomainConfig(BaseModel):
         if n > o:
             return "tightening"
         return "lateral"
+
+
+def clauses_in(text: str) -> list[str]:
+    """Clause identifiers declared by a policy markdown, sorted.
+
+    Takes the text rather than a version because one caller does not have a
+    version yet: :mod:`ptm.proposal` drafts an amendment, has a model write the
+    offline rules for it, and validates those rules *before* the draft is
+    written to disk and becomes a version anything can resolve. Reading the
+    clause list off the drafted markdown is the only way to validate rules
+    against the policy they actually implement rather than against the one they
+    were derived from.
+    """
+    return sorted(set(re.findall(r"^\s*(\d+\.\d+)\s", text, re.MULTILINE)))
 
 
 class _Blank(dict):
@@ -298,13 +310,71 @@ def merge_drafts(config: DomainConfig) -> DomainConfig:
     return config
 
 
-@lru_cache(maxsize=None)
+#: Loaded domains, each beside a fingerprint of the files it was built from.
+_LOADED: dict[str, tuple[tuple, DomainConfig]] = {}
+
+
+def _fingerprint(name: str) -> tuple:
+    """What a domain's config was built from, cheap enough to check on every call.
+
+    The cache this backs used to be an unconditional :func:`functools.lru_cache`,
+    which is right for a task that runs once and exits and wrong for the two
+    processes that do not. ``propose_<domain>`` writes a draft on a worker;
+    :func:`merge_drafts` picks drafts up at load time; and the API server hosting
+    the plugin loaded the domain when it started. Nothing invalidated it there,
+    so a freshly drafted policy was missing from ``/api/domains``, reported by
+    ``/api/drafts`` as ``available: false`` - which the dashboard renders as
+    **"files gone"** - and 404'd from every version-scoped endpoint, until
+    somebody restarted the webserver. The DAG side already knew and called
+    :func:`ptm.proposal.reload_domain`; the read side had no equivalent and no
+    reason to think it needed one.
+
+    A stat of the YAML and a listing of the drafts folder is microseconds, next
+    to a request that goes on to read hundreds of cases out of SQLite, so the
+    check is simply made every time rather than put behind a TTL nobody could
+    tune. ``cache_clear()`` is still honoured for callers that know they have
+    just written something and would rather not depend on clock resolution.
+    """
+    stamp: list = []
+    try:
+        info = (INCLUDE_DIR / "domains" / f"{name}.yaml").stat()
+        stamp.append((info.st_mtime_ns, info.st_size))
+    except OSError:
+        stamp.append(())
+    folder = INCLUDE_DIR / DRAFTS_DIR / name
+    if folder.is_dir():
+        for path in sorted(folder.iterdir()):
+            try:
+                info = path.stat()
+            except OSError:  # removed between the listing and the stat
+                continue
+            stamp.append((path.name, info.st_mtime_ns, info.st_size))
+    return tuple(stamp)
+
+
 def load_domain(name: str) -> DomainConfig:
+    """The domain config, re-read whenever the files behind it have changed."""
+    stamp = _fingerprint(name)
+    cached = _LOADED.get(name)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
     path = INCLUDE_DIR / "domains" / f"{name}.yaml"
     if not path.exists():
         available = sorted(p.stem for p in (INCLUDE_DIR / "domains").glob("*.yaml"))
         raise FileNotFoundError(f"no domain config {name!r} at {path}; available: {available}")
-    return merge_drafts(DomainConfig(**yaml.safe_load(path.read_text(encoding="utf-8"))))
+    config = merge_drafts(DomainConfig(**yaml.safe_load(path.read_text(encoding="utf-8"))))
+    _LOADED[name] = (stamp, config)
+    return config
+
+
+def _clear_loaded() -> None:
+    """Drop every loaded domain. Named ``load_domain.cache_clear`` for callers."""
+    _LOADED.clear()
+
+
+#: Kept as an attribute of the function so every existing caller - the proposer,
+#: the DAGs, the tests - goes on working against the lru_cache-shaped API.
+load_domain.cache_clear = _clear_loaded
 
 
 def available_domains() -> list[str]:

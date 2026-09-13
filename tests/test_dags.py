@@ -262,6 +262,43 @@ class TestParses:
         dag = dagbag.dags["adjudicate_expenses"]
         assert "unconfirmed" in {t.task_id for t in dag.tasks}
 
+    def test_the_merges_survive_a_fan_out_with_nothing_in_it(self, dagbag):
+        """Every case already answered means the judge expands over an empty
+        list and Airflow skips it. Under all_success that skip reaches the
+        merge, and the run then fails for having no verdicts - which is the
+        gate's normal second run and any replay re-run. See test_empty_fanout.
+        """
+        from airflow.task.trigger_rule import TriggerRule
+
+        for dag_id, task_ids in (
+                ("replay_expenses", ("merge", "merge_baseline")),
+                ("precedent_gate_expenses", ("gate_merge", "gate_merge_baseline"))):
+            tasks = {t.task_id: t for t in dagbag.dags[dag_id].tasks}
+            for task_id in task_ids:
+                assert tasks[task_id].trigger_rule == TriggerRule.NONE_FAILED, \
+                    f"{dag_id}.{task_id} would be skipped by an empty fan-out"
+
+    def test_stale_rulings_can_be_put_back_in_front_of_a_human(self, dagbag):
+        """The gate has always warned that a ruling was made about a clause
+        since rewritten, and enforced it anyway. This is the route to fixing
+        one, which is what the warning has always told people to do."""
+        params = dagbag.dags["adjudicate_expenses"].params
+        assert params.get_param("target").schema.get("enum") == ["flips", "stale"]
+
+    def test_the_proposer_can_replay_its_own_draft(self, dagbag):
+        """verify() checks the draft against the precedent set and says so;
+        what it does to every other case still costs a replay."""
+        dag = dagbag.dags["propose_expenses"]
+        tasks = {t.task_id: t for t in dag.tasks}
+        assert {"should_replay", "replay_the_draft"} <= set(tasks)
+        assert tasks["replay_the_draft"].trigger_dag_id == "replay_expenses"
+        # Off by default: it is a full replay and a full bill.
+        assert dag.params["replay"] is False
+        # A triggered run has no data interval, so replay applies its manual
+        # cap - and a draft measured on 250 cases is not comparable with the
+        # backfill it is being judged against.
+        assert tasks["replay_the_draft"].conf["max_cases"] == 0
+
     def test_every_task_belongs_to_a_domain_tagged_dag(self, dagbag):
         for dag_id, dag in dagbag.dags.items():
             assert "policy-time-machine" in dag.tags

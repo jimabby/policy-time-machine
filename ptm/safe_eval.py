@@ -23,6 +23,12 @@ rule at the point it arrives rather than the first time it fires.
 The language that remains is the one the rules actually use: comparisons,
 boolean and arithmetic operators, ``in``, a conditional expression, literals,
 and calls to the helpers in :data:`SAFE_BUILTINS`.
+
+**It bounds cost as well as reach.** A whitelist that cannot be escaped can
+still be made to run forever, and a rule evaluates on a worker holding a mapped
+task slot. :data:`MAX_EXPONENT` caps one ``**``; :data:`MAX_RESULT_SIZE` caps
+what an expression may *build*, which is the bound that survives nesting and
+covers ``'x' * 10**9`` as well.
 """
 
 from __future__ import annotations
@@ -45,6 +51,23 @@ SAFE_NAMES: frozenset[str] = frozenset(SAFE_BUILTINS)
 #: Ceiling on ``**``. A rule is a threshold comparison; ``9**9**9`` is not one,
 #: and evaluating it would hang a worker holding a mapped task slot.
 MAX_EXPONENT = 64
+
+#: Ceiling on how large a value an expression may build - bits for an integer,
+#: elements for a string, list or tuple.
+#:
+#: :data:`MAX_EXPONENT` on its own does not bound this, which is the gap this
+#: closes. Every exponent in ``(((10**64)**64)**64)**64`` is a perfectly legal
+#: 64 while the *base* grows at each step, and that expression takes fifteen
+#: seconds; one nesting further is exactly the worker hang the exponent ceiling
+#: was written to prevent. ``'x' * 10**9`` is the same failure with no ``**`` in
+#: it at all. So the bound is on the size of the result rather than on any one
+#: operator, and it is checked before the expensive operators are applied
+#: rather than after.
+#:
+#: A megabit is four orders of magnitude above anything a threshold comparison
+#: needs and still costs milliseconds to reach, so it refuses only expressions
+#: that were never rules.
+MAX_RESULT_SIZE = 1 << 20
 
 
 class RuleError(ValueError):
@@ -150,6 +173,24 @@ def evaluate(expression: str, scope: dict[str, Any]) -> Any:
 
 # ------------------------------------------------------------------ the walker
 
+def _refuse_chained_power(node: ast.BinOp) -> None:
+    """Refuse ``(b ** m) ** n`` - the escalation the exponent ceiling cannot see.
+
+    Every exponent in ``((b**64)**64)**64`` is a legal 64 while the *base* grows
+    at each step, so a check on the exponents alone reports nothing and the
+    expression runs for as long as it likes. Chained exponentiation is never a
+    threshold comparison, so refusing the shape is both sound and something a
+    rule author can act on - unlike a size ceiling tripped at judging time.
+
+    Applied by :func:`_walk` and by :func:`_eval` alike, so an expression cannot
+    be refused by the lint and then quietly evaluated by a worker.
+    """
+    if isinstance(node.left, ast.BinOp) and isinstance(node.left.op, ast.Pow):
+        _fail("raises a power to a power, which rule expressions may not do: each "
+              "exponent stays under the ceiling while the base grows, so the result is "
+              "unbounded. Write the exponent out as one number.")
+
+
 def _walk(node: ast.AST) -> None:
     """Refuse anything outside the supported language, without evaluating."""
     for kind, what in _REFUSALS.items():
@@ -173,14 +214,16 @@ def _walk(node: ast.AST) -> None:
     if isinstance(node, ast.BinOp):
         if type(node.op) not in _BIN_OPS and not isinstance(node.op, ast.Pow):
             _fail(f"uses an unsupported operator {type(node.op).__name__}")
-        if isinstance(node.op, ast.Pow) and isinstance(node.right, ast.Constant):
-            # Only the literal case is knowable here; the evaluator enforces the
-            # same ceiling on a computed exponent. Reporting the literal one
-            # statically is what lets a rule be rejected on arrival rather than
-            # the first time it fires on a worker.
-            exponent = node.right.value
-            if not isinstance(exponent, (int, float)) or abs(exponent) > MAX_EXPONENT:
-                _fail(f"raises to the power of {exponent!r}; the ceiling is {MAX_EXPONENT}")
+        if isinstance(node.op, ast.Pow):
+            _refuse_chained_power(node)
+            if isinstance(node.right, ast.Constant):
+                # Only the literal case is knowable here; the evaluator enforces
+                # the same ceiling on a computed exponent. Reporting the literal
+                # one statically is what lets a rule be rejected on arrival
+                # rather than the first time it fires on a worker.
+                exponent = node.right.value
+                if not isinstance(exponent, (int, float)) or abs(exponent) > MAX_EXPONENT:
+                    _fail(f"raises to the power of {exponent!r}; the ceiling is {MAX_EXPONENT}")
         _walk(node.left)
         _walk(node.right)
         return
@@ -215,6 +258,53 @@ def _walk(node: ast.AST) -> None:
     _fail(f"uses {type(node).__name__}, which rule expressions may not do")
 
 
+#: Types whose size is a length rather than a magnitude, and which therefore
+#: blow up through repetition rather than through arithmetic.
+_SEQUENCES = (str, bytes, list, tuple, set, frozenset)
+
+
+def _size_of(value: Any) -> int:
+    """How big a value is, in the unit its own type grows in.
+
+    Bits for an integer and elements for a sequence, because those are the two
+    things an expression here can make arbitrarily large. Floats overflow to an
+    exception on their own and everything else is a scalar, so both are zero.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value.bit_length()
+    if isinstance(value, _SEQUENCES):
+        return len(value)
+    return 0
+
+
+def _power_size(base: Any, exponent: Any) -> int:
+    """Bits in ``base ** exponent``, without computing it."""
+    if not isinstance(base, int) or isinstance(base, bool):
+        return 0
+    if not isinstance(exponent, int) or isinstance(exponent, bool) or exponent <= 0:
+        return 0
+    return max(abs(base).bit_length(), 1) * exponent
+
+
+def _repeat_size(left: Any, right: Any) -> int:
+    """Elements in ``left * right`` when it is sequence repetition, else 0."""
+    for sequence, count in ((left, right), (right, left)):
+        if isinstance(sequence, _SEQUENCES) and isinstance(count, int) \
+                and not isinstance(count, bool):
+            return len(sequence) * max(count, 0)
+    return 0
+
+
+def _guard(size: int, what: str, unit: str) -> None:
+    """Refuse a value past :data:`MAX_RESULT_SIZE`, naming what it was building."""
+    if size > MAX_RESULT_SIZE:
+        _fail(f"builds {what} of {size:,} {unit}, past the ceiling of "
+              f"{MAX_RESULT_SIZE:,}. A rule is a threshold comparison; evaluating this "
+              f"would hang a worker holding a mapped task slot.")
+
+
 def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
     if isinstance(node, ast.Constant):
         return node.value
@@ -244,6 +334,10 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             _fail(f"uses an unsupported unary operator {type(node.op).__name__}")
         return operator(_eval(node.operand, scope))
     if isinstance(node, ast.BinOp):
+        # Before the operands are computed, not after: the whole point of
+        # refusing the shape is that evaluating it is the expensive part.
+        if isinstance(node.op, ast.Pow):
+            _refuse_chained_power(node)
         left, right = _eval(node.left, scope), _eval(node.right, scope)
         if isinstance(node.op, ast.Pow):
             # Bounded, not refused: a rule may legitimately square something,
@@ -251,11 +345,18 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             # answer - the failure mode a mapped fan-out handles worst.
             if not isinstance(right, (int, float)) or abs(right) > MAX_EXPONENT:
                 _fail(f"raises to the power of {right!r}; the ceiling is {MAX_EXPONENT}")
+            _guard(_power_size(left, right), "an integer", "bits")
             return left ** right
         operator = _BIN_OPS.get(type(node.op))
         if operator is None:
             _fail(f"uses an unsupported operator {type(node.op).__name__}")
-        return operator(left, right)
+        if isinstance(node.op, ast.Mult):
+            # Checked before multiplying, not after: 'x' * 10**9 is a gigabyte
+            # allocated by the time a check on the result could see it.
+            _guard(_repeat_size(left, right), "a sequence", "elements")
+        result = operator(left, right)
+        _guard(_size_of(result), "a value", "units")
+        return result
     if isinstance(node, ast.Compare):
         left = _eval(node.left, scope)
         for op, comparator in zip(node.ops, node.comparators):
@@ -284,7 +385,11 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             _fail("calls something other than a named helper")
         if node.keywords:
             _fail("passes keyword arguments to a helper, which is not supported")
-        return SAFE_BUILTINS[node.func.id](*[_eval(a, scope) for a in node.args])
+        result = SAFE_BUILTINS[node.func.id](*[_eval(a, scope) for a in node.args])
+        # str() of a large integer is the one helper that can grow its argument
+        # rather than shrink it, so the same ceiling applies on the way out.
+        _guard(_size_of(result), "a value", "units")
+        return result
     for kind, what in _REFUSALS.items():
         if isinstance(node, kind):
             _fail(f"uses {what}, which rule expressions may not do")

@@ -111,6 +111,32 @@ CREATE TABLE IF NOT EXISTS precedents (
     PRIMARY KEY (domain, case_id)
 );
 
+-- Rulings that have been superseded by a later one on the same case. Written
+-- automatically by save_precedent, and durable like the precedents themselves.
+--
+-- Re-adjudication is the only thing that overwrites a precedent, and it exists
+-- because a ruling made about a clause that has since been rewritten is no
+-- longer a fact about this policy (see ptm.diff.stale_precedents). But "the
+-- only durable artefact" losing its earlier version silently is precisely the
+-- rot this project is about: a reviewer must be able to see that somebody
+-- ruled differently in March, and what they said about it, before agreeing
+-- that the new ruling replaces it.
+CREATE TABLE IF NOT EXISTS precedent_history (
+    domain          TEXT NOT NULL,
+    case_id         TEXT NOT NULL,
+    superseded_at   TEXT NOT NULL,
+    correct_outcome TEXT NOT NULL,
+    ruled_by        TEXT NOT NULL,
+    note            TEXT DEFAULT '',
+    established_at  TEXT NOT NULL,
+    established_by_run TEXT DEFAULT '',
+    policy_version  TEXT DEFAULT '',
+    judged_outcome  TEXT DEFAULT '',
+    judged_clause   TEXT DEFAULT '',
+    PRIMARY KEY (domain, case_id, superseded_at)
+);
+CREATE INDEX IF NOT EXISTS precedent_history_lookup ON precedent_history (domain, case_id);
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id         TEXT PRIMARY KEY,
     domain         TEXT NOT NULL,
@@ -246,6 +272,13 @@ CREATE TABLE IF NOT EXISTS policy_drafts (
     drafted_by     TEXT DEFAULT '',
     created_at     TEXT NOT NULL,
     created_by_run TEXT DEFAULT '',
+    -- Set when a person promoted this draft into include/policies/ and the
+    -- domain YAML. Both an adopted draft and a discarded one leave the drafts
+    -- folder empty, so without this the two are indistinguishable on disk -
+    -- and they are the opposite decision.
+    adopted_as     TEXT DEFAULT '',
+    adopted_by     TEXT DEFAULT '',
+    adopted_at     TEXT DEFAULT '',
     PRIMARY KEY (domain, version)
 );
 
@@ -305,6 +338,9 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("runs", "actual_input_tokens", "INTEGER DEFAULT 0"),
     ("runs", "actual_output_tokens", "INTEGER DEFAULT 0"),
     ("runs", "actual_cost_usd", "REAL DEFAULT 0"),
+    ("policy_drafts", "adopted_as", "TEXT DEFAULT ''"),
+    ("policy_drafts", "adopted_by", "TEXT DEFAULT ''"),
+    ("policy_drafts", "adopted_at", "TEXT DEFAULT ''"),
 ]
 
 
@@ -446,7 +482,27 @@ def load_cases(domain: str, until: datetime, limit: int | None = None,
 
 
 def save_precedent(p: Precedent) -> None:
+    """Record a human ruling, archiving any ruling it replaces.
+
+    The archive is not optional and not the caller's job. ``INSERT OR REPLACE``
+    on ``(domain, case_id)`` is what lets a stale ruling be re-adjudicated at
+    all, and it is also a silent overwrite of the one thing in this system that
+    cannot be recomputed. Doing the copy here means no future caller can
+    re-adjudicate without leaving the earlier ruling behind - see
+    ``precedent_history`` in SCHEMA.
+    """
     with conn() as c:
+        c.execute(
+            """INSERT INTO precedent_history
+               (domain, case_id, superseded_at, correct_outcome, ruled_by, note,
+                established_at, established_by_run, policy_version, judged_outcome,
+                judged_clause)
+               SELECT domain, case_id, ?, correct_outcome, ruled_by, note,
+                      established_at, established_by_run, policy_version,
+                      judged_outcome, judged_clause
+               FROM precedents WHERE domain=? AND case_id=?""",
+            (datetime.now().isoformat(), p.domain, p.case_id),
+        )
         c.execute(
             """INSERT OR REPLACE INTO precedents
                (case_id, domain, correct_outcome, ruled_by, note, established_at,
@@ -456,6 +512,22 @@ def save_precedent(p: Precedent) -> None:
              p.established_at.isoformat(), p.established_by_run,
              p.policy_version, p.judged_outcome, p.judged_clause),
         )
+
+
+def precedent_history(domain: str, case_id: str | None = None) -> list[dict]:
+    """Rulings that a later ruling on the same case replaced, newest first."""
+    where = "WHERE domain=?" + (" AND case_id=?" if case_id else "")
+    params: tuple = (domain,) if case_id is None else (domain, case_id)
+    return query(
+        f"""SELECT * FROM precedent_history {where}
+            ORDER BY superseded_at DESC, case_id""", params)
+
+
+def revision_counts(domain: str) -> dict[str, int]:
+    """How many times each case's ruling has been replaced, keyed by case id."""
+    return {r["case_id"]: r["n"] for r in query(
+        "SELECT case_id, COUNT(*) n FROM precedent_history WHERE domain=? GROUP BY case_id",
+        (domain,))}
 
 
 def load_precedents(domain: str) -> list[Precedent]:
@@ -537,6 +609,26 @@ def mark_reviewed(domain: str, policy_version: str, case_ids: list[str]) -> None
 BASELINE_RUN_SUFFIX = "::baseline"
 
 
+def _confirmations(c: sqlite3.Connection, domain: str,
+                   policy_version: str) -> dict[tuple[str, str], str]:
+    """Confirmation results keyed by ``(case_id, the outcome they were about)``.
+
+    Keyed on the outcome as well as the case deliberately. A confirmation pass
+    asks whether *this verdict* reproduces, so a later replay that reaches a
+    different outcome for the same case has not inherited the answer - it has
+    produced a new question nothing has measured yet. Carrying the tag across
+    regardless would mark a brand new verdict 'stable' on the strength of an
+    experiment run against a different one.
+    """
+    rows = c.execute(
+        """SELECT case_id, recorded_outcome, stable FROM flip_stability
+           WHERE domain = ? AND policy_version = ? AND recorded_outcome <> ''""",
+        (domain, policy_version),
+    ).fetchall()
+    return {(r["case_id"], r["recorded_outcome"]): ("stable" if r["stable"] else "unstable")
+            for r in rows}
+
+
 def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
                 cases_replayed: int, flips: list[Flip], impact: float,
                 verdicts: dict[str, Verdict], segments: list[dict] | None = None,
@@ -566,15 +658,24 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
             [(run_id, domain, policy_version, case_id, v.outcome, v.rationale,
               v.confidence, v.policy_clause, now) for case_id, v in verdicts.items()],
         )
+        # Confirmation results already on file, carried onto the rows this run
+        # writes. Without this the column defaults to '' and the *latest* flip
+        # row - the one the human queue reads - forgets that a confirmation pass
+        # measured this verdict and would not reproduce it, so the next
+        # adjudication run quietly offers it up again. The measurement itself
+        # never went anywhere: it is in flip_stability, and this is what puts it
+        # back where select_for_review looks.
+        confirmed = _confirmations(c, domain, policy_version)
         c.executemany(
             """INSERT INTO flips
                (run_id, domain, policy_version, case_id, actual_outcome, new_outcome,
                 direction, impact, confidence, rationale, policy_clause, segments,
-                attribution, baseline_outcome)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                attribution, baseline_outcome, stability)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(run_id, domain, policy_version, f.case_id, f.actual_outcome, f.new_outcome,
               f.direction, f.impact, f.confidence, f.rationale, f.policy_clause,
-              json.dumps(f.segments), f.attribution, f.baseline_outcome) for f in flips],
+              json.dumps(f.segments), f.attribution, f.baseline_outcome,
+              confirmed.get((f.case_id, f.new_outcome), "")) for f in flips],
         )
         if baseline_verdicts and baseline_version:
             c.executemany(
@@ -682,8 +783,9 @@ def flip_stability(domain: str, policy_version: str) -> dict[str, dict]:
     return {r["case_id"]: r for r in rows}
 
 
-#: Everything derived from a domain's cases. Precedents are deliberately absent:
-#: they are the one durable artefact and survive a re-seed on purpose. The
+#: Everything derived from a domain's cases. Precedents and their history are
+#: deliberately absent: they are the one durable artefact - and the record of
+#: what an earlier ruling said is part of it - so both survive a re-seed. The
 #: verdict cache goes: its keys are hashes of prompts built from the *old*
 #: cases, so after a re-seed not one of them can ever be hit again.
 DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
@@ -791,6 +893,21 @@ def save_draft(domain: str, version: str, base_version: str, patch: dict,
             (domain, version, base_version, patch.get("summary", ""), json.dumps(patch),
              json.dumps(evidence or {}), json.dumps(verification or {}), drafted_by,
              datetime.now().isoformat(), run_id),
+        )
+
+
+def mark_adopted(domain: str, version: str, adopted_as: str, by: str) -> None:
+    """Record that a person promoted this draft, without touching its provenance.
+
+    An UPDATE of three columns rather than a re-INSERT: the patch, the evidence
+    and the verification are why the text exists, and they matter most for the
+    draft that became a policy.
+    """
+    with conn() as c:
+        c.execute(
+            """UPDATE policy_drafts SET adopted_as=?, adopted_by=?, adopted_at=?
+               WHERE domain=? AND version=?""",
+            (adopted_as, by, datetime.now().isoformat(), domain, version),
         )
 
 
@@ -940,6 +1057,97 @@ def segment_breakdown(domain: str, policy_version: str) -> list[dict]:
            ORDER BY field, flips DESC""",
         (domain, policy_version),
     )
+
+
+def version_totals(domain: str) -> dict[str, dict]:
+    """Every policy version this domain has replayed, side by side.
+
+    One query rather than :func:`ptm.report.summary` per version, and
+    deduplicated the same latest-row-wins way as every other read model here so
+    a manual run overlapping a backfill does not make one version look twice as
+    busy as the one beside it. Comparing versions is the whole point, and a
+    comparison where the rows were counted differently is worse than none.
+    """
+    flips = query(
+        """SELECT f.policy_version,
+                  COUNT(*) AS flips,
+                  SUM(CASE WHEN f.direction='loosening' THEN 1 ELSE 0 END) AS loosening,
+                  SUM(CASE WHEN f.direction='tightening' THEN 1 ELSE 0 END) AS tightening,
+                  SUM(CASE WHEN f.direction='loosening' THEN f.impact ELSE 0 END)
+                    AS impact_loosening,
+                  SUM(CASE WHEN f.direction='tightening' THEN f.impact ELSE 0 END)
+                    AS impact_tightening,
+                  SUM(CASE WHEN f.attribution <> ? THEN 1 ELSE 0 END) AS policy_driven,
+                  AVG(f.confidence) AS mean_confidence
+           FROM flips f
+           JOIN (SELECT policy_version, case_id, MAX(rowid) latest_rowid FROM flips
+                 WHERE domain=? GROUP BY policy_version, case_id) latest
+             ON latest.latest_rowid = f.rowid
+           GROUP BY f.policy_version""",
+        (DEVIATION, domain),
+    )
+    judged = query(
+        """SELECT policy_version, COUNT(*) AS cases FROM (
+             SELECT policy_version, case_id FROM verdicts WHERE domain=?
+             GROUP BY policy_version, case_id)
+           GROUP BY policy_version""",
+        (domain,),
+    )
+    runs_ = query(
+        """SELECT policy_version, COUNT(*) AS runs, MIN(started_at) AS first_run,
+                  MAX(started_at) AS last_run,
+                  COALESCE(SUM(estimated_cost_usd),0) AS estimated_cost_usd,
+                  COALESCE(SUM(actual_cost_usd),0) AS actual_cost_usd
+           FROM runs WHERE domain=? GROUP BY policy_version""",
+        (domain,),
+    )
+    models = query(
+        """SELECT DISTINCT policy_version, judge_model FROM runs
+           WHERE domain=? AND judge_model <> ''""", (domain,))
+
+    out: dict[str, dict] = {}
+
+    def row(version: str) -> dict:
+        return out.setdefault(version, {
+            "policy_version": version, "runs": 0, "cases": 0, "flips": 0,
+            "loosening": 0, "tightening": 0, "impact_loosening": 0.0,
+            "impact_tightening": 0.0, "policy_driven_flips": 0,
+            "mean_confidence": 0.0, "judged_by": [], "first_run": "", "last_run": "",
+            "estimated_cost_usd": 0.0, "actual_cost_usd": 0.0,
+        })
+
+    for r in flips:
+        row(r["policy_version"]).update({
+            k: r[k] for k in ("flips", "loosening", "tightening",
+                              "impact_loosening", "impact_tightening")})
+        row(r["policy_version"])["policy_driven_flips"] = r["policy_driven"]
+        row(r["policy_version"])["mean_confidence"] = round(r["mean_confidence"] or 0, 3)
+    for r in judged:
+        row(r["policy_version"])["cases"] = r["cases"]
+    for r in runs_:
+        row(r["policy_version"]).update({
+            k: r[k] for k in ("runs", "first_run", "last_run",
+                              "estimated_cost_usd", "actual_cost_usd")})
+    for r in models:
+        row(r["policy_version"])["judged_by"].append(r["judge_model"])
+    for r in out.values():
+        r["judged_by"] = sorted(r["judged_by"])
+    return out
+
+
+def runs_over_time(domain: str, policy_version: str | None = None) -> list[dict]:
+    """Individual runs, oldest first - the trend behind a version's totals.
+
+    Backfill runs are the interesting shape here: two years of replay arrive as
+    twenty-four rows, and a flip rate that moves across them is a policy whose
+    effect depends on when you ask, which no single headline can show.
+    """
+    where = "WHERE domain=?" + (" AND policy_version=?" if policy_version else "")
+    params: tuple = (domain,) if policy_version is None else (domain, policy_version)
+    return query(
+        f"""SELECT run_id, policy_version, baseline_version, started_at, cases_replayed,
+                   flips, impact, judge_model, estimated_cost_usd, actual_cost_usd
+            FROM runs {where} ORDER BY started_at, run_id""", params)
 
 
 def latest_verdicts(domain: str, policy_version: str) -> dict[str, dict]:

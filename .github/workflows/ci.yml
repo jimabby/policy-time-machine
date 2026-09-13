@@ -68,6 +68,7 @@ jobs:
           python -m ptm.rules expenses v2
           python -m ptm.calibration expenses v2
           python -m ptm.proposal expenses v2
+          python -m ptm.proposal expenses --list
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

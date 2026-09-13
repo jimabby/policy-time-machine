@@ -119,6 +119,9 @@ button:hover{border-color:var(--accent)}
   <h2>Established precedent</h2>
   <div id=precedents></div>
 
+  <h2>Superseded rulings <span class=note>what a re-adjudication replaced, and who changed their mind</span></h2>
+  <div id=superseded></div>
+
   <h2>Precedent conflicts <span class=note>rulings that contradict each other, not the policy</span></h2>
   <div id=conflicts></div>
 
@@ -127,6 +130,9 @@ button:hover{border-color:var(--accent)}
 
   <h2>Is the judge right? <span class=note>scored against the humans who ruled on the same cases</span></h2>
   <div id=calibration></div>
+
+  <h2>Version history <span class=note>did the edit help? every version replayed, side by side</span></h2>
+  <div id=history></div>
 
   <h2>Drafted amendments <span class=note>written by the proposal DAG, checked by the gate, approved by nobody</span></h2>
   <div id=drafts></div>
@@ -379,8 +385,9 @@ function renderPrecedents(rows, gate) {
     ? `<p class=hero><strong class=warn>${num(stale.size)} of these rulings</strong> were
        made about a version of the policy whose text has since changed, or before the
        circumstances were recorded. They are still enforced &mdash; re-adjudicating one is
-       how it stops being a guess. Whether a ruling still holds is a person's call, so
-       nothing here fails a run.</p>`
+       how it stops being a guess, and <code>adjudicate_${esc($("#domain").value)}</code>
+       with <code>target=stale</code> is how you do it. Whether a ruling still holds is a
+       person's call, so nothing here fails a run.</p>`
     : "";
   $("#precedents").innerHTML = note + table(
     [{label: "Case"}, {label: "Correct outcome"}, {label: "Ruled by"}, {label: "When"},
@@ -392,13 +399,38 @@ function renderPrecedents(rows, gate) {
       <td><span class=pill>${esc(r.correct_outcome)}</span>${r.judged_outcome
         ? ` <span class=sub>over &lsquo;${esc(r.judged_outcome)}&rsquo;</span>` : ""}</td>
       <td>${esc(r.ruled_by)}</td>
-      <td>${esc(r.established_at.slice(0, 10))}</td>
+      <td>${esc(r.established_at.slice(0, 10))}${r.revisions
+        ? ` <span class=sub>re-adjudicated, replacing ${num(r.revisions)} earlier ruling${
+            r.revisions === 1 ? "" : "s"}</span>` : ""}</td>
       <td class="${old ? "warn" : "muted"}">${esc(r.policy_version || "not recorded")}${
         r.judged_clause ? ` &middot; clause ${esc(r.judged_clause)}` : ""}${
         old ? `<div class=sub>${esc(old.detail)}</div>` : ""}</td>
       <td>${esc(r.note || "")}</td></tr>`;
     }),
     "No precedents yet - run the adjudication DAG and answer the human-in-the-loop tasks.");
+}
+
+// Re-adjudication is the only thing in this system that overwrites a
+// precedent, so it is the only thing that could lose one. This is where the
+// ruling it replaced stays readable.
+function renderSuperseded(h) {
+  $("#superseded").innerHTML = table(
+    [{label: "Case"}, {label: "Was"}, {label: "Is now"}, {label: "Their reason"},
+     {label: "Superseded"}],
+    h.rulings.map(r => `<tr>
+      <td>${esc(r.case_id)}</td>
+      <td><span class=pill>${esc(r.correct_outcome)}</span>
+        <div class=sub>${esc(r.ruled_by)}, ${esc((r.established_at || "").slice(0, 10))}${
+          r.policy_version ? ` &middot; ${esc(r.policy_version)}` : ""}</div></td>
+      <td class="${r.changed ? "warn" : "loose"}"><span class=pill>${
+        esc(r.current_outcome)}</span>
+        <div class=sub>${esc(r.current_ruled_by)} &middot; ${
+          r.changed ? "changed the answer" : "confirmed it"}</div></td>
+      <td>${esc(r.note || "")}</td>
+      <td class=muted>${esc((r.superseded_at || "").slice(0, 10))}</td></tr>`),
+    "No ruling has been re-adjudicated — every precedent on file is the first "
+      + "answer given for its case.")
+    + (h.superseded ? `<p class=note>${esc(h.caveat)}</p>` : "");
 }
 
 function renderConflicts(rows) {
@@ -774,6 +806,44 @@ function renderCalibration(result) {
       "") : "");
 }
 
+// --------------------------------------------------------------- history
+// The question the whole loop exists to answer and that no single-version
+// panel can: is this version better than the one it came from? Reversed human
+// rulings lead, because that is the number that fails a run.
+function renderHistory(h, current) {
+  const unit = h.impact_unit;
+  const rows = h.versions.map(r => {
+    const tags = [
+      r.in_force ? `<span class=pill>in force</span>` : "",
+      r.is_draft ? `<span class="pill warn">draft</span>` : "",
+      r.policy_version === current ? `<span class=pill>shown above</span>` : "",
+      r.known ? "" : `<span class="pill warn">not in the YAML</span>`,
+    ].join(" ");
+    if (!r.cases) {
+      return `<tr><td>${esc(r.policy_version)} ${tags}</td>
+        <td class=muted colspan=5>never replayed — nothing measured under this version</td>
+        <td class=muted>—</td></tr>`;
+    }
+    return `<tr>
+      <td>${esc(r.policy_version)} ${tags}</td>
+      <td class=num>${num(r.cases)}</td>
+      <td class=num>${num(r.flips)} <span class=muted>${pct(r.flip_rate)}
+        (${pct(r.flip_rate_lo)}–${pct(r.flip_rate_hi)})</span></td>
+      <td class=num>${num(r.policy_driven_flips)}</td>
+      <td class="num ${r.net_impact < 0 ? "tight" : "loose"}">${money(unit, r.net_impact)}</td>
+      <td class="num ${r.reverses ? "bad" : "loose"}">${
+        r.precedents_checked ? num(r.reverses) : "<span class=muted>unchecked</span>"}</td>
+      <td class=muted>${esc((r.last_run || "").slice(0, 10)) || "—"}</td></tr>`;
+  });
+  $("#history").innerHTML = table(
+    [{label: "Version"}, {label: "Cases", num: true}, {label: "Outcomes change", num: true},
+     {label: "Caused by it", num: true}, {label: "Net " + esc(unit), num: true},
+     {label: "Rulings reversed", num: true}, {label: "Last replayed"}],
+    rows,
+    "Nothing has been replayed for this domain yet.")
+    + `<p class=note>${esc(h.caveat)}</p>`;
+}
+
 // ---------------------------------------------------------------- drafts
 function renderDrafts(rows) {
   $("#drafts").innerHTML = table(
@@ -802,11 +872,13 @@ async function render() {
   $("#status").textContent = "Loading...";
   let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
       deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
-      preflightDetail, ruleDetail, crossDetail, draftRows;
+      preflightDetail, ruleDetail, crossDetail, draftRows, historyDetail,
+      supersededDetail;
   try {
     [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
      deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
-     preflightDetail, ruleDetail, crossDetail, draftRows] =
+     preflightDetail, ruleDetail, crossDetail, draftRows, historyDetail,
+     supersededDetail] =
       await Promise.all([
         api(`/api/summary/${domain}/${version}`),
         api(`/api/flips/${domain}/${version}`),
@@ -825,6 +897,8 @@ async function render() {
         api(`/api/rules/${domain}/${version}`),
         api(`/api/cross-check/${domain}/${version}`),
         api(`/api/drafts/${domain}`),
+        api(`/api/history/${domain}`),
+        api(`/api/precedent-history/${domain}`),
       ]);
   } catch (e) {
     fail("Could not load this replay. Please refresh or check the Airflow logs.");
@@ -855,9 +929,11 @@ async function render() {
   renderDeviations(deviationRows, summary.impact_unit);
   renderFlips(shown, flipRows.length, summary.impact_unit);
   renderPrecedents(precedentRows, gate);
+  renderSuperseded(supersededDetail);
   renderConflicts(conflictRows);
   renderStability(stabilityDetail, summary);
   renderCalibration(calibrationDetail);
+  renderHistory(historyDetail, version);
   renderDrafts(draftRows);
   $("#dlcsv").href = `/ptm/api/export/${domain}/${version}.csv`;
   $("#dljson").href = `/ptm/api/export/${domain}/${version}.json`;

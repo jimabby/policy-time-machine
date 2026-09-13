@@ -1,6 +1,17 @@
-.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep grid dev preflight calibrate rules propose draft crosscheck
+.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck
 
-PY ?= .venv/bin/python
+# A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
+# and the bootstrap command is python3 on one and python on the other. Both are
+# picked here rather than in each target, so `make test` works from Git Bash on
+# Windows as well as from a shell on Linux or macOS. Override PY to point at
+# any other interpreter.
+ifeq ($(OS),Windows_NT)
+PY        ?= .venv/Scripts/python
+BOOTSTRAP ?= python
+else
+PY        ?= .venv/bin/python
+BOOTSTRAP ?= python3
+endif
 ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
 
 help:      ## List targets
@@ -37,7 +48,7 @@ draft:     ## Have the proposal DAG write the next version of the policy
 	docker compose exec airflow airflow dags trigger propose_expenses
 
 dev:       ## Create the local venv used by test/lint/unit
-	python3 -m venv .venv && $(PY) -m pip install -q -r requirements-dev.txt
+	$(BOOTSTRAP) -m venv .venv && $(PY) -m pip install -q -r requirements-dev.txt
 
 lint:      ## Check every domain YAML against the policies it claims to implement
 	$(ENV) $(PY) -m ptm.lint
@@ -67,6 +78,12 @@ propose:   ## Draft the next version of the policy from the evidence (writes not
 	$(ENV) $(PY) -m ptm.proposal expenses v2
 	@echo
 	@echo "add --write to draft it into include/drafts/ as a real policy version"
+
+drafts:    ## List drafted amendments and what the gate made of each
+	$(ENV) $(PY) -m ptm.proposal expenses --list
+
+readjudicate: ## Re-ask rulings made about a clause the policy has since rewritten
+	docker compose exec airflow airflow dags trigger adjudicate_expenses --conf '{"target":"stale"}'
 
 sweep:     ## Ask what the threshold should be, not just which clause it is in
 	$(ENV) $(PY) -m ptm.sweep expenses v2

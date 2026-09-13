@@ -98,6 +98,12 @@ def precedents(domain: str) -> list[dict]:
     return found(report.precedents, domain)
 
 
+@app.get("/api/precedent-history/{domain}")
+def precedent_history(domain: str) -> dict:
+    """Rulings a later ruling replaced, when a stale one was re-adjudicated."""
+    return found(report.precedent_history, domain)
+
+
 @app.get("/api/deviations/{domain}/{version}")
 def deviations(domain: str, version: str,
                limit: int = Query(default=200, ge=1, le=500)) -> dict:
@@ -139,6 +145,12 @@ def rule_agreement(domain: str, version: str) -> dict:
 def drafts(domain: str) -> list[dict]:
     """Amendments drafted by the proposal DAG, with the evidence behind each."""
     return found(report.drafts, domain)
+
+
+@app.get("/api/history/{domain}")
+def history(domain: str) -> dict:
+    """Every version replayed, side by side: did the edit actually help?"""
+    return found(report.history, domain)
 
 
 @app.get("/api/thresholds/{domain}/{version}")

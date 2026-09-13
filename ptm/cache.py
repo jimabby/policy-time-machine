@@ -40,16 +40,38 @@ from .models import Verdict
 #: entries are still written, so turning it back on picks up where it left off.
 ENABLED = os.environ.get("PTM_CACHE", "1") == "1"
 
+#: An arbitrary string mixed into every key, to invalidate the cache on purpose.
+#:
+#: The key is the prompt and the model identifier, which covers everything this
+#: project controls: change the policy, the case, the template or the
+#: instructions and the entry misses. It cannot cover the one thing this project
+#: does *not* control - a vendor changing what sits behind an unchanged model
+#: identifier. Nothing here can detect that, so the honest answer is a manual
+#: lever, and this is it: bump ``PTM_CACHE_EPOCH`` and every prior answer stops
+#: being found.
+#:
+#: Deliberately not ``PTM_CACHE=0``, which stops reads and keeps writing into a
+#: keyspace you have decided you no longer trust, and deliberately not
+#: ``cache_clear()``, which destroys the evidence. An epoch leaves the old
+#: entries on disk, attributable and countable, and simply stops serving them -
+#: so "what did the judge say before the model changed underneath us" is still
+#: a question the database can answer.
+EPOCH = os.environ.get("PTM_CACHE_EPOCH", "")
 
-def key(prompt: str, model: str) -> str:
-    """The cache key for one prompt under one model.
 
-    Both halves matter. The same question put to a cheaper model is a different
+def key(prompt: str, model: str, epoch: str | None = None) -> str:
+    """The cache key for one prompt under one model, in one epoch.
+
+    All three matter. The same question put to a cheaper model is a different
     question, and serving one model's verdict as another's would make a
-    model-comparison run agree with itself perfectly and mean nothing.
+    model-comparison run agree with itself perfectly and mean nothing. The
+    epoch is the operator saying the same model is no longer the same judge -
+    see :data:`EPOCH`.
     """
     digest = hashlib.sha256()
     digest.update(model.encode("utf-8"))
+    digest.update(b"\x00")
+    digest.update((EPOCH if epoch is None else epoch).encode("utf-8"))
     digest.update(b"\x00")
     digest.update(prompt.encode("utf-8"))
     return digest.hexdigest()
@@ -126,4 +148,9 @@ def describe(hits: int, misses: int, saved_usd: float = 0.0) -> str:
         return "nothing to judge"
     line = (f"{hits} of {total} verdicts served from cache "
             f"({hits / total:.0%}), {misses} judged fresh")
-    return line + (f", saving an estimated USD {saved_usd:.2f}" if saved_usd else "")
+    line += (f", saving an estimated USD {saved_usd:.2f}" if saved_usd else "")
+    # Said out loud, because a run with an epoch set looks identical to a run
+    # with a cold cache and the difference is a decision somebody made.
+    if EPOCH:
+        line += f"  [cache epoch {EPOCH!r}: entries from earlier epochs are not served]"
+    return line

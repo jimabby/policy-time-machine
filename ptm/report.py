@@ -551,8 +551,46 @@ def conflicts(domain: str) -> list[dict]:
 
 def precedents(domain: str) -> list[dict]:
     _domain(domain)
-    return store.query(
+    rows = store.query(
         "SELECT * FROM precedents WHERE domain=? ORDER BY established_at DESC", (domain,))
+    # A ruling that has been re-adjudicated reads exactly like one made first
+    # time, and they are not the same thing: the second was made about a clause
+    # that had changed under the first. Re-adjudication is the only thing that
+    # replaces a precedent, so the count is the whole disclosure.
+    revisions = store.revision_counts(domain)
+    for row in rows:
+        row["revisions"] = revisions.get(row["case_id"], 0)
+    return rows
+
+
+def precedent_history(domain: str) -> dict:
+    """Rulings that a later ruling replaced. See :func:`ptm.store.save_precedent`.
+
+    Precedent is the only durable artefact here, so the one operation that
+    overwrites one - re-adjudicating a ruling made about a clause that has since
+    been rewritten - has to leave what it replaced readable. A reviewer who
+    changed their predecessor's answer, and the reason each of them gave, is the
+    most interesting record this system holds.
+    """
+    _domain(domain)
+    rows = store.precedent_history(domain)
+    current = {r["case_id"]: r for r in store.query(
+        "SELECT * FROM precedents WHERE domain=?", (domain,))}
+    for row in rows:
+        now = current.get(row["case_id"], {})
+        row["current_outcome"] = now.get("correct_outcome", "")
+        row["current_ruled_by"] = now.get("ruled_by", "")
+        row["changed"] = bool(now) and now.get("correct_outcome") != row["correct_outcome"]
+    return {
+        "domain": domain,
+        "superseded": len(rows),
+        "changed": sum(1 for r in rows if r["changed"]),
+        "reconfirmed": sum(1 for r in rows if not r["changed"]),
+        "rulings": rows,
+        "caveat": "a superseded ruling is not a mistake. It was made about the policy "
+                  "text as it then read, and is kept because whether it still holds is a "
+                  "judgement somebody made rather than a fact the gate can recompute.",
+    }
 
 
 def calibration(domain: str, version: str) -> dict:
@@ -668,6 +706,76 @@ def rule_agreement(domain: str, version: str) -> dict:
     return result
 
 
+def history(domain: str) -> dict:
+    """Every version of this policy that has been replayed, side by side.
+
+    The question this answers is the one the whole loop is *for* and that no
+    panel could answer: **did the edit help?** A single-version view says 147
+    outcomes change; it cannot say whether that is better or worse than the 161
+    the version before it changed, nor whether the draft written to fix it
+    actually fixed it. Comparing meant opening two tabs and doing arithmetic.
+
+    Each row carries the three numbers a version is judged on - what it moves,
+    what of that it is *responsible* for, and how many human rulings it reverses
+    - plus the sampling band on the rate, because two versions measured on
+    different numbers of cases differ by sample size before they differ by
+    policy. Reversals come from stored verdicts, so this costs nothing.
+    """
+    config = _domain(domain)
+    totals = store.version_totals(domain)
+    precedents = store.load_precedents(domain)
+    rows = []
+    for version in sorted(set(totals) | set(config.policies)):
+        row = totals.get(version) or {
+            "policy_version": version, "runs": 0, "cases": 0, "flips": 0,
+            "loosening": 0, "tightening": 0, "impact_loosening": 0.0,
+            "impact_tightening": 0.0, "policy_driven_flips": 0, "mean_confidence": 0.0,
+            "judged_by": [], "first_run": "", "last_run": "",
+            "estimated_cost_usd": 0.0, "actual_cost_usd": 0.0,
+        }
+        band = stats.rate(row["flips"], row["cases"])
+        # Scored against the rulings on file, from verdicts already stored. A
+        # version nothing has judged reports unchecked rather than zero: no
+        # reversals and no evidence look identical in a column of integers.
+        stored = store.latest_verdicts(domain, version)
+        judged = {
+            case_id: Verdict(outcome=r["outcome"], rationale=r["rationale"],
+                             confidence=r["confidence"], policy_clause=r["policy_clause"] or "")
+            for case_id, r in stored.items()
+        }
+        checked = [p for p in precedents if p.case_id in judged]
+        rows.append({
+            **row,
+            "known": version in config.policies,
+            "is_draft": version in config.draft_versions,
+            "in_force": version == config.in_force,
+            "flip_rate": band["rate"],
+            "flip_rate_lo": band["rate_lo"],
+            "flip_rate_hi": band["rate_hi"],
+            "net_impact": round((row["impact_loosening"] or 0)
+                                - (row["impact_tightening"] or 0), 2),
+            "deviation_flips": row["flips"] - row["policy_driven_flips"],
+            "precedents_checked": len(checked),
+            "reverses": len(diff.precedent_violations(judged, precedents)),
+            "estimated_cost_usd": round(row["estimated_cost_usd"] or 0, 4),
+            "actual_cost_usd": round(row["actual_cost_usd"] or 0, 4),
+        })
+    rows.sort(key=lambda r: (r["last_run"] or "", r["policy_version"]))
+    return {
+        "domain": domain,
+        "in_force": config.in_force,
+        "impact_unit": config.impact_unit,
+        "precedents": len(precedents),
+        "versions": rows,
+        "runs": store.runs_over_time(domain),
+        "caveat": "two versions are only comparable over the same cases. A version "
+                  "replayed on one month and one replayed on two years differ by sample "
+                  "before they differ by policy, which is what the band is for - and a "
+                  "version with no verdicts on file reverses no precedent because "
+                  "nothing has asked it, not because it agrees.",
+    }
+
+
 def drafts(domain: str) -> list[dict]:
     """Amendments drafted by :mod:`ptm.proposal`, newest first, with their provenance."""
     config = _domain(domain)
@@ -677,4 +785,10 @@ def drafts(domain: str) -> list[dict]:
         # A draft whose files were discarded leaves its provenance behind. Say
         # so rather than linking to a policy version that no longer resolves.
         row["available"] = row["version"] in on_disk
+        # Adopted and discarded both leave include/drafts/ empty, and they are
+        # the opposite decision - so the reason the files are gone is reported
+        # rather than left to be inferred from their absence.
+        row["adopted"] = bool(row.get("adopted_as"))
+        row["state"] = ("adopted" if row["adopted"]
+                        else "available" if row["available"] else "discarded")
     return rows

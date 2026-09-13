@@ -278,6 +278,98 @@ def describe_stale(stale: list[dict], version: str) -> str:
     return "\n".join(lines)
 
 
+def stale_review_items(stale: list[dict], precedents: list[Precedent],
+                       cases: list[Case], verdicts: dict[str, Verdict],
+                       domain: DomainConfig, limit: int = 0) -> list[dict]:
+    """Stale rulings, in the shape the adjudication queue hands to a human.
+
+    :func:`stale_precedents` says which rulings are no longer about the text now
+    in front of them, and until this existed that was where it stopped: the gate
+    printed the warning on every run, the README said "re-adjudicating one of
+    these is how it stops being a guess", and nothing in the project could
+    re-adjudicate one. The queue only ever held flips.
+
+    So these are built to be indistinguishable from a flip downstream - same
+    keys, same rendering, same recording path - with the circumstances of the
+    original ruling carried alongside. A reviewer settling one of these is not
+    being asked a fresh question, they are being asked whether an answer given
+    about a sentence that has since changed still holds, and they cannot answer
+    that without being shown both versions of the sentence and what the person
+    before them said.
+
+    ``new_outcome`` is what the *candidate policy* now gives, so the same
+    "should this have been X rather than Y" framing works: the reviewer is
+    choosing between what the policy says today and what the ruling says. A case
+    with no verdict on file is skipped - asking somebody to re-confirm a ruling
+    against a policy nothing has applied is asking them to guess.
+    """
+    by_case = {p.case_id: p for p in precedents}
+    payloads = {c.case_id: c for c in cases}
+    out: list[dict] = []
+    for row in stale:
+        case_id = row["case_id"]
+        precedent, case = by_case.get(case_id), payloads.get(case_id)
+        verdict = verdicts.get(case_id)
+        if precedent is None or case is None or verdict is None:
+            continue
+        out.append({
+            "case_id": case_id,
+            "decided_at": case.decided_at.isoformat(),
+            "actual_outcome": case.actual_outcome,
+            "new_outcome": verdict.outcome,
+            "rationale": verdict.rationale,
+            "confidence": verdict.confidence,
+            "policy_clause": verdict.policy_clause,
+            "impact": domain.impact_of(case.payload),
+            "payload": case.payload,
+            "direction": domain.direction(case.actual_outcome, verdict.outcome),
+            "segments": domain.segments_of(case.payload),
+            "attribution": "",
+            "baseline_outcome": "",
+            "stability": "",
+            # Everything above makes this look like a flip. Everything below is
+            # what makes it a re-adjudication, and what the reviewer is actually
+            # being asked about.
+            "readjudication": {
+                "precedent_outcome": precedent.correct_outcome,
+                "ruled_by": precedent.ruled_by,
+                "ruled_at": precedent.established_at.date().isoformat(),
+                "note": precedent.note,
+                "ruled_under": row.get("ruled_under", ""),
+                "clause": row.get("clause", ""),
+                "reason": row["reason"],
+                "detail": row["detail"],
+                "was": row.get("was", ""),
+                "now": row.get("now", ""),
+            },
+        })
+    # Widest gap first: a ruling the policy now contradicts is more urgent to
+    # settle than one it happens to agree with, which is stale on paper only.
+    out.sort(key=lambda r: (r["new_outcome"] == r["readjudication"]["precedent_outcome"],
+                            -r["impact"], r["case_id"]))
+    return out[:limit] if limit > 0 else out
+
+
+def describe_readjudication(items: list[dict], version: str) -> str:
+    """The re-adjudication queue as the DAG logs it."""
+    if not items:
+        return (f"no ruling on file is stale against policy {version}: every one was made "
+                f"about the text as it now stands, or about a clause that has not moved")
+    contradicted = [i for i in items
+                    if i["new_outcome"] != i["readjudication"]["precedent_outcome"]]
+    lines = [f"{len(items)} ruling(s) to re-confirm against policy {version}, "
+             f"{len(contradicted)} of which {version} now contradicts:"]
+    for item in items:
+        r = item["readjudication"]
+        mark = "!" if item["new_outcome"] != r["precedent_outcome"] else " "
+        lines.append(f" {mark} {item['case_id']}: {r['ruled_by']} ruled "
+                     f"'{r['precedent_outcome']}' on {r['ruled_at']}, {version} gives "
+                     f"'{item['new_outcome']}'  [{r['reason']}]")
+    lines.append("  a reviewer confirming one of these makes it a ruling about the policy "
+                 "as it stands; the earlier ruling is kept, not overwritten.")
+    return "\n".join(lines)
+
+
 def precedent_conflicts(rows: list[dict], domain: DomainConfig) -> list[PrecedentConflict]:
     """Human rulings that contradict each other rather than the policy.
 

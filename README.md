@@ -140,6 +140,8 @@ Five DAGs per domain, generated from `include/domains/*.yaml`:
                     │ adjudicate_<domain> │  selects ~8 contested flips
                     │ HITLOperator (map)  │  ← a human answers in the Airflow UI
                     │ → precedents        │
+                    │ target=stale        │  ← or re-asks rulings whose clause
+                    │                     │    has since been rewritten
                     └──────────┬──────────┘
                                │ Asset: ptm://<domain>/precedents
                     ┌──────────▼──────────┐
@@ -157,7 +159,14 @@ Five DAGs per domain, generated from `include/domains/*.yaml`:
                      │  → drafts a patch   │  LLMOperator, output_type=PolicyPatch
                      │  → writes a version │  include/drafts/, judged like any other
                      │  → re-runs the gate │  ← and this is why it is allowed to
+                     │  → replay=true      │  ← and what it does to every case
+                     │                     │    nobody has ruled on (a full bill)
                      └─────────────────────┘
+
+                        a person adopts it, or does not:
+                        python -m ptm.proposal <domain> --list
+                        python -m ptm.proposal <domain> --adopt <v> --by <name>
+                        python -m ptm.proposal <domain> --discard <v>
 ```
 
 `select_for_review` is deliberately stingy: humans see a flip only if the
@@ -247,6 +256,27 @@ ruling has not been re-confirmed since the text it was about changed, and
 whether it still holds is a person's call rather than a run's. When a reversal
 rests on one of these, the gate says so: re-adjudicating it is a different fix
 from editing the policy.
+
+So there is a way to re-adjudicate one. `adjudicate_<domain>` with
+`target=stale` queues exactly those rulings, and asks a different question from
+the flip queue: not *what is the correct outcome* but *does your predecessor's
+answer survive the rewrite?* The reviewer is shown that answer, the reason they
+gave for it, and the clause as it read then against how it reads now — because
+nobody can settle that without all three.
+
+```
+1 ruling(s) to re-confirm against policy v2, 1 of which v2 now contradicts:
+ ! exp-0054: finance.lead ruled 'deny' on 2025-03-04, v2 gives 'approve'  [clause_changed]
+  a reviewer confirming one of these makes it a ruling about the policy as it
+  stands; the earlier ruling is kept, not overwritten.
+```
+
+Confirming the earlier answer is a real result — it turns a ruling the gate was
+enforcing on trust into one that has been checked. And because re-adjudication
+is the only operation in this system that overwrites a precedent, it is also the
+only one that could lose one: `store.save_precedent` archives the ruling it
+replaces to `precedent_history` before writing, so who said what, when, and why
+survives being disagreed with.
 
 **`judge_stability_<domain>`** — the error bar, in two modes, plus an optional
 second judge (`compare_model`; see *Ask a second judge* below).
@@ -745,6 +775,38 @@ itself. That would not make the error bar wrong, it would make it *reassuring* �
 [a test asserts the opt-out](tests/test_dags.py), and it is the only one in the
 file.
 
+**And one lever the key cannot provide.** Hashing the prompt covers everything
+this project controls; it cannot cover a vendor changing what sits behind an
+unchanged model identifier. Nothing can detect that, so rather than pretend,
+`PTM_CACHE_EPOCH` is mixed into every key: bump it and no earlier answer is
+found again. It leaves the old entries on disk — unlike clearing the table —
+so *what did the judge say before the model changed underneath us* stays a
+question the database can answer.
+
+### So did the edit help?
+
+Every panel above is about one version. The question the whole loop exists for
+compares two, and answering it meant opening two tabs and doing arithmetic:
+
+```
+version    cases  outcomes change   caused by it   net GBP   rulings reversed
+v1  in force   600    0     0.0%                0         0          8
+v2             600  147    24.5% (21.2–28.1%) 109   +12,014          2
+v2-draft1      600  118    19.7% (16.6–23.1%)  94    +9,880          1   draft
+```
+
+Three numbers, because a version is judged on all three: what it moves, how
+much of that it is *responsible* for, and how many human rulings it reverses.
+The band is there because two versions measured on different numbers of cases
+differ by sample size before they differ by policy, and a version nothing has
+replayed says so rather than reporting a confident zero — no reversals and no
+evidence look identical in a column of integers.
+
+Reversals are read from verdicts already stored, so the whole table costs
+nothing, and the rows are deduplicated the same latest-row-wins way as every
+other read model here: a manual run overlapping a backfill must not make one
+version look twice as busy as the one beside it.
+
 ## Run it
 
 ```bash
@@ -763,7 +825,7 @@ No Airflow, no API key, whole loop in about a second:
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest
-make test      # lint + 510 engine tests + the whole loop end to end
+make test      # lint + 597 engine tests + the whole loop end to end
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
@@ -771,7 +833,24 @@ make grid      # two thresholds at once - one curve cannot show them interacting
 make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
 make propose   # draft the next version of the policy (writes nothing)
+make drafts    # what has been drafted, and what the gate made of each
 ```
+
+A draft is a proposal, so the last step is a person's:
+
+```bash
+python -m ptm.proposal expenses --list
+python -m ptm.proposal expenses --adopt v2-draft1 --by "jim (finance)"
+python -m ptm.proposal expenses --discard v2-draft1
+```
+
+`--adopt` moves the markdown into `include/policies/`, registers it **and its
+offline rules** in the domain YAML without touching a single comment in that
+file, and records who adopted it in the document. It refuses to adopt anything
+that is not a draft, refuses to write over an existing version, and refuses to
+do any of it anonymously. Adopting does not make the policy *in force* — that
+is `in_force` in the YAML, one more deliberate edit, because a version existing
+and a version governing are different claims.
 
 ### Offline vs the real judge
 
@@ -939,9 +1018,12 @@ Built and run against `apache/airflow:3.1.0` with
   expression rather than calling `eval`, and refuses everything outside
   comparisons, boolean and arithmetic operators, literals and a fixed helper
   list. That is what makes it safe to let `propose_<domain>` have a model write
-  rules that later replays evaluate. It is a whitelist, not a jail: it bounds
-  what an expression can *do*, and does not bound how long a pathological but
-  legal one takes beyond the `**` ceiling.
+  rules that later replays evaluate. It bounds cost as well as reach, because a
+  whitelist that cannot be escaped can still be made to run forever on a worker
+  holding a mapped task slot: `MAX_EXPONENT` caps one `**`, chained
+  exponentiation is refused outright — every exponent in `((b**64)**64)**64` is
+  a legal 64 while the base grows — and `MAX_RESULT_SIZE` caps what an
+  expression may build, which is the bound that also covers `'x' * 10**9`.
 - **A second judge is independent, not correct.** Where two judges split, the
   cross-check reports both answers and stops; it is evidence the *policy* does
   not settle that case, never evidence about which model was right. It also has
@@ -952,7 +1034,14 @@ Built and run against `apache/airflow:3.1.0` with
   staleness check says which rulings predate the text now in front of them; it
   does not decide whether they still hold, and the gate goes on enforcing every
   one of them. Rulings recorded before the circumstances were captured are
-  reported as *unknown* rather than assumed fresh.
+  reported as *unknown* rather than assumed fresh. Deciding is a person's job
+  and now has a route to a person: `adjudicate_<domain>` with `target=stale`
+  puts those rulings back in front of a reviewer, showing them the earlier
+  answer, the reason given for it, and both versions of the sentence it was
+  about. Re-adjudication is the only thing that overwrites a precedent, so the
+  ruling it replaces is archived rather than lost — `precedent_history` keeps
+  it, the precedents panel says a ruling has been revised, and confirming the
+  earlier answer is a real result, not a no-op.
 - **The rule-agreement gate is inert offline** and deliberately does not fire
   when the measurement is inert or absent. A gate that passes because the check
   is switched off is worse than no gate; one that fires on a project that has
@@ -978,12 +1067,16 @@ Built and run against `apache/airflow:3.1.0` with
 - **The verdict cache is keyed on the prompt**, so anything that changes the
   prompt misses — including a change to the case template or the judge
   instructions. What it cannot detect is a *vendor-side* change behind an
-  unchanged model identifier. `PTM_CACHE=0` stops reads without stopping writes,
-  and `judge_stability` never reads it at all.
+  unchanged model identifier — so that gets a lever rather than a pretence:
+  `PTM_CACHE_EPOCH` is mixed into every key, and bumping it stops every earlier
+  answer being served while leaving the entries on disk to be read. `PTM_CACHE=0`
+  stops reads without stopping writes, and `judge_stability` never reads it at all.
 - **A drafted amendment is a proposal, not a policy.** It is checked against the
   precedent set — a handful of contested cases — which tells you it reverses no
   human ruling, not that it is a good rule. Finding out what it does to the
-  other 592 cases still costs a replay, and the draft says so.
+  other 592 cases still costs a replay; `propose_<domain>` will trigger that
+  replay for you with `replay=true`, off by default because it is a full bill.
+  Adopting it is separate again, and deliberately a person's act.
 - The offline proposer optimises the gate directly, which is exactly what a
   proposer should not be trusted to do on its own. It moves numbers and nothing
   else: a parenthetical explaining the old value, or a neighbouring clause that

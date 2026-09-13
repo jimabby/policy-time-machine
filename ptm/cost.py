@@ -19,10 +19,15 @@ ledger: :func:`reconcile` is the one that matters, because the gap between them
 says how wrong the forecast was *and* what characters-per-token ratio would
 have made it right for your policies.
 
-Prices are USD per million tokens and live in one table below. Override a model
-or add one without touching code via ``PTM_PRICE_<IN>_<OUT>``:
+Prices are USD per million tokens and live in one table below. ``PTM_PRICE``
+overrides it without touching code, for when the table has gone stale and you
+would rather not wait for a release:
 
     PTM_PRICE=3.00/15.00    # input/output USD per million tokens
+
+It applies to **every** model rather than to a named one. That is the right
+shape for what it is for - one run, one judge, a price the table got wrong -
+and the wrong shape for maintaining a price list, which belongs in the table.
 """
 
 from __future__ import annotations

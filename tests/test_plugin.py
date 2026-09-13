@@ -70,10 +70,14 @@ def dashboard_api_urls() -> list[str]:
     Read out of the page rather than restated here, so a renderer that starts
     calling a new endpoint is covered without anyone remembering to add it -
     and a typo in one becomes a failing test instead of an empty panel.
+
+    All three quote styles, not only backticks. A URL with nothing to
+    interpolate is written as a plain string, so a backtick-only scan silently
+    skipped those - /api/domains among them, the one call every render makes.
     """
     html = DASHBOARD.read_text(encoding="utf-8")
     urls = set()
-    for raw in re.findall(r"`(/(?:ptm/)?api/[^`]*)`", html):
+    for raw in re.findall(r"""["'`](/(?:ptm/)?api/[^"'`]*)["'`]""", html):
         url = raw.replace("/ptm/api/", "/api/", 1)
         if "?" in url:  # the sweep builds its query string separately
             url = url.split("?", 1)[0]
@@ -115,6 +119,31 @@ class TestEveryUrlTheDashboardAsksFor:
             response = client.get(url)
             kind = response.headers["content-type"].split(";")[0]
             assert kind in {"application/json", "text/csv", "text/plain"}, (url, kind)
+
+    def test_and_no_endpoint_exists_that_nothing_asks_for(self):
+        """The other direction, and the one that rots quietly.
+
+        Coverage of this API comes from the URLs the page asks for, so an
+        endpoint the page never calls is an endpoint no test ever reaches - it
+        can 500 for a release without anybody noticing. Adding a read model and
+        forgetting to render it is the normal way that happens.
+        """
+        from plugins.policy_time_machine_plugin import app
+
+        asked = {url.split("?")[0] for url in dashboard_api_urls()}
+        unused = []
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            if not path.startswith("/api/"):
+                continue
+            # Compare on shape: the page's URLs are concrete, the routes are
+            # templated, so both are reduced to their fixed prefix.
+            prefix = path.split("{")[0]
+            if not any(url.startswith(prefix) for url in asked):
+                unused.append(path)
+        assert not unused, (
+            f"these endpoints are served but nothing on the page calls them, so no "
+            f"test reaches them: {unused}")
 
 
 @needs_plugin
