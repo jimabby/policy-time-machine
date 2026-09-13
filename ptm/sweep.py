@@ -298,7 +298,8 @@ def _interaction(points: list[dict], firsts: list, seconds: list) -> dict:
     if len(firsts) < 2 or len(seconds) < 2:
         return {"measured": False,
                 "hint": "a grid needs at least two settings on each axis to say whether "
-                        "the dials interact"}
+                        "the dials interact",
+                "hint_key": "hint.grid_needs_two"}
     by_pair = {(p["first_value"], p["second_value"]): p["flips"] for p in points}
     spans = []
     for b in seconds:
@@ -307,7 +308,8 @@ def _interaction(points: list[dict], firsts: list, seconds: list) -> dict:
         if len(column) > 1:
             spans.append(max(column) - min(column))
     if not spans:
-        return {"measured": False, "hint": "the grid is incomplete"}
+        return {"measured": False, "hint": "the grid is incomplete",
+                "hint_key": "hint.grid_incomplete"}
     spread = max(spans) - min(spans)
     return {
         "measured": True,

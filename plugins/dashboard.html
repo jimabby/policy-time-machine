@@ -29,6 +29,21 @@ pre{margin:8px 0;white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;color
 .bad{color:var(--tight);font-weight:600}
 h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:28px 0 10px}
 h2 .note{text-transform:none;letter-spacing:0;color:var(--mute);font-weight:400;margin-left:8px}
+/* The caveat under a table. It was only ever styled as `h2 .note`, so every
+   `<p class=note>` a renderer emits came out as ordinary body copy - reading as
+   another finding rather than as the limit on the ones above it. */
+p.note{color:var(--mute);font-size:12px;margin:8px 0 0}
+.howto{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 16px;margin:0 0 24px}
+.howto>summary{cursor:pointer;padding:14px 0;font-weight:600;list-style:none;display:flex;align-items:center;gap:8px}
+.howto>summary::-webkit-details-marker{display:none}
+.howto>summary::before{content:"B8";color:var(--accent);transition:transform .15s}
+.howto[open]>summary::before{transform:rotate(90deg)}
+.howto>summary:hover{color:var(--accent)}
+.howto ol{margin:0 0 14px;padding-left:22px}
+.howto li{margin:0 0 10px;color:var(--dim);max-width:80ch}
+.howto li b{color:var(--fg);font-weight:600}
+.howto code{background:#0b1222;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font:12px/1.5 ui-monospace,monospace;color:var(--accent)}
+.howto .lede{color:var(--dim);margin:0 0 14px;max-width:80ch}
 .empty{color:var(--dim);padding:16px}
 .error{color:var(--tight);padding:16px;border:1px solid #ff7b8955;border-radius:10px;background:#ff7b8910}
 .reviewed{color:var(--dim);font-size:11px}
@@ -56,33 +71,44 @@ button:hover{border-color:var(--accent)}
   <select id=domain aria-label="Domain"></select>
   <select id=version aria-label="Policy version"></select>
   <input id=search type=search placeholder="Filter case IDs" aria-label="Filter case IDs">
+  <select id=lang aria-label="Language">
+    <option value=en>English</option>
+    <option value=zh>中文</option>
+  </select>
   <span id=label style="color:var(--dim)"></span>
   <span class=status id=status></span>
   <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
 <main>
-  <p class=hero>Replay real decisions under a proposed rule, attribute every change to the clause
+  <p class=hero data-t="hero.main">Replay real decisions under a proposed rule, attribute every change to the clause
   that caused it, surface who it lands on, and retain human rulings as regression tests.</p>
   <p class=hero id=draftnote hidden></p>
+
+  <details class=howto id=howto>
+    <summary data-t="howto.title">How to read this page</summary>
+    <p class=lede data-t="howto.lede"></p>
+    <ol id=howtosteps></ol>
+  </details>
+
   <div class=tiles id=tiles></div>
 
-  <h2>Before you spend anything <span class=note>problems readable in the policy text itself</span></h2>
+  <h2 data-t="h.preflight">Before you spend anything <span class=note data-t="h.preflight.note">problems readable in the policy text itself</span></h2>
   <div id=preflight></div>
 
-  <h2>What drives the change <span class=note id=clausenote></span></h2>
+  <h2 data-t="h.clauses">What drives the change <span class=note id=clausenote></span></h2>
   <div id=clauses></div>
 
-  <h2>Blast radius <span class=note>how many cases in each segment actually move</span></h2>
+  <h2 data-t="h.segments">Blast radius <span class=note data-t="h.segments.note">how many cases in each segment actually move</span></h2>
   <div id=segments></div>
 
-  <h2>Does it land evenly? <span class=note>segments carrying more of the change than the rest of their field</span></h2>
+  <h2 data-t="h.disparity">Does it land evenly? <span class=note data-t="h.disparity.note">segments carrying more of the change than the rest of their field</span></h2>
   <div id=disparity></div>
 
-  <h2>Where should the threshold be? <span class=note>re-runs the replay at each value, from the offline rules</span></h2>
+  <h2 data-t="h.sweep">Where should the threshold be? <span class=note data-t="h.sweep.note">re-runs the replay at each value, from the offline rules</span></h2>
   <div class=cmp>
     <select id=swdial aria-label="Threshold to sweep"></select>
     <input id=swvalues aria-label="Values to try" placeholder="25,50,75,100,150">
-    <button id=swgo>Sweep</button>
+    <button id=swgo data-t="btn.sweep">Sweep</button>
     <span id=swnote></span>
   </div>
   <!-- A curve holds every other dial still and never says so. This is the
@@ -90,51 +116,51 @@ button:hover{border-color:var(--accent)}
   <div class=cmp>
     <select id=swdial2 aria-label="Second threshold (optional)"></select>
     <input id=swvalues2 aria-label="Values for the second dial" placeholder="3,7,14">
-    <button id=swgo2>Sweep both</button>
+    <button id=swgo2 data-t="btn.sweepboth">Sweep both</button>
     <span id=swnote2></span>
   </div>
   <div id=sweep></div>
   <div id=sweepgrid></div>
 
-  <h2>Can the sweep be trusted? <span class=note>do the offline rules agree with the judge they stand in for</span></h2>
+  <h2 data-t="h.rules">Can the sweep be trusted? <span class=note data-t="h.rules.note">do the offline rules agree with the judge they stand in for</span></h2>
   <div id=rules></div>
 
-  <h2>Does a second judge agree? <span class=note>self-consistency is satisfied by a judge that misreads a clause every time</span></h2>
+  <h2 data-t="h.crosscheck">Does a second judge agree? <span class=note data-t="h.crosscheck.note">self-consistency is satisfied by a judge that misreads a clause every time</span></h2>
   <div id=crosscheck></div>
 
-  <h2>Not this policy's doing <span class=note>recorded outcomes the rule already in force disagreed with</span></h2>
+  <h2 data-t="h.deviations">Not this policy's doing <span class=note data-t="h.deviations.note">recorded outcomes the rule already in force disagreed with</span></h2>
   <div id=deviations></div>
 
-  <h2>Compare policy versions <span class=note>did the edit help?</span></h2>
+  <h2 data-t="h.compare">Compare policy versions <span class=note data-t="h.compare.note">did the edit help?</span></h2>
   <div class=cmp>
-    <span>Compare</span><select id=cmpleft aria-label="Left version"></select>
-    <span>against</span><select id=cmpright aria-label="Right version"></select>
+    <span data-t="compare.label">Compare</span><select id=cmpleft aria-label="Left version"></select>
+    <span data-t="compare.against">against</span><select id=cmpright aria-label="Right version"></select>
     <span id=cmpsummary></span>
   </div>
   <div id=compare></div>
 
-  <h2>Flipped decisions</h2>
+  <h2 data-t="h.flips">Flipped decisions</h2>
   <div id=flips></div>
 
-  <h2>Established precedent</h2>
+  <h2 data-t="h.precedents">Established precedent</h2>
   <div id=precedents></div>
 
-  <h2>Superseded rulings <span class=note>what a re-adjudication replaced, and who changed their mind</span></h2>
+  <h2 data-t="h.superseded">Superseded rulings <span class=note data-t="h.superseded.note">what a re-adjudication replaced, and who changed their mind</span></h2>
   <div id=superseded></div>
 
-  <h2>Precedent conflicts <span class=note>rulings that contradict each other, not the policy</span></h2>
+  <h2 data-t="h.conflicts">Precedent conflicts <span class=note data-t="h.conflicts.note">rulings that contradict each other, not the policy</span></h2>
   <div id=conflicts></div>
 
-  <h2>Judge stability <span class=note>the error bar under every number above</span></h2>
+  <h2 data-t="h.stability">Judge stability <span class=note data-t="h.stability.note">the error bar under every number above</span></h2>
   <div id=stability></div>
 
-  <h2>Is the judge right? <span class=note>scored against the humans who ruled on the same cases</span></h2>
+  <h2 data-t="h.calibration">Is the judge right? <span class=note data-t="h.calibration.note">scored against the humans who ruled on the same cases</span></h2>
   <div id=calibration></div>
 
-  <h2>Version history <span class=note>did the edit help? every version replayed, side by side</span></h2>
+  <h2 data-t="h.history">Version history <span class=note data-t="h.history.note">did the edit help? every version replayed, side by side</span></h2>
   <div id=history></div>
 
-  <h2>Drafted amendments <span class=note>written by the proposal DAG, checked by the gate, approved by nobody</span></h2>
+  <h2 data-t="h.drafts">Drafted amendments <span class=note data-t="h.drafts.note">written by the proposal DAG, checked by the gate, approved by nobody</span></h2>
   <div id=drafts></div>
 </main>
 <script>
@@ -150,11 +176,633 @@ const api = async path => {
   return r.json();
 };
 
+// ------------------------------------------------------------------ i18n
+// Every string the page can show, in each language it speaks. The English
+// entries are the literals the renderers used to carry inline, moved here
+// unchanged: a table that paraphrases the original while claiming to be it is
+// the one failure mode this cannot be tested out of.
+//
+// `{name}` placeholders are substituted by t(). The values passed in are
+// already escaped or already formatted - the templates are ours, so they may
+// carry markup, and nothing from the API is interpolated without esc() first.
+const I18N = {
+en: {
+  "app.title": "Policy Time Machine",
+  "aria.domain": "Domain", "aria.version": "Policy version", "aria.lang": "Language",
+  "aria.search": "Filter case IDs", "search.placeholder": "Filter case IDs",
+  "aria.swdial": "Threshold to sweep", "aria.swvalues": "Values to try",
+  "aria.swdial2": "Second threshold (optional)", "aria.swvalues2": "Values for the second dial",
+  "aria.cmpleft": "Left version", "aria.cmpright": "Right version",
+  "status.loading": "Loading...", "status.unavailable": "Unavailable",
+  "status.runs": "{n} run{s}", "status.flips": " flips", "status.shown": " shown",
+  "version.draft": " (draft)", "plural.s": "s",
+  "hero.main": "Replay real decisions under a proposed rule, attribute every change to the clause that caused it, surface who it lands on, and retain human rulings as regression tests.",
+  "draft.note": "<strong class=warn>{v} is a drafted amendment</strong>, written by the proposal DAG from the evidence below and approved by nobody. Everything on this page measures it exactly as it would measure a policy somebody wrote.",
+
+  // ---- the how-to panel
+  "howto.title": "How to read this page",
+  "howto.lede": "This page answers one question: <b>what would this rule change actually do?</b> Read it top to bottom &mdash; each panel answers a question the one above it provokes. Nothing here computes on demand except the sweeps; every other number comes from a DAG that has already run.",
+  "howto.step1": "<b>Pick a domain and a candidate version</b> in the bar at the top. A version marked <code>(draft)</code> was written by the proposal DAG, not by a person. The whole page then describes that version, measured against the one currently in force.",
+  "howto.step2": "<b>Start with the tiles.</b> They are the headline: how many decisions were replayed, how many change, what that costs, and whether the gate passes. Read <i>Not this policy's doing</i> twice &mdash; those are changes the recorded outcome already got wrong under the old rule, so they are not the proposal's fault.",
+  "howto.step3": "<b>Then ask which sentence to edit.</b> <i>What drives the change</i> attributes every flip to the clause responsible. <i>Blast radius</i> and <i>Does it land evenly?</i> say who those changes land on, with denominators &mdash; a concentration there is a question to answer before shipping, not a verdict.",
+  "howto.step4": "<b>Move the numbers.</b> Under <i>Where should the threshold be?</i> pick a dial, enter some values, and press <code>Sweep</code> to re-run the replay at each one. <code>Sweep both</code> moves two dials together, which is the only way to see them interact. These run from the offline rules, so read <i>Can the sweep be trusted?</i> before believing the curve.",
+  "howto.step5": "<b>Check the judge before trusting any of it.</b> <i>Judge stability</i> is the error bar, <i>Is the judge right?</i> scores it against the humans who ruled on the same cases, and <i>Does a second judge agree?</i> catches a judge that misreads a clause the same way every time &mdash; the one failure the other two cannot see.",
+  "howto.step6": "<b>Adjudicate, and the gate builds itself.</b> Flips routed to a human become precedents, and every later version is re-checked against them. A <span class=bad>VIOLATES</span> in the flip table, or a reversal in the Gate tile, means this version overturns a ruling a person already made.",
+  "howto.step7": "<b>Export what you argue from.</b> <code>CSV</code> is the flip set for a spreadsheet; <code>JSON</code> is everything on this page with its caveats attached. Both cover the domain and version selected right now.",
+  "howto.step8": "<b>Nothing on this page triggers a DAG.</b> An empty panel means the DAG behind it has not run yet, and the panel says which one. Trigger it in Airflow, then refresh.",
+
+  // ---- tiles
+  "tile.replayed": "Decisions replayed",
+  "tile.flips": "Outcomes that change",
+  "tile.flips.sub": "{pct} of cases ({lo}-{hi}), {tail}",
+  "tile.flips.caused": "{n} caused by this policy",
+  "tile.flips.nobaseline": "attribution needs a baseline pass",
+  "tile.deviations": "Not this policy's doing",
+  "tile.deviations.sub": "recorded outcome broke the old rule too",
+  "tile.loose": "More generous", "tile.tight": "More strict",
+  "tile.net": "Net cost of the change", "tile.net.sub": "{money} including deviations",
+  "tile.precedents": "Precedents on file",
+  "tile.precedents.conflicts": "{n} conflict(s)", "tile.precedents.ok": "self-consistent",
+  "tile.noise": "Judge noise floor", "tile.notmeasured": "not measured",
+  "tile.noise.sub": "{cases} cases x {samples}", "tile.noise.hint": "run the stability DAG",
+  "tile.accuracy": "Judge accuracy",
+  "tile.accuracy.sub": "agreed with {a} of {b} human rulings",
+  "tile.accuracy.over": ", {pct} overconfident",
+  "tile.accuracy.hint": "needs precedents judged by the gate",
+  "tile.spend": "Judging spend",
+  "tile.spend.measured": "measured; estimate was USD {est} ({err} out)",
+  "tile.spend.estimated": "estimated · full replay forecast USD {fc}",
+  "tile.spend.cache": " · cache saved USD {saved}",
+  "tile.confirmed": "Flips confirmed",
+  "tile.confirmed.unstable": "{n} would not reproduce - held back from review",
+  "tile.confirmed.ok": "every re-judged flip reproduced",
+  "tile.confirmed.hint": "run the stability DAG with target=flips",
+  "tile.gate": "Gate", "tile.gate.reversed": "{n} reversed", "tile.gate.none": "no precedents",
+  "tile.gate.sub": "{n} introduced by this policy; {m} by {v}, in force",
+  "tile.gate.unchecked": " - {n} unchecked",
+  "tile.gate.stale": " - {n} ruling(s) predate the current text",
+  "tile.gate.hint": "adjudicate some flips first",
+
+  // ---- clause attribution
+  "clauses.baseline": "baseline: policy {v}",
+  "clauses.nobaseline": "no baseline pass recorded - set baseline_version on the replay DAG to attribute changes",
+  "clauses.col.clause": "Responsible for", "clauses.col.share": "Share", "clauses.col.flips": "Flips",
+  "clauses.col.loose": "More generous", "clauses.col.tight": "More strict",
+  "clauses.col.net": "Net", "clauses.col.conf": "Mean conf.",
+  "clauses.notpolicy": "not caused by this policy",
+  "clauses.empty": "No attributed changes yet - run or backfill the replay DAG.",
+
+  // ---- blast radius
+  "segments.nofields": "This domain declares no <code>segment_fields</code>.",
+  "segments.noresults": "No replay results for this policy version yet &mdash; run or backfill the replay DAG. This domain segments by <code>{fields}</code>.",
+  "segments.by": "by {field}",
+
+  // ---- compare
+  "compare.label": "Compare", "compare.against": "against",
+  "compare.pick": "pick two different versions",
+  "compare.unavailable": "Comparison unavailable.",
+  "compare.summary": "<span class=muted>{n} cases judged under both &middot; </span><strong>{d}</strong> differ <span class=muted>({a} agree)</span>",
+  "compare.none": "<span class=muted>no cases judged under both versions yet</span>",
+  "compare.col.case": "Case", "compare.col.recorded": "Recorded", "compare.col.clause": "Clause {v}",
+  "compare.agree": "These two versions agree on every case judged under both.",
+  "compare.empty": "Judge both versions to compare them - the replay DAG's baseline pass does this automatically.",
+
+  // ---- flips
+  "flips.col.case": "Case", "flips.col.decided": "Decided", "flips.col.was": "Was",
+  "flips.col.becomes": "Becomes", "flips.col.old": "Old policy",
+  "flips.col.clause": "Responsible for", "flips.col.impact": "Impact", "flips.col.conf": "Conf.",
+  "flips.col.confirmed": "Confirmed", "flips.col.precedent": "Precedent",
+  "flips.reviewed": "reviewed", "flips.reproduced": "reproduced",
+  "flips.notreproduced": "did not reproduce", "flips.consistent": "consistent",
+  "flips.violates": "VIOLATES &rarr; {o}",
+  "flips.segments": "Segments at decision time:",
+  "flips.recorded": "Recorded at the time:", "flips.proposed": "Under the proposed policy:",
+  "flips.nomatch": "No flipped cases match this filter.",
+  "flips.empty": "No replay results yet - trigger or backfill the replay DAG.",
+
+  // ---- precedents
+  "precedents.stale": "<strong class=warn>{n} of these rulings</strong> were made about a version of the policy whose text has since changed, or before the circumstances were recorded. They are still enforced &mdash; re-adjudicating one is how it stops being a guess, and <code>adjudicate_{domain}</code> with <code>target=stale</code> is how you do it. Whether a ruling still holds is a person's call, so nothing here fails a run.",
+  "precedents.col.case": "Case", "precedents.col.outcome": "Correct outcome",
+  "precedents.col.by": "Ruled by", "precedents.col.when": "When",
+  "precedents.col.under": "Ruled under", "precedents.col.why": "Why",
+  "precedents.over": "over &lsquo;{o}&rsquo;",
+  "precedents.readjudicated": "re-adjudicated, replacing {n} earlier ruling{s}",
+  "precedents.notrecorded": "not recorded", "precedents.clause": " &middot; clause {c}",
+  "precedents.empty": "No precedents yet - run the adjudication DAG and answer the human-in-the-loop tasks.",
+
+  // ---- superseded
+  "superseded.col.case": "Case", "superseded.col.was": "Was", "superseded.col.now": "Is now",
+  "superseded.col.why": "Their reason", "superseded.col.when": "Superseded",
+  "superseded.changed": "changed the answer", "superseded.confirmed": "confirmed it",
+  "superseded.empty": "No ruling has been re-adjudicated — every precedent on file is the first answer given for its case.",
+
+  // ---- conflicts
+  "conflicts.col.sig": "Materially identical cases", "conflicts.col.outcomes": "Rulings given",
+  "conflicts.col.by": "Ruled by",
+  "conflicts.empty": "No contradictions among the rulings on file.",
+
+  // ---- sweep
+  "btn.sweep": "Sweep", "btn.sweepboth": "Sweep both",
+  "dials.none": "no numeric dials in this version",
+  "dials.nosweep": "This version's <code>offline_rules</code> compare no fields against numbers, so there is nothing to sweep.",
+  "dials.option": "clause {c} · {f} (now {v})",
+  "dials.pick": "Pick a dial and press Sweep.",
+  "dials.nosecond": "no second dial in this version",
+  "grid.invite": "A single curve holds every other threshold still and never says so. Press <strong>Sweep both</strong> to find out whether that assumption survives.",
+  "sweep.pickvalues": "pick a dial and some values", "sweep.running": "running...",
+  "sweep.failed": "That sweep could not be run. Values must be comma-separated numbers, and the dial must exist in this version.",
+  "sweep.note": "<span class=muted>{n} cases &middot; from the offline rules, not the markdown policy</span>",
+  "sweep.col.flips": "Flips", "sweep.col.rate": "Rate", "sweep.col.loose": "More generous",
+  "sweep.col.tight": "More strict", "sweep.col.net": "Net", "sweep.col.caused": "Caused by this policy",
+  "sweep.current": "current", "sweep.nopoints": "No points returned.",
+  "grid.pickvalues": "pick two dials and some values",
+  "grid.failed": "That grid could not be run. Both dials must exist and be different, the values must be comma-separated numbers, and the grid is capped at 64 points &mdash; narrow each axis with a single sweep first.",
+  "grid.note": "<span class=muted>{n} cases &times; {p} settings</span>",
+  "grid.effect": "Moving <strong>{f1}</strong> changes {lo}&ndash;{hi} decisions depending on where <strong>{f2}</strong> sits. ",
+  "grid.independent": "The two are independent here, so two single sweeps say the same thing.",
+  "grid.interact": "They interact &mdash; the best setting for one depends on the other, which is exactly what a pair of curves cannot show.",
+  "grid.needtwo": "A grid needs at least two settings on each axis to say whether the dials interact.",
+  "grid.tip": "{a} / {b}: {n} caused by this policy, net {unit} {net}",
+
+  // ---- cross-check
+  "cross.unmeasured": "{hint}<br><br>Every other check here compares the judge to itself. A judge that misreads a clause and misreads it the same way every time passes all of them.",
+  "cross.note": "{primary} and {secondary} agreed on <strong>{agreed} of {compared}</strong> cases ({rate}, {lo}&ndash;{hi}), citing the same clause {clause} of the time. ",
+  "cross.split": "The {n} they split on are cases the policy does not settle &mdash; {contested} of them are flips only {primary} makes, so that much of the headline rests on one judge. A second judge is independent, not correct.",
+  "cross.never": "They never disagreed on this sample.",
+  "cross.col.case": "Case", "cross.col.clauses": "Clauses", "cross.col.recorded": "Recorded",
+  "cross.col.onlyone": "Only one flips",
+  "yes": "yes", "no": "no", "cross.nodisagree": "No disagreements.",
+
+  // ---- deviations
+  "dev.note": "{n} recorded outcomes worth {money} disagree with policy <strong>{v}</strong>, which is in force today. The proposal did not cause these and is not measured by them - but somebody departed from the rulebook they already had.",
+  "dev.col.case": "Case", "dev.col.recorded": "Recorded", "dev.col.both": "Both policies say",
+  "dev.col.impact": "Impact", "dev.col.conf": "Conf.",
+  "dev.empty": "Every change here is attributable to the proposal - no reviewer deviations found.",
+
+  // ---- stability
+  "stab.unmeasured": "{hint} Without it, the flip rate above has no error bar.",
+  "stab.notmeasured": "Not measured.",
+  "stab.zero": "The judge reproduced itself on every sampled case. If this ran offline the judge is deterministic, so 0% measures nothing - it means the check is inert until you point it at a real model.",
+  "stab.nonzero": "The judge contradicted itself on <strong>{rate}</strong> of sampled cases. Against the measured flip rate, up to <strong>{share}</strong> of the change above could be the model rather than the policy.",
+  "stab.col.case": "Case", "stab.col.verdicts": "Verdicts it gave across repeats",
+  "stab.empty": "{cases} cases x {samples} judgements, no disagreements.",
+
+  // ---- preflight
+  "pre.sound": "Policy <strong>{v}</strong> is structurally sound: every rule carries a clause number, no number is used twice, and every cross-reference points at a clause that exists.",
+  "pre.blocking": "<strong class=bad>{n} blocking</strong> problem(s). A replay would run and its results would not be attributable to any sentence.",
+  "pre.nonblocking": "Nothing blocking. These are worth reading before the next edit.",
+  "pre.col.severity": "Severity", "pre.col.clause": "Clause", "pre.col.kind": "Kind",
+  "pre.col.detail": "What is wrong", "pre.empty": "Nothing to report.",
+
+  // ---- disparity
+  "disp.nofields": "This domain declares no <code>segment_fields</code>, so there is nothing to compare.",
+  "disp.none": "No segment moves more than {r}x the rest of its field, or is passed over by it &mdash; or no segment has the {m} cases needed to say so. Checked: <code>{fields}</code>.",
+  "disp.note": "A concentration is a question, not a verdict &mdash; segments differ in what they contain. These are the ones somebody should be able to explain before the rule ships.",
+  "disp.col.segment": "Segment", "disp.col.finding": "Finding", "disp.col.moves": "Moves",
+  "disp.col.rate": "Rate (95%)", "disp.col.rest": "Rest of field", "disp.col.ratio": "Ratio",
+  "disp.col.direction": "Direction", "disp.col.net": "Net",
+  "disp.notsig": "not significant", "disp.concentrated": "lands harder here",
+  "disp.passes": "largely passes it over",
+  "disp.restnomove": "rest does not move", "disp.nomove": "does not move",
+  "dir.loosening": "loosening", "dir.tightening": "tightening", "dir.mixed": "mixed",
+
+  // ---- rules vs the judge
+  "rules.unmeasured": "{hint} Until it is, the threshold curve above is worth exactly what the offline rules are worth, and nobody knows what that is.",
+  "rules.inert": "These verdicts were produced by the offline judge, which <em>is</em> these rules &mdash; so the agreement below is 100% by construction and measures nothing. Set <code>PTM_OFFLINE=0</code> for a real figure.",
+  "rules.note": "The rules reached the same outcome as the judge on <strong>{agreed} of {compared}</strong> cases ({rate}, {lo}-{hi}), and cited the same clause on <strong>{ca} of {cc}</strong> &mdash; that second number is the one the sweep rests on.",
+  "rules.unmatched": " {n} case(s) matched no rule at all and took the default outcome; agreement on those is agreement by accident.",
+  "rules.col.case": "Case", "rules.col.rule": "Rules say", "rules.col.judge": "Judge says",
+  "rules.col.ruleclause": "Rule clause", "rules.col.judgeclause": "Judge clause",
+  "rules.agree": "The rules and the judge agree on every case compared.",
+
+  // ---- calibration
+  "cal.unmeasured": "{hint} Stability says the judge repeats itself. Only this says whether repeating itself is worth anything.",
+  "cal.separates": "Confidence is doing its job: above the {t} review threshold the judge is right {above} of the time ({an} cases), below it {below} ({bn}).",
+  "cal.notseparates": "<strong class=bad>The review threshold does not separate.</strong> Above {t} the judge is right {above} of the time ({an} cases); below it, {below} ({bn}). A confidence that does not predict correctness is routing the review budget at random.",
+  "cal.note": "The judge agreed with <strong>{agreed} of {judged}</strong> human rulings ({acc}, {lo}-{hi}) while claiming {conf} confidence &mdash; {dir}confident by {gap}. {caveat}",
+  "cal.over": "over", "cal.under": "under",
+  "cal.col.bucket": "Claimed confidence", "cal.col.n": "Cases", "cal.col.right": "Actually right",
+  "cal.col.said": "Said", "cal.col.gap": "Gap", "cal.nocases": "No cases scored.",
+  "cal.col.ruled": "Human ruled", "cal.col.judged": "Judge said", "cal.col.times": "Times",
+  "cal.col.cases": "Cases",
+
+  // ---- history
+  "hist.inforce": "in force", "hist.draft": "draft", "hist.shown": "shown above",
+  "hist.unknown": "not in the YAML",
+  "hist.never": "never replayed — nothing measured under this version",
+  "hist.col.version": "Version", "hist.col.cases": "Cases",
+  "hist.col.flips": "Outcomes change", "hist.col.caused": "Caused by it",
+  "hist.col.net": "Net {unit}", "hist.col.reverses": "Rulings reversed",
+  "hist.col.last": "Last replayed", "hist.unchecked": "unchecked",
+  "hist.empty": "Nothing has been replayed for this domain yet.",
+
+  // ---- drafts
+  "drafts.col.version": "Version", "drafts.col.from": "From",
+  "drafts.col.summary": "What it changes", "drafts.col.by": "Drafted by",
+  "drafts.col.gate": "Against precedent", "drafts.col.when": "When",
+  "drafts.checked": "{n} reversed &middot; fixed {f}, introduced {i}",
+  "drafts.notchecked": "not checked", "drafts.gone": "files gone",
+  "drafts.empty": "No drafts yet — run the propose DAG to have the next version written from the evidence.",
+
+  // ---- caveats and hints the API attaches to its own read models
+  // The API sends the sentence and the key it was written under. English
+  // renders the sentence; another language renders its own, and falls back to
+  // the sentence when it has none. See remote() below.
+  "hint.flip_confirmation": "run judge_stability_{domain} with target=flips to put an error bar on individual flips before a human rules on them",
+  "hint.no_precedents": "no precedents yet; run the adjudication DAG",
+  "hint.stability": "run the judge_stability_{domain} DAG to put an error bar on this policy's flip rate",
+  "hint.crosscheck": "run judge_stability_{domain} with compare_model set to a second model to find out how much of this flip rate one judge is responsible for",
+  "hint.calibration_none": "no human rulings on file for {domain}; run the adjudication DAG, then the gate, and the judge can be scored against them",
+  "hint.calibration_unjudged": "{n} precedent(s) on file but none judged under {version}; run precedent_gate_{domain} to score the judge",
+  "hint.rules_norules": "no offline rules for {version}; replay {version} first, then the rules can be scored against what the judge said",
+  "hint.rules_noverdicts": "no verdicts on file; replay {version} first, then the rules can be scored against what the judge said",
+  "hint.cost_unmetered": "no usage reported; the ledger is the estimate alone. Usage is collected by ptm.metered and is only available with PTM_OFFLINE=0.",
+  "hint.grid_needs_two": "a grid needs at least two settings on each axis to say whether the dials interact",
+  "hint.grid_incomplete": "the grid is incomplete",
+  "hint.draft_unchecked": "no human rulings on file yet, so this draft has not been checked against anything - adjudicate some flips first",
+  "caveat.crosscheck": "a second judge is independent, not correct. A case they split on is evidence the policy does not settle it - it is not evidence about which model was right.",
+  "caveat.superseded": "a superseded ruling is not a mistake. It was made about the policy text as it then read, and is kept because whether it still holds is a judgement somebody made rather than a fact the gate can recompute.",
+  "caveat.calibration": "precedents are the contested flips - the cases nobody could settle by reading the rule. This is a floor on the judge's accuracy, not an estimate of it.",
+  "caveat.disparity": "a concentration is a question, not a verdict. Segments differ in what they contain, and the explanation is often good - the point is that somebody gives it before the rule ships.",
+  "caveat.preflight": "structural only - this reads the policy's shape, not its meaning. Contradictions and ambiguity need the model pass on the replay DAG.",
+  "caveat.history": "two versions are only comparable over the same cases. A version replayed on one month and one replayed on two years differ by sample before they differ by policy, which is what the band is for - and a version with no verdicts on file reverses no precedent because nothing has asked it, not because it agrees.",
+  "caveat.draft_verify": "checked against the precedent set only. A draft that reverses no ruling has passed the regression suite, not been measured - replay it to find out what it does to the other cases.",
+
+  // ---- failures
+  "fail.load": "Could not load this replay. Please refresh or check the Airflow logs.",
+  "fail.boot": "Could not load Policy Time Machine data. Start the Airflow demo, then refresh.",
+  "fail.nodomains": "No policy domains are configured yet.",
+},
+zh: {
+  "app.title": "政策时光机",
+  "aria.domain": "领域", "aria.version": "政策版本", "aria.lang": "语言",
+  "aria.search": "按案例编号筛选", "search.placeholder": "按案例编号筛选",
+  "aria.swdial": "要扫描的阈值", "aria.swvalues": "试算取值",
+  "aria.swdial2": "第二个阈值（可选）", "aria.swvalues2": "第二个阈值的取值",
+  "aria.cmpleft": "左侧版本", "aria.cmpright": "右侧版本",
+  "status.loading": "加载中…", "status.unavailable": "不可用",
+  "status.runs": "{n} 次运行", "status.flips": " 条改判", "status.shown": " 条显示",
+  "version.draft": "（草案）", "plural.s": "",
+  "hero.main": "在拟议规则下重放真实决策，把每一处变化归因到导致它的条款，显示变化落在谁身上，并把人工裁定保留为回归测试。",
+  "draft.note": "<strong class=warn>{v} 是一份草拟修正案</strong>，由提案 DAG 依据下方证据写成，未经任何人批准。本页对它的衡量方式，与衡量一份由人撰写的政策完全相同。",
+
+  // ---- the how-to panel
+  "howto.title": "如何阅读本页",
+  "howto.lede": "本页回答一个问题：<b>这次规则改动实际会造成什么后果？</b>请自上而下阅读 —— 每个面板回答上一个面板引出的问题。除阈值扫描外，页面不做即时计算；其余数字都来自已经运行过的 DAG。",
+  "howto.step1": "<b>在顶栏选择领域和候选版本。</b>标注 <code>(draft)</code> 的版本由提案 DAG 撰写，而非出自人手。整页内容随即描述该版本，并以当前生效版本作为对照。",
+  "howto.step2": "<b>先看指标卡。</b>它们是结论摘要：重放了多少决策、多少结果改变、成本多少、闸门是否通过。其中<i>不是本政策造成的</i>要多看一眼 —— 那些案例的原始记录在旧规则下就已经错了，不该算在这次提案头上。",
+  "howto.step3": "<b>再问该改哪一句。</b><i>是什么导致了变化</i>把每一次改判归因到负责的条款。<i>影响范围</i>和<i>落点是否均匀？</i>说明这些变化落在谁身上，并给出分母 —— 那里出现的集中现象是上线前需要解释的问题，而不是判决。",
+  "howto.step4": "<b>调整数值。</b>在<i>阈值应该定在哪里？</i>中选一个刻度、填入若干取值，按 <code>扫描</code> 即可在每个取值上重跑重放。<code>同时扫描两个</code> 会联动两个刻度，这是看出二者交互作用的唯一办法。扫描依据的是离线规则，因此在相信曲线之前请先读<i>扫描结果可信吗？</i>。",
+  "howto.step5": "<b>在相信任何结论之前先检验评判模型。</b><i>评判稳定性</i>是误差范围；<i>评判模型判得对吗？</i>用裁定过同一批案例的人工结论为它打分；<i>换一个评判模型也同意吗？</i>则能抓住一个每次都以同样方式误读条款的模型 —— 那是前两项检验都看不见的失效。",
+  "howto.step6": "<b>去做裁定，闸门会自行建立。</b>转交人工的改判会成为判例，之后每个版本都要重新对照它们检查。改判表中的 <span class=bad>VIOLATES</span>，或闸门指标卡中的“推翻”，都表示这一版推翻了某个人已经做出的裁定。",
+  "howto.step7": "<b>导出用于论证的材料。</b><code>CSV</code> 是可放进电子表格的改判清单；<code>JSON</code> 是本页全部内容并附带各项限定说明。两者都对应当前选中的领域与版本。",
+  "howto.step8": "<b>本页不会触发任何 DAG。</b>面板为空表示其背后的 DAG 尚未运行，面板本身会指明是哪一个。请在 Airflow 中触发它，然后刷新。",
+
+  // ---- tiles
+  "tile.replayed": "已重放的决策",
+  "tile.flips": "结果发生改变",
+  "tile.flips.sub": "占案例 {pct}（{lo}-{hi}），{tail}",
+  "tile.flips.caused": "{n} 条由本政策造成",
+  "tile.flips.nobaseline": "归因需要一次基线重放",
+  "tile.deviations": "不是本政策造成的",
+  "tile.deviations.sub": "原始记录在旧规则下也是错的",
+  "tile.loose": "更宽松", "tile.tight": "更严格",
+  "tile.net": "变更的净成本", "tile.net.sub": "含偏离共 {money}",
+  "tile.precedents": "在册判例",
+  "tile.precedents.conflicts": "{n} 处冲突", "tile.precedents.ok": "自洽",
+  "tile.noise": "评判噪声下限", "tile.notmeasured": "未测量",
+  "tile.noise.sub": "{cases} 个案例 × {samples} 次", "tile.noise.hint": "请运行稳定性 DAG",
+  "tile.accuracy": "评判准确率",
+  "tile.accuracy.sub": "在 {b} 条人工裁定中符合 {a} 条",
+  "tile.accuracy.over": "，过度自信 {pct}",
+  "tile.accuracy.hint": "需要经闸门评判过的判例",
+  "tile.spend": "评判支出",
+  "tile.spend.measured": "实测；此前估算为 {est} 美元（偏差 {err}）",
+  "tile.spend.estimated": "估算值 · 全量重放预测 {fc} 美元",
+  "tile.spend.cache": " · 缓存节省 {saved} 美元",
+  "tile.confirmed": "改判已确认",
+  "tile.confirmed.unstable": "{n} 条无法复现 —— 已不送人工复核",
+  "tile.confirmed.ok": "每一条复判的改判都复现了",
+  "tile.confirmed.hint": "以 target=flips 运行稳定性 DAG",
+  "tile.gate": "闸门", "tile.gate.reversed": "推翻 {n} 条", "tile.gate.none": "尚无判例",
+  "tile.gate.sub": "{n} 条由本政策引入；{m} 条来自现行的 {v}",
+  "tile.gate.unchecked": " —— {n} 条未检查",
+  "tile.gate.stale": " —— {n} 条裁定早于当前条文",
+  "tile.gate.hint": "请先裁定若干改判",
+
+  // ---- clause attribution
+  "clauses.baseline": "基线：政策 {v}",
+  "clauses.nobaseline": "未记录基线重放 —— 请在重放 DAG 上设置 baseline_version 才能归因",
+  "clauses.col.clause": "责任条款", "clauses.col.share": "占比", "clauses.col.flips": "改判数",
+  "clauses.col.loose": "更宽松", "clauses.col.tight": "更严格",
+  "clauses.col.net": "净额", "clauses.col.conf": "平均置信度",
+  "clauses.notpolicy": "并非本政策造成",
+  "clauses.empty": "尚无归因结果 —— 请运行或回填重放 DAG。",
+
+  // ---- blast radius
+  "segments.nofields": "该领域未声明 <code>segment_fields</code>。",
+  "segments.noresults": "该政策版本尚无重放结果 &mdash; 请运行或回填重放 DAG。该领域按 <code>{fields}</code> 分组。",
+  "segments.by": "按 {field}",
+
+  // ---- compare
+  "compare.label": "比较", "compare.against": "与",
+  "compare.pick": "请选择两个不同的版本",
+  "compare.unavailable": "无法进行比较。",
+  "compare.summary": "<span class=muted>{n} 个案例在两版下均已评判 &middot; </span><strong>{d}</strong> 条不同 <span class=muted>（{a} 条一致）</span>",
+  "compare.none": "<span class=muted>尚无案例在两个版本下都被评判过</span>",
+  "compare.col.case": "案例", "compare.col.recorded": "原始记录", "compare.col.clause": "条款 {v}",
+  "compare.agree": "在两版下均评判过的每个案例上，这两个版本结论一致。",
+  "compare.empty": "需要两个版本都评判过才能比较 —— 重放 DAG 的基线重放会自动完成这一步。",
+
+  // ---- flips
+  "flips.col.case": "案例", "flips.col.decided": "决策日期", "flips.col.was": "原结果",
+  "flips.col.becomes": "新结果", "flips.col.old": "旧政策",
+  "flips.col.clause": "责任条款", "flips.col.impact": "影响", "flips.col.conf": "置信度",
+  "flips.col.confirmed": "已确认", "flips.col.precedent": "判例",
+  "flips.reviewed": "已复核", "flips.reproduced": "已复现",
+  "flips.notreproduced": "未能复现", "flips.consistent": "一致",
+  "flips.violates": "违反判例 &rarr; {o}",
+  "flips.segments": "决策当时的分组：",
+  "flips.recorded": "当时记录的理由：", "flips.proposed": "在拟议政策下：",
+  "flips.nomatch": "没有符合该筛选条件的改判案例。",
+  "flips.empty": "尚无重放结果 —— 请触发或回填重放 DAG。",
+
+  // ---- precedents
+  "precedents.stale": "<strong class=warn>其中 {n} 条裁定</strong>所针对的政策版本，其条文此后已经变动，或裁定作出时尚未记录相关情境。它们仍然被强制执行 &mdash; 重新裁定是让它不再是猜测的唯一办法，具体做法是对 <code>adjudicate_{domain}</code> 传入 <code>target=stale</code>。一条裁定是否依然成立要由人来判断，因此这里的任何内容都不会导致运行失败。",
+  "precedents.col.case": "案例", "precedents.col.outcome": "正确结果",
+  "precedents.col.by": "裁定人", "precedents.col.when": "时间",
+  "precedents.col.under": "裁定所依据的版本", "precedents.col.why": "理由",
+  "precedents.over": "推翻了「{o}」",
+  "precedents.readjudicated": "经重新裁定，取代了 {n} 条更早的裁定",
+  "precedents.notrecorded": "未记录", "precedents.clause": " &middot; 条款 {c}",
+  "precedents.empty": "尚无判例 —— 请运行裁定 DAG 并回答其中的人工介入任务。",
+
+  // ---- superseded
+  "superseded.col.case": "案例", "superseded.col.was": "原裁定", "superseded.col.now": "现裁定",
+  "superseded.col.why": "其理由", "superseded.col.when": "取代时间",
+  "superseded.changed": "改变了结论", "superseded.confirmed": "维持原结论",
+  "superseded.empty": "没有任何裁定被重新裁定过 —— 在册的每条判例都是其案例的首次答复。",
+
+  // ---- conflicts
+  "conflicts.col.sig": "实质相同的案例", "conflicts.col.outcomes": "给出的裁定",
+  "conflicts.col.by": "裁定人",
+  "conflicts.empty": "在册裁定之间没有矛盾。",
+
+  // ---- sweep
+  "btn.sweep": "扫描", "btn.sweepboth": "同时扫描两个",
+  "dials.none": "该版本没有数值型刻度",
+  "dials.nosweep": "该版本的 <code>offline_rules</code> 没有把任何字段与数字比较，因此无可扫描。",
+  "dials.option": "条款 {c} · {f}（当前 {v}）",
+  "dials.pick": "请选择一个刻度并按「扫描」。",
+  "dials.nosecond": "该版本没有第二个刻度",
+  "grid.invite": "单条曲线会把其余所有阈值固定不动，而且从不说明这一点。按<strong>同时扫描两个</strong>，看看这个假设是否成立。",
+  "sweep.pickvalues": "请选择刻度并填入取值", "sweep.running": "运行中…",
+  "sweep.failed": "该扫描无法运行。取值必须是以逗号分隔的数字，且该刻度必须存在于此版本中。",
+  "sweep.note": "<span class=muted>{n} 个案例 &middot; 来自离线规则，而非 markdown 政策文本</span>",
+  "sweep.col.flips": "改判数", "sweep.col.rate": "比率", "sweep.col.loose": "更宽松",
+  "sweep.col.tight": "更严格", "sweep.col.net": "净额", "sweep.col.caused": "由本政策造成",
+  "sweep.current": "当前", "sweep.nopoints": "没有返回任何取值点。",
+  "grid.pickvalues": "请选择两个刻度并填入取值",
+  "grid.failed": "该网格无法运行。两个刻度都必须存在且互不相同，取值必须是以逗号分隔的数字，且网格上限为 64 个点 &mdash; 请先用单条扫描缩小每个轴的范围。",
+  "grid.note": "<span class=muted>{n} 个案例 &times; {p} 组设置</span>",
+  "grid.effect": "调整 <strong>{f1}</strong> 会改变 {lo}&ndash;{hi} 条决策，具体取决于 <strong>{f2}</strong> 的取值。",
+  "grid.independent": "二者在此互不影响，因此两条单独的曲线所说的是同一件事。",
+  "grid.interact": "二者存在交互 &mdash; 其中一个的最佳取值取决于另一个，而这恰恰是两条曲线无法呈现的。",
+  "grid.needtwo": "网格需要每个轴上至少两组取值，才能判断两个刻度是否存在交互。",
+  "grid.tip": "{a} / {b}：{n} 条由本政策造成，净额 {unit} {net}",
+
+  // ---- cross-check
+  "cross.unmeasured": "{hint}<br><br>这里其余每一项检验都只是拿评判模型和它自己比较。一个误读条款、且每次都以同样方式误读的模型，能通过全部这些检验。",
+  "cross.note": "{primary} 与 {secondary} 在 <strong>{compared} 个案例中的 {agreed} 个</strong>上意见一致（{rate}，{lo}&ndash;{hi}），其中 {clause} 的情况引用了相同条款。",
+  "cross.split": "二者分歧的 {n} 个案例，正是政策本身未能定论的案例 &mdash; 其中 {contested} 条是只有 {primary} 才做出的改判，也就是说结论中有这么多是建立在单个模型之上的。第二个评判模型提供的是独立性，而不是正确性。",
+  "cross.never": "在本样本上二者从未出现分歧。",
+  "cross.col.case": "案例", "cross.col.clauses": "条款", "cross.col.recorded": "原始记录",
+  "cross.col.onlyone": "仅一方改判",
+  "yes": "是", "no": "否", "cross.nodisagree": "没有分歧。",
+
+  // ---- deviations
+  "dev.note": "有 {n} 条原始记录（价值 {money}）与今天生效的政策 <strong>{v}</strong> 不一致。这些并非本提案造成，也不应用来衡量它 —— 但确实有人偏离了当时已有的规则手册。",
+  "dev.col.case": "案例", "dev.col.recorded": "原始记录", "dev.col.both": "两版政策均判定为",
+  "dev.col.impact": "影响", "dev.col.conf": "置信度",
+  "dev.empty": "此处每一处变化都可归因于本提案 —— 未发现复核人偏离规则的情形。",
+
+  // ---- stability
+  "stab.unmeasured": "{hint} 缺少它，上方的改判率就没有误差范围。",
+  "stab.notmeasured": "未测量。",
+  "stab.zero": "评判模型在每个抽样案例上都复现了自身结论。如果这是离线运行，评判是确定性的，因此 0% 什么也说明不了 —— 它只表示在接上真实模型之前，这项检验是失效的。",
+  "stab.nonzero": "评判模型在 <strong>{rate}</strong> 的抽样案例上自相矛盾。对照实测改判率，上方变化中最多有 <strong>{share}</strong> 可能来自模型本身而非政策。",
+  "stab.col.case": "案例", "stab.col.verdicts": "重复评判中给出的各个结论",
+  "stab.empty": "{cases} 个案例 × {samples} 次评判，无分歧。",
+
+  // ---- preflight
+  "pre.sound": "政策 <strong>{v}</strong> 结构完好：每条规则都带条款号，没有重复编号，且每处交叉引用都指向确实存在的条款。",
+  "pre.blocking": "<strong class=bad>{n} 处阻断性</strong>问题。重放仍会运行，但其结果无法归因到任何一个句子。",
+  "pre.nonblocking": "没有阻断性问题。以下内容值得在下次修改前一读。",
+  "pre.col.severity": "严重程度", "pre.col.clause": "条款", "pre.col.kind": "类型",
+  "pre.col.detail": "问题所在", "pre.empty": "没有需要报告的内容。",
+
+  // ---- disparity
+  "disp.nofields": "该领域未声明 <code>segment_fields</code>，因此无可比较。",
+  "disp.none": "没有哪个分组的变动幅度超过同字段其余部分的 {r} 倍，也没有哪个分组被明显跳过 &mdash; 或者没有分组达到判定所需的 {m} 个案例。已检查：<code>{fields}</code>。",
+  "disp.note": "集中现象是一个问题，而不是一个判决 &mdash; 各分组本身所包含的内容就不同。以下这些是规则上线前应当有人能够解释清楚的。",
+  "disp.col.segment": "分组", "disp.col.finding": "发现", "disp.col.moves": "变动",
+  "disp.col.rate": "比率（95%）", "disp.col.rest": "该字段其余部分", "disp.col.ratio": "倍数",
+  "disp.col.direction": "方向", "disp.col.net": "净额",
+  "disp.notsig": "不显著", "disp.concentrated": "在此落点更重",
+  "disp.passes": "基本被跳过",
+  "disp.restnomove": "其余部分没有变动", "disp.nomove": "没有变动",
+  "dir.loosening": "放宽", "dir.tightening": "收紧", "dir.mixed": "混合",
+
+  // ---- rules vs the judge
+  "rules.unmeasured": "{hint} 在此之前，上方的阈值曲线值多少，完全取决于离线规则值多少 —— 而那是多少，没有人知道。",
+  "rules.inert": "这些结论本身就是由离线评判产生的，而离线评判<em>就是</em>这些规则 &mdash; 因此下方的一致率必然是 100%，什么也说明不了。设置 <code>PTM_OFFLINE=0</code> 才能得到真实数字。",
+  "rules.note": "规则与评判模型在 <strong>{compared} 个案例中的 {agreed} 个</strong>上得出相同结果（{rate}，{lo}-{hi}），并在 <strong>{cc} 个中的 {ca} 个</strong>上引用了相同条款 &mdash; 后一个数字才是阈值扫描所依赖的。",
+  "rules.unmatched": " 有 {n} 个案例未匹配任何规则，因而采用了默认结果；这些案例上的一致只是偶然。",
+  "rules.col.case": "案例", "rules.col.rule": "规则判定", "rules.col.judge": "模型判定",
+  "rules.col.ruleclause": "规则条款", "rules.col.judgeclause": "模型条款",
+  "rules.agree": "在所有比较过的案例上，规则与评判模型完全一致。",
+
+  // ---- calibration
+  "cal.unmeasured": "{hint} 稳定性说明评判模型能重复自己。只有这一项能说明重复自己是否有价值。",
+  "cal.separates": "置信度起到了应有的作用：在 {t} 的复核阈值以上，模型的正确率为 {above}（{an} 个案例）；阈值以下为 {below}（{bn} 个）。",
+  "cal.notseparates": "<strong class=bad>复核阈值没有区分能力。</strong>在 {t} 以上，模型的正确率为 {above}（{an} 个案例）；在其以下为 {below}（{bn} 个）。一个无法预测正确与否的置信度，等于在随机分配复核预算。",
+  "cal.note": "评判模型在 <strong>{judged} 条人工裁定中符合 {agreed} 条</strong>（{acc}，{lo}-{hi}），而它自称的置信度为 {conf} &mdash; {dir}自信 {gap}。{caveat}",
+  "cal.over": "过度", "cal.under": "不足",
+  "cal.col.bucket": "自称置信度", "cal.col.n": "案例数", "cal.col.right": "实际正确",
+  "cal.col.said": "自称", "cal.col.gap": "差距", "cal.nocases": "没有评分的案例。",
+  "cal.col.ruled": "人工裁定", "cal.col.judged": "模型判定", "cal.col.times": "次数",
+  "cal.col.cases": "案例",
+
+  // ---- history
+  "hist.inforce": "现行", "hist.draft": "草案", "hist.shown": "上方所示",
+  "hist.unknown": "不在 YAML 中",
+  "hist.never": "从未重放 —— 该版本下没有任何测量数据",
+  "hist.col.version": "版本", "hist.col.cases": "案例数",
+  "hist.col.flips": "结果改变", "hist.col.caused": "由其造成",
+  "hist.col.net": "净额 {unit}", "hist.col.reverses": "推翻的裁定",
+  "hist.col.last": "最近重放", "hist.unchecked": "未检查",
+  "hist.empty": "该领域尚未进行过任何重放。",
+
+  // ---- drafts
+  "drafts.col.version": "版本", "drafts.col.from": "基于",
+  "drafts.col.summary": "改动内容", "drafts.col.by": "起草者",
+  "drafts.col.gate": "对照判例", "drafts.col.when": "时间",
+  "drafts.checked": "推翻 {n} 条 &middot; 修复 {f} 条，新引入 {i} 条",
+  "drafts.notchecked": "未检查", "drafts.gone": "文件已丢失",
+  "drafts.empty": "尚无草案 —— 请运行提案 DAG，让下一个版本从证据中写出。",
+
+  // ---- caveats and hints the API attaches to its own read models
+  "hint.flip_confirmation": "以 target=flips 运行 judge_stability_{domain}，在交由人工裁定之前为单条改判给出误差范围",
+  "hint.no_precedents": "尚无判例；请运行裁定 DAG",
+  "hint.stability": "运行 judge_stability_{domain} DAG，为该政策的改判率给出误差范围",
+  "hint.crosscheck": "为 judge_stability_{domain} 设置 compare_model 指向第二个模型并运行，以弄清这个改判率中有多少是单个评判模型造成的",
+  "hint.calibration_none": "{domain} 尚无人工裁定在册；请先运行裁定 DAG，再运行闸门，之后即可对评判模型打分",
+  "hint.calibration_unjudged": "在册判例 {n} 条，但没有一条在 {version} 下被评判过；请运行 precedent_gate_{domain} 为评判模型打分",
+  "hint.rules_norules": "{version} 没有离线规则；请先重放 {version}，然后才能拿规则与评判模型的结论对分",
+  "hint.rules_noverdicts": "没有在册的评判结论；请先重放 {version}，然后才能拿规则与评判模型的结论对分",
+  "hint.cost_unmetered": "没有上报用量；账入的只是估算值本身。用量由 ptm.metered 采集，仅在 PTM_OFFLINE=0 时可用。",
+  "hint.grid_needs_two": "网格需要每个轴上至少两组取值，才能判断两个刻度是否存在交互",
+  "hint.grid_incomplete": "网格不完整",
+  "hint.draft_unchecked": "尚无人工裁定在册，因此这份草案没有对照任何东西检查过 —— 请先裁定若干改判",
+  "caveat.crosscheck": "第二个评判模型提供的是独立性，而不是正确性。二者分歧的案例，证明的是政策本身未能定论它 —— 而不是证明哪个模型是对的。",
+  "caveat.superseded": "被取代的裁定并不是错误。它针对的是当时的政策条文，之所以保留，是因为它是否仍然成立是某个人做出的判断，而非闸门可以重算的事实。",
+  "caveat.calibration": "判例就是那些有争议的改判 —— 光读规则谁也定不了的案例。因此这是评判模型准确率的下限，而不是对它的估计。",
+  "caveat.disparity": "集中现象是一个问题，而不是一个判决。各分组所包含的内容本就不同，解释往往也是成立的 —— 关键在于规则上线前有人给出这个解释。",
+  "caveat.preflight": "仅限结构 —— 这只读政策的形式，不读它的含义。矛盾与歧义需要重放 DAG 上的模型环节才能发现。",
+  "caveat.history": "两个版本只有在相同的案例集上才具可比性。在一个月上重放的版本与在两年上重放的版本，先差在样本量，再差在政策 —— 这正是置信区间的用途；而没有在册评判结论的版本之所以没有推翻任何判例，是因为没有人问过它，而不是因为它赞同。",
+  "caveat.draft_verify": "仅对照判例集检查过。一份没有推翻任何裁定的草案，只是通过了回归测试，而不是已经被衡量过 —— 请重放它，才知道它对其余案例做了什么。",
+
+  // ---- failures
+  "fail.load": "无法加载此次重放。请刷新页面或查看 Airflow 日志。",
+  "fail.boot": "无法加载政策时光机的数据。请先启动 Airflow 演示环境，然后刷新。",
+  "fail.nodomains": "尚未配置任何政策领域。",
+},
+};
+
+//: The language in use. Persisted per browser, so a reader who switches once
+//: does not switch again on every page load. Falls back to English for
+//: anything the active table has no entry for, which is what lets a
+//: translation be added a key at a time without the page going blank.
+let LANG = "en";
+
+function pickLanguage() {
+  try {
+    const saved = localStorage.getItem("ptm.lang");
+    if (saved && I18N[saved]) return saved;
+  } catch (e) { /* private mode, blocked storage - fall through to the default */ }
+  return String(navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function t(key, vars) {
+  const table = I18N[LANG] || I18N.en;
+  let s = table[key];
+  if (s === undefined) s = I18N.en[key];
+  if (s === undefined) return key;
+  if (!vars) return s;
+  return s.replace(/\{(\w+)\}/g, (m, name) =>
+    (vars[name] === undefined || vars[name] === null) ? m : vars[name]);
+}
+
+//: English pluralises with a suffix and Chinese does not, so the choice is a
+//: translated string rather than a conditional in the renderer.
+const plural = n => (Number(n) === 1 ? "" : t("plural.s"));
+
+//: A caveat or hint the API wrote, in the reader's language.
+//:
+//: The read models send both the sentence and the key it was written under, so
+//: this renders the key when the active language has it and the sentence the
+//: API sent when it does not - which is also what happens for a caveat added to
+//: the API before anybody translates it. Escaped here, because the fallback
+//: path is a string that came over the wire.
+function remote(payload, kind) {
+  const key = payload && payload[kind + "_key"];
+  const table = I18N[LANG] || I18N.en;
+  if (key && table[key] !== undefined) return t(key, payload[kind + "_args"]);
+  return esc(payload && payload[kind] || "");
+}
+
+//: An outcome direction arrives from the API as an English word. Translate the
+//: ones this project defines and pass anything else through untouched - a
+//: domain may name its own, and a blank cell is worse than an English one.
+const dir = d => (I18N[LANG] || I18N.en)["dir." + d] || I18N.en["dir." + d] || String(d ?? "");
+
+//: Static markup carries its key in `data-t`. Re-reading the attributes is how
+//: a language switch reaches the parts of the page no renderer owns.
+function applyStatic() {
+  document.documentElement.lang = LANG === "zh" ? "zh-Hans" : "en";
+  document.title = t("app.title");
+  document.querySelectorAll("[data-t]").forEach(el => {
+    const key = el.dataset.t;
+    // A heading with a nested note owns only its own text node; replacing
+    // innerHTML would delete the note (and, for #clausenote, the element a
+    // renderer writes into).
+    const note = el.querySelector("[data-t], [id]");
+    if (note) {
+      const first = el.firstChild;
+      if (first && first.nodeType === 3) first.nodeValue = t(key) + " ";
+    } else {
+      el.innerHTML = t(key);
+    }
+  });
+  for (const [sel, key] of [["#domain", "aria.domain"], ["#version", "aria.version"],
+                            ["#lang", "aria.lang"], ["#search", "aria.search"],
+                            ["#swdial", "aria.swdial"], ["#swvalues", "aria.swvalues"],
+                            ["#swdial2", "aria.swdial2"], ["#swvalues2", "aria.swvalues2"],
+                            ["#cmpleft", "aria.cmpleft"], ["#cmpright", "aria.cmpright"]]) {
+    const el = $(sel);
+    if (el) el.setAttribute("aria-label", t(key));
+  }
+  $("#search").placeholder = t("search.placeholder");
+  $("#howtosteps").innerHTML = ["step1", "step2", "step3", "step4",
+                                "step5", "step6", "step7", "step8"]
+    .map(s => `<li>${t("howto." + s)}</li>`).join("");
+}
+
 let DOMAINS = [];
+//: What the last successful render() fetched, so filtering and a language
+//: switch can redraw from it instead of re-issuing every request.
+let LAST = null;
+//: A version asked for before the domain's list of versions is known - by the
+//: URL, by the last visit, or by a redraw that has to keep the current one.
+//: Consumed by the next onDomainChange().
+let PENDING = "";
+
+//: Where the page was pointed.
+//:
+//: The URL wins over the stored choice. A link pasted into a ticket means
+//: *this* replay, and quietly redirecting it to whatever that reader last
+//: looked at would make the link a lie. With nothing in the URL the last
+//: selection is restored, because a refresh landing back on the default is
+//: what makes somebody re-pick two selects every time they reload.
+function requested() {
+  const query = new URLSearchParams(location.search);
+  const stored = key => {
+    try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
+  };
+  return {domain: query.get("domain") || stored("ptm.domain"),
+          version: query.get("version") || stored("ptm.version")};
+}
+
+//: Record the selection in both places a later visit can read it.
+//:
+//: replaceState rather than pushState: picking a version is not a navigation,
+//: and filling the back button with every select a reader touched is worse
+//: than an address bar that does not keep up. The URL is written even when
+//: storage is blocked, which is what makes the link work in a private window.
+function remember(domain, version) {
+  try {
+    localStorage.setItem("ptm.domain", domain);
+    localStorage.setItem("ptm.version", version);
+  } catch (e) { /* storage blocked - the URL still carries it */ }
+  const query = new URLSearchParams(location.search);
+  query.set("domain", domain);
+  query.set("version", version);
+  history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`);
+}
 const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep",
                 "#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
-                "#calibration","#drafts"];
+                "#calibration","#history","#superseded","#drafts"];
 
 function fail(message) {
   $("#tiles").innerHTML = `<div class=error>${esc(message)}</div>`;
@@ -162,7 +810,7 @@ function fail(message) {
   $("#cmpsummary").textContent = "";
   $("#swnote").textContent = "";
   $("#swnote2").textContent = "";
-  $("#status").textContent = "Unavailable";
+  $("#status").textContent = t("status.unavailable");
 }
 
 const table = (head, rows, empty) => rows.length
@@ -177,42 +825,50 @@ function renderTiles(summary, costs, gate, calibration) {
   const stability = summary.stability;
   const confirm = summary.flip_confirmation || {measured: 0, stable: 0, unstable: 0};
   const tiles = [
-    ["Decisions replayed", num(summary.cases), "", `${summary.runs} run${summary.runs === 1 ? "" : "s"}`],
-    ["Outcomes that change", num(summary.flips), summary.flips ? "warn" : "",
+    [t("tile.replayed"), num(summary.cases), "",
+      t("status.runs", {n: summary.runs, s: plural(summary.runs)})],
+    [t("tile.flips"), num(summary.flips), summary.flips ? "warn" : "",
       // The rate and its sampling band, because the count alone invites a
       // comparison between two runs that differ by nothing but how many cases
       // they saw. This band is sample size only - the judge's noise floor is a
       // separate tile and the two do not add.
-      `${pct(summary.flip_rate)} of cases (${pct(summary.flip_rate_lo)}-${pct(summary.flip_rate_hi)}), ` +
-      (summary.deviation_flips
-        ? `${num(summary.policy_driven_flips)} caused by this policy`
-        : "attribution needs a baseline pass")],
-    ["Not this policy's doing", num(summary.deviation_flips), "muted",
-      "recorded outcome broke the old rule too"],
-    ["More generous", `${loose.n} &middot; ${money(unit, loose.impact)}`, "loose", ""],
-    ["More strict", `${tight.n} &middot; ${money(unit, tight.impact)}`, "tight", ""],
-    ["Net cost of the change", money(unit, summary.policy_driven_net_impact),
+      t("tile.flips.sub", {
+        pct: pct(summary.flip_rate), lo: pct(summary.flip_rate_lo),
+        hi: pct(summary.flip_rate_hi),
+        tail: summary.deviation_flips
+          ? t("tile.flips.caused", {n: num(summary.policy_driven_flips)})
+          : t("tile.flips.nobaseline")})],
+    [t("tile.deviations"), num(summary.deviation_flips), "muted",
+      t("tile.deviations.sub")],
+    [t("tile.loose"), `${loose.n} &middot; ${money(unit, loose.impact)}`, "loose", ""],
+    [t("tile.tight"), `${tight.n} &middot; ${money(unit, tight.impact)}`, "tight", ""],
+    [t("tile.net"), money(unit, summary.policy_driven_net_impact),
       summary.policy_driven_net_impact > 0 ? "loose" : "tight",
-      `${money(unit, summary.net_impact)} including deviations`],
-    ["Precedents on file", num(summary.precedents),
+      t("tile.net.sub", {money: money(unit, summary.net_impact)})],
+    [t("tile.precedents"), num(summary.precedents),
       summary.precedent_conflicts ? "warn" : "",
-      summary.precedent_conflicts ? `${summary.precedent_conflicts} conflict(s)` : "self-consistent"],
-    ["Judge noise floor", stability ? pct(stability.disagreement_rate) : "not measured",
+      summary.precedent_conflicts
+        ? t("tile.precedents.conflicts", {n: summary.precedent_conflicts})
+        : t("tile.precedents.ok")],
+    [t("tile.noise"), stability ? pct(stability.disagreement_rate) : t("tile.notmeasured"),
       stability && stability.disagreement_rate > 0 ? "warn" : "muted",
-      stability ? `${stability.cases_sampled} cases x ${stability.samples_per_case}` : "run the stability DAG"],
-    ["Judge accuracy", calibration && calibration.measured
-        ? pct(calibration.report.accuracy) : "not measured",
+      stability ? t("tile.noise.sub", {cases: stability.cases_sampled,
+                                       samples: stability.samples_per_case})
+                : t("tile.noise.hint")],
+    [t("tile.accuracy"), calibration && calibration.measured
+        ? pct(calibration.report.accuracy) : t("tile.notmeasured"),
       calibration && calibration.measured
         ? (calibration.report.overconfidence > 0.05 ? "warn" : "loose") : "muted",
       calibration && calibration.measured
-        ? `agreed with ${calibration.report.agreed} of ${calibration.report.judged} human rulings` +
+        ? t("tile.accuracy.sub", {a: calibration.report.agreed,
+                                  b: calibration.report.judged}) +
           (calibration.report.overconfidence > 0
-            ? `, ${pct(calibration.report.overconfidence)} overconfident` : "")
-        : "needs precedents judged by the gate"],
+            ? t("tile.accuracy.over", {pct: pct(calibration.report.overconfidence)}) : "")
+        : t("tile.accuracy.hint")],
     // The estimate, and - where a metered judge ran - what it actually was.
     // Both, never one: the estimate is what the forecast beside it is built
     // from, so replacing it with the measurement would hide how good it is.
-    ["Judging spend", costs
+    [t("tile.spend"), costs
         ? (costs.reconciliation && costs.reconciliation.measured
             ? `USD ${Number(costs.reconciliation.actual_cost_usd).toFixed(2)}`
             : `USD ${Number(costs.ledger.cost_usd).toFixed(2)}`)
@@ -220,37 +876,42 @@ function renderTiles(summary, costs, gate, calibration) {
       costs && costs.reconciliation && costs.reconciliation.measured ? "loose" : "",
       costs
         ? (costs.reconciliation && costs.reconciliation.measured
-            ? `measured; estimate was USD ${Number(costs.reconciliation.estimated_cost_usd).toFixed(2)} ` +
-              `(${pct(costs.reconciliation.cost_error)} out)`
-            : `estimated · full replay forecast USD ${Number(costs.forecast.estimated_cost_usd).toFixed(2)}`) +
+            ? t("tile.spend.measured", {
+                est: Number(costs.reconciliation.estimated_cost_usd).toFixed(2),
+                err: pct(costs.reconciliation.cost_error)})
+            : t("tile.spend.estimated", {
+                fc: Number(costs.forecast.estimated_cost_usd).toFixed(2)})) +
           (costs.cache && costs.cache.hits
-            ? ` · cache saved USD ${Number(costs.cache.estimated_saved_usd).toFixed(2)}`
+            ? t("tile.spend.cache", {
+                saved: Number(costs.cache.estimated_saved_usd).toFixed(2)})
             : "")
         : ""],
-    ["Flips confirmed", confirm.measured
+    [t("tile.confirmed"), confirm.measured
         ? `${num(confirm.stable)} / ${num(confirm.measured)}`
-        : "not measured",
+        : t("tile.notmeasured"),
       confirm.unstable ? "warn" : "muted",
       confirm.measured
         ? (confirm.unstable
-            ? `${num(confirm.unstable)} would not reproduce - held back from review`
-            : "every re-judged flip reproduced")
-        : "run the stability DAG with target=flips"],
-    ["Gate", gate && gate.precedents
-        ? `${num(gate.violations.length)} reversed`
-        : "no precedents",
+            ? t("tile.confirmed.unstable", {n: num(confirm.unstable)})
+            : t("tile.confirmed.ok"))
+        : t("tile.confirmed.hint")],
+    [t("tile.gate"), gate && gate.precedents
+        ? t("tile.gate.reversed", {n: num(gate.violations.length)})
+        : t("tile.gate.none"),
       gate && gate.violations.length ? "tight" : "loose",
       gate && gate.precedents
-        ? `${num(gate.introduced.length)} introduced by this policy; ` +
-          `${num(gate.in_force_violations.length)} by ${esc(gate.in_force)}, in force` +
-          (gate.unchecked.length ? ` - ${gate.unchecked.length} unchecked` : "") +
+        ? t("tile.gate.sub", {n: num(gate.introduced.length),
+                              m: num(gate.in_force_violations.length),
+                              v: esc(gate.in_force)}) +
+          (gate.unchecked.length
+            ? t("tile.gate.unchecked", {n: gate.unchecked.length}) : "") +
           // A reversal resting on a ruling made about a sentence that has since
           // changed is a different fix from editing the policy, and the tile is
           // where somebody decides which one they are looking at.
           (gate.stale && gate.stale.length
-            ? ` - ${gate.stale.length} ruling(s) predate the current text`
+            ? t("tile.gate.stale", {n: gate.stale.length})
             : "")
-        : "adjudicate some flips first"],
+        : t("tile.gate.hint")],
   ];
   $("#tiles").innerHTML = tiles.map(([k, v, cls, sub]) =>
     `<div class=tile><div class=k>${k}</div><div class="v ${cls}">${v}</div>${
@@ -261,16 +922,18 @@ function renderTiles(summary, costs, gate, calibration) {
 function renderClauses(rows, unit, summary) {
   const max = Math.max(1, ...rows.map(r => r.flips));
   $("#clausenote").textContent = summary.baseline_versions.length
-    ? `baseline: policy ${summary.baseline_versions.join(", ")}`
-    : "no baseline pass recorded - set baseline_version on the replay DAG to attribute changes";
+    ? t("clauses.baseline", {v: summary.baseline_versions.join(", ")})
+    : t("clauses.nobaseline");
   $("#clauses").innerHTML = table(
-    [{label: "Responsible for"}, {label: "Share"}, {label: "Flips", num: 1},
-     {label: "More generous", num: 1}, {label: "More strict", num: 1},
-     {label: "Net", num: 1}, {label: "Mean conf.", num: 1}],
+    [{label: t("clauses.col.clause")}, {label: t("clauses.col.share")},
+     {label: t("clauses.col.flips"), num: 1},
+     {label: t("clauses.col.loose"), num: 1}, {label: t("clauses.col.tight"), num: 1},
+     {label: t("clauses.col.net"), num: 1}, {label: t("clauses.col.conf"), num: 1}],
     rows.map(r => {
       const net = (r.impact_loosening || 0) - (r.impact_tightening || 0);
       return `<tr${r.policy_driven ? "" : ' class=muted'}>
-        <td>${esc(r.clause)}${r.policy_driven ? "" : " <span class=sub>not caused by this policy</span>"}</td>
+        <td>${esc(r.clause)}${r.policy_driven ? ""
+          : ` <span class=sub>${t("clauses.notpolicy")}</span>`}</td>
         <td><div class=bar><i style="width:${(r.flips / max * 100).toFixed(1)}%"></i></div></td>
         <td class=num>${num(r.flips)}</td>
         <td class="num loose">${num(r.loosening)}</td>
@@ -278,7 +941,7 @@ function renderClauses(rows, unit, summary) {
         <td class=num>${money(unit, net)}</td>
         <td class=num>${pct(r.mean_confidence)}</td></tr>`;
     }),
-    "No attributed changes yet - run or backfill the replay DAG.");
+    t("clauses.empty"));
 }
 
 // ------------------------------------------------------ blast radius
@@ -286,20 +949,19 @@ function renderSegments(rows, unit, declared) {
   // Two different reasons for an empty panel, and saying the wrong one sends
   // someone to edit a YAML file that is already correct.
   if (!declared.length) {
-    $("#segments").innerHTML = `<div class=empty>This domain declares no <code>segment_fields</code>.</div>`;
+    $("#segments").innerHTML = `<div class=empty>${t("segments.nofields")}</div>`;
     return;
   }
   if (!rows.length) {
-    $("#segments").innerHTML = `<div class=empty>No replay results for this policy version yet
-      &mdash; run or backfill the replay DAG. This domain segments by
-      <code>${declared.map(esc).join("</code>, <code>")}</code>.</div>`;
+    $("#segments").innerHTML = `<div class=empty>${t("segments.noresults",
+      {fields: declared.map(esc).join("</code>, <code>")})}</div>`;
     return;
   }
   const fields = [...new Set(rows.map(r => r.field))];
   $("#segments").innerHTML = `<div class=seg>${fields.map(field => {
     const group = rows.filter(r => r.field === field);
     const max = Math.max(1, ...group.map(r => r.flip_rate));
-    return `<div class=group><h3>by ${esc(field)}</h3><table><tbody>${group.map(r =>
+    return `<div class=group><h3>${t("segments.by", {field: esc(field)})}</h3><table><tbody>${group.map(r =>
       `<tr><td>${esc(r.value)}</td>
         <td style="width:34%"><div class=bar><i style="width:${(r.flip_rate / max * 100).toFixed(1)}%"></i></div></td>
         <td class=num>${num(r.flips)} / ${num(r.cases)}</td>
@@ -313,20 +975,22 @@ function renderSegments(rows, unit, declared) {
 async function renderCompare() {
   const domain = $("#domain").value, left = $("#cmpleft").value, right = $("#cmpright").value;
   if (!left || !right || left === right) {
-    $("#cmpsummary").textContent = "pick two different versions";
+    $("#cmpsummary").textContent = t("compare.pick");
     $("#compare").innerHTML = "";
     return;
   }
   let result;
   try { result = await api(`/api/compare/${domain}/${left}/${right}`); }
-  catch (e) { $("#compare").innerHTML = `<div class=empty>Comparison unavailable.</div>`; return; }
+  catch (e) { $("#compare").innerHTML = `<div class=empty>${t("compare.unavailable")}</div>`; return; }
   $("#cmpsummary").innerHTML = result.compared
-    ? `<span class=muted>${num(result.compared)} cases judged under both &middot; </span>
-       <strong>${num(result.differ)}</strong> differ <span class=muted>(${num(result.agree)} agree)</span>`
-    : `<span class=muted>no cases judged under both versions yet</span>`;
+    ? t("compare.summary", {n: num(result.compared), d: num(result.differ),
+                            a: num(result.agree)})
+    : t("compare.none");
   $("#compare").innerHTML = table(
-    [{label: "Case"}, {label: "Recorded"}, {label: esc(left)}, {label: esc(right)},
-     {label: "Clause " + esc(left)}, {label: "Clause " + esc(right)}],
+    [{label: t("compare.col.case")}, {label: t("compare.col.recorded")},
+     {label: esc(left)}, {label: esc(right)},
+     {label: t("compare.col.clause", {v: esc(left)})},
+     {label: t("compare.col.clause", {v: esc(right)})}],
     result.differences.map(d => `<tr>
       <td>${esc(d.case_id)}</td>
       <td><span class=pill>${esc(d.actual_outcome)}</span></td>
@@ -334,18 +998,20 @@ async function renderCompare() {
       <td><span class=pill>${esc(d.right_outcome)}</span></td>
       <td>${esc(d.left_clause || "-")}</td>
       <td>${esc(d.right_clause || "-")}</td></tr>`),
-    result.compared ? "These two versions agree on every case judged under both."
-                    : "Judge both versions to compare them - the replay DAG's baseline pass does this automatically.");
+    result.compared ? t("compare.agree") : t("compare.empty"));
 }
 
 // -------------------------------------------------------------- flips
 function renderFlips(rows, total, unit) {
   $("#flips").innerHTML = table(
-    [{label: "Case"}, {label: "Decided"}, {label: "Was"}, {label: "Becomes"},
-     {label: "Old policy"}, {label: "Responsible for"}, {label: "Impact", num: 1},
-     {label: "Conf.", num: 1}, {label: "Confirmed"}, {label: "Precedent"}],
+    [{label: t("flips.col.case")}, {label: t("flips.col.decided")},
+     {label: t("flips.col.was")}, {label: t("flips.col.becomes")},
+     {label: t("flips.col.old")}, {label: t("flips.col.clause")},
+     {label: t("flips.col.impact"), num: 1}, {label: t("flips.col.conf"), num: 1},
+     {label: t("flips.col.confirmed")}, {label: t("flips.col.precedent")}],
     rows.map((r, i) => `<tr class=row onclick="toggle(${i})">
-      <td>${esc(r.case_id)}${r.reviewed ? " <span class=reviewed>reviewed</span>" : ""}</td>
+      <td>${esc(r.case_id)}${r.reviewed
+        ? ` <span class=reviewed>${t("flips.reviewed")}</span>` : ""}</td>
       <td>${esc(r.decided_at.slice(0, 10))}</td>
       <td><span class=pill>${esc(r.actual_outcome)}</span></td>
       <td><span class=pill>${esc(r.new_outcome)}</span></td>
@@ -353,23 +1019,22 @@ function renderFlips(rows, total, unit) {
       <td class="${r.direction === "loosening" ? "loose" : "tight"}">${esc(r.attribution || r.policy_clause || "-")}</td>
       <td class=num>${num(r.impact)}</td>
       <td class=num>${Math.round(r.confidence * 100)}%</td>
-      <td>${r.stability === "stable" ? "<span class=loose>reproduced</span>"
-            : r.stability === "unstable" ? "<span class=unstable>did not reproduce</span>"
+      <td>${r.stability === "stable" ? `<span class=loose>${t("flips.reproduced")}</span>`
+            : r.stability === "unstable" ? `<span class=unstable>${t("flips.notreproduced")}</span>`
             : "<span class=muted>&mdash;</span>"}</td>
       <td>${r.precedent
             ? (r.precedent === r.new_outcome
-                ? "<span class=loose>consistent</span>"
-                : `<span class=bad>VIOLATES &rarr; ${esc(r.precedent)}</span>`)
+                ? `<span class=loose>${t("flips.consistent")}</span>`
+                : `<span class=bad>${t("flips.violates", {o: esc(r.precedent)})}</span>`)
             : "&mdash;"}</td></tr>
       <tr class=detail id=d${i} hidden><td colspan=10>
         <pre>${esc(Object.entries(r.payload).map(([k, v]) => `${(k + ":").padEnd(20)}${v}`).join("\n"))}</pre>
-        ${Object.keys(r.segments).length ? `<div><strong>Segments at decision time:</strong> ${
+        ${Object.keys(r.segments).length ? `<div><strong>${t("flips.segments")}</strong> ${
           esc(Object.entries(r.segments).map(([k, v]) => `${k}=${v}`).join(", "))}</div>` : ""}
-        <div><strong>Recorded at the time:</strong> ${esc(r.actual_rationale || "-")}</div>
-        <div><strong>Under the proposed policy:</strong> ${esc(r.rationale)}</div>
+        <div><strong>${t("flips.recorded")}</strong> ${esc(r.actual_rationale || "-")}</div>
+        <div><strong>${t("flips.proposed")}</strong> ${esc(r.rationale)}</div>
       </td></tr>`),
-    total ? "No flipped cases match this filter."
-          : "No replay results yet - trigger or backfill the replay DAG.");
+    total ? t("flips.nomatch") : t("flips.empty"));
 }
 
 function toggle(i) { const el = document.getElementById("d" + i); el.hidden = !el.hidden; }
@@ -382,32 +1047,30 @@ function renderPrecedents(rows, gate) {
   // without this column nothing on the page would ever say which is which.
   const stale = new Map((gate && gate.stale || []).map(r => [r.case_id, r]));
   const note = stale.size
-    ? `<p class=hero><strong class=warn>${num(stale.size)} of these rulings</strong> were
-       made about a version of the policy whose text has since changed, or before the
-       circumstances were recorded. They are still enforced &mdash; re-adjudicating one is
-       how it stops being a guess, and <code>adjudicate_${esc($("#domain").value)}</code>
-       with <code>target=stale</code> is how you do it. Whether a ruling still holds is a
-       person's call, so nothing here fails a run.</p>`
+    ? `<p class=hero>${t("precedents.stale", {n: num(stale.size),
+        domain: esc($("#domain").value)})}</p>`
     : "";
   $("#precedents").innerHTML = note + table(
-    [{label: "Case"}, {label: "Correct outcome"}, {label: "Ruled by"}, {label: "When"},
-     {label: "Ruled under"}, {label: "Why"}],
+    [{label: t("precedents.col.case")}, {label: t("precedents.col.outcome")},
+     {label: t("precedents.col.by")}, {label: t("precedents.col.when")},
+     {label: t("precedents.col.under")}, {label: t("precedents.col.why")}],
     rows.map(r => {
       const old = stale.get(r.case_id);
       return `<tr>
       <td>${esc(r.case_id)}</td>
       <td><span class=pill>${esc(r.correct_outcome)}</span>${r.judged_outcome
-        ? ` <span class=sub>over &lsquo;${esc(r.judged_outcome)}&rsquo;</span>` : ""}</td>
+        ? ` <span class=sub>${t("precedents.over", {o: esc(r.judged_outcome)})}</span>` : ""}</td>
       <td>${esc(r.ruled_by)}</td>
       <td>${esc(r.established_at.slice(0, 10))}${r.revisions
-        ? ` <span class=sub>re-adjudicated, replacing ${num(r.revisions)} earlier ruling${
-            r.revisions === 1 ? "" : "s"}</span>` : ""}</td>
-      <td class="${old ? "warn" : "muted"}">${esc(r.policy_version || "not recorded")}${
-        r.judged_clause ? ` &middot; clause ${esc(r.judged_clause)}` : ""}${
+        ? ` <span class=sub>${t("precedents.readjudicated", {n: num(r.revisions),
+            s: plural(r.revisions)})}</span>` : ""}</td>
+      <td class="${old ? "warn" : "muted"}">${r.policy_version
+          ? esc(r.policy_version) : t("precedents.notrecorded")}${
+        r.judged_clause ? t("precedents.clause", {c: esc(r.judged_clause)}) : ""}${
         old ? `<div class=sub>${esc(old.detail)}</div>` : ""}</td>
       <td>${esc(r.note || "")}</td></tr>`;
     }),
-    "No precedents yet - run the adjudication DAG and answer the human-in-the-loop tasks.");
+    t("precedents.empty"));
 }
 
 // Re-adjudication is the only thing in this system that overwrites a
@@ -415,8 +1078,9 @@ function renderPrecedents(rows, gate) {
 // ruling it replaced stays readable.
 function renderSuperseded(h) {
   $("#superseded").innerHTML = table(
-    [{label: "Case"}, {label: "Was"}, {label: "Is now"}, {label: "Their reason"},
-     {label: "Superseded"}],
+    [{label: t("superseded.col.case")}, {label: t("superseded.col.was")},
+     {label: t("superseded.col.now")}, {label: t("superseded.col.why")},
+     {label: t("superseded.col.when")}],
     h.rulings.map(r => `<tr>
       <td>${esc(r.case_id)}</td>
       <td><span class=pill>${esc(r.correct_outcome)}</span>
@@ -425,106 +1089,107 @@ function renderSuperseded(h) {
       <td class="${r.changed ? "warn" : "loose"}"><span class=pill>${
         esc(r.current_outcome)}</span>
         <div class=sub>${esc(r.current_ruled_by)} &middot; ${
-          r.changed ? "changed the answer" : "confirmed it"}</div></td>
+          r.changed ? t("superseded.changed") : t("superseded.confirmed")}</div></td>
       <td>${esc(r.note || "")}</td>
       <td class=muted>${esc((r.superseded_at || "").slice(0, 10))}</td></tr>`),
-    "No ruling has been re-adjudicated — every precedent on file is the first "
-      + "answer given for its case.")
-    + (h.superseded ? `<p class=note>${esc(h.caveat)}</p>` : "");
+    t("superseded.empty"))
+    + (h.superseded ? `<p class=note>${remote(h, "caveat")}</p>` : "");
 }
 
 function renderConflicts(rows) {
   $("#conflicts").innerHTML = table(
-    [{label: "Materially identical cases"}, {label: "Rulings given"}, {label: "Ruled by"}],
+    [{label: t("conflicts.col.sig")}, {label: t("conflicts.col.outcomes")},
+     {label: t("conflicts.col.by")}],
     rows.map(r => `<tr>
       <td>${esc(r.signature.map(([k, v]) => `${k}=${v}`).join(", "))}</td>
       <td class=bad>${esc(Object.entries(r.outcomes).map(([o, ids]) => `${o} (${ids.join(", ")})`).join("  vs  "))}</td>
       <td>${esc(r.ruled_by.join(", "))}</td></tr>`),
-    "No contradictions among the rulings on file.");
+    t("conflicts.empty"));
 }
 
 // ----------------------------------------------------- threshold sweep
 function renderDials(dials) {
-  const select = $("#swdial");
+  const select = $("#swdial"), second = $("#swdial2");
   if (!dials.length) {
-    select.innerHTML = `<option value="">no numeric dials in this version</option>`;
+    select.innerHTML = `<option value="">${t("dials.none")}</option>`;
     select.disabled = $("#swgo").disabled = true;
-    $("#sweep").innerHTML = `<div class=empty>This version's <code>offline_rules</code> compare
-      no fields against numbers, so there is nothing to sweep.</div>`;
+    $("#sweep").innerHTML = `<div class=empty>${t("dials.nosweep")}</div>`;
+    // The second axis is derived from the first, so a version with no dials at
+    // all has no grid either. Leaving it live kept the previous version's
+    // surface on screen under the new version's heading.
+    second.innerHTML = `<option value="">${t("dials.nosecond")}</option>`;
+    second.disabled = $("#swgo2").disabled = true;
+    $("#sweepgrid").innerHTML = `<div class=empty>${t("dials.nosweep")}</div>`;
     return;
   }
   select.disabled = $("#swgo").disabled = false;
   // Same field in two clauses is two different dials; label them as such.
   select.innerHTML = dials.map(d =>
-    `<option value="${esc(d.clause)}|${esc(d.field)}">clause ${esc(d.clause || "-")} &middot; ${
-      esc(d.field)} (now ${esc(d.value)})</option>`).join("");
+    `<option value="${esc(d.clause)}|${esc(d.field)}">${t("dials.option",
+      {c: esc(d.clause || "-"), f: esc(d.field), v: esc(d.value)})}</option>`).join("");
   const first = dials[0].value;
   $("#swvalues").value = [0.5, 0.75, 1, 1.5, 2]
     .map(m => Math.round(first * m * 100) / 100).join(",");
-  $("#sweep").innerHTML = `<div class=empty>Pick a dial and press Sweep.</div>`;
+  $("#sweep").innerHTML = `<div class=empty>${t("dials.pick")}</div>`;
 
   // The second axis. Defaulted to a dial on a *different field* where one
   // exists: two axes carrying the same name is a legitimate pair and an
   // unreadable table.
-  const second = $("#swdial2");
   const others = dials.filter((d, i) => i > 0);
   if (!others.length) {
-    second.innerHTML = `<option value="">no second dial in this version</option>`;
+    second.innerHTML = `<option value="">${t("dials.nosecond")}</option>`;
     second.disabled = $("#swgo2").disabled = true;
-    $("#sweepgrid").innerHTML = "";
+    $("#sweepgrid").innerHTML = `<div class=empty>${t("dials.nosecond")}</div>`;
     return;
   }
   second.disabled = $("#swgo2").disabled = false;
   second.innerHTML = others.map(d =>
-    `<option value="${esc(d.clause)}|${esc(d.field)}">clause ${esc(d.clause || "-")} &middot; ${
-      esc(d.field)} (now ${esc(d.value)})</option>`).join("");
+    `<option value="${esc(d.clause)}|${esc(d.field)}">${t("dials.option",
+      {c: esc(d.clause || "-"), f: esc(d.field), v: esc(d.value)})}</option>`).join("");
   const preferred = others.find(d => d.field !== dials[0].field) || others[0];
   second.value = `${preferred.clause}|${preferred.field}`;
   $("#swvalues2").value = [0.5, 1, 1.5, 2]
     .map(m => Math.round(preferred.value * m * 100) / 100).join(",");
-  $("#sweepgrid").innerHTML = `<div class=empty>A single curve holds every other
-    threshold still and never says so. Press <strong>Sweep both</strong> to find out
-    whether that assumption survives.</div>`;
+  $("#sweepgrid").innerHTML = `<div class=empty>${t("grid.invite")}</div>`;
 }
 
 async function runSweep() {
   const domain = $("#domain").value, version = $("#version").value;
   const [clause, field] = ($("#swdial").value || "|").split("|");
   const values = $("#swvalues").value.trim();
-  if (!field || !values) { $("#swnote").textContent = "pick a dial and some values"; return; }
-  $("#swnote").textContent = "running...";
+  if (!field || !values) { $("#swnote").textContent = t("sweep.pickvalues"); return; }
+  $("#swnote").textContent = t("sweep.running");
   let result;
   try {
     result = await api(`/api/sweep/${domain}/${version}?field=${encodeURIComponent(field)}` +
                        `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}`);
   } catch (e) {
     $("#swnote").textContent = "";
-  $("#swnote2").textContent = "";
-    $("#sweep").innerHTML = `<div class=empty>That sweep could not be run. Values must be
-      comma-separated numbers, and the dial must exist in this version.</div>`;
+    $("#sweep").innerHTML = `<div class=empty>${t("sweep.failed")}</div>`;
     return;
   }
   const unit = result.impact_unit;
   const max = Math.max(1, ...result.points.map(p => p.flips));
-  $("#swnote").innerHTML = `<span class=muted>${num(result.cases)} cases &middot; from the
-    offline rules, not the markdown policy</span>`;
+  $("#swnote").innerHTML = t("sweep.note", {n: num(result.cases)});
   $("#sweep").innerHTML =
     `<div class=spark>${result.points.map(p =>
       `<i class="${p.is_current ? "cur" : ""}" style="height:${(p.flips / max * 100).toFixed(1)}%"
         title="${esc(p.value)}: ${p.flips} flips"></i>`).join("")}</div>` +
     table(
-      [{label: esc(result.field)}, {label: "Flips", num: 1}, {label: "Rate", num: 1},
-       {label: "More generous", num: 1}, {label: "More strict", num: 1},
-       {label: "Net", num: 1}, {label: "Caused by this policy", num: 1}],
+      [{label: esc(result.field)}, {label: t("sweep.col.flips"), num: 1},
+       {label: t("sweep.col.rate"), num: 1},
+       {label: t("sweep.col.loose"), num: 1}, {label: t("sweep.col.tight"), num: 1},
+       {label: t("sweep.col.net"), num: 1}, {label: t("sweep.col.caused"), num: 1}],
       result.points.map(p => `<tr${p.is_current ? ' class=warn' : ""}>
-        <td>${esc(p.value)}${p.is_current ? " <span class=sub>current</span>" : ""}</td>
+        <td>${esc(p.value)}${p.is_current
+          ? ` <span class=sub>${t("sweep.current")}</span>` : ""}</td>
         <td class=num>${num(p.flips)}</td>
         <td class=num>${pct(p.flip_rate)}</td>
         <td class="num loose">${num(p.loosening)}</td>
         <td class="num tight">${num(p.tightening)}</td>
         <td class=num>${money(unit, p.net_impact)}</td>
         <td class=num>${num(p.policy_driven_flips)}</td></tr>`),
-      "No points returned.");
+      t("sweep.nopoints"));
 }
 
 async function runGrid() {
@@ -533,9 +1198,9 @@ async function runGrid() {
   const [clause2, field2] = ($("#swdial2").value || "|").split("|");
   const values = $("#swvalues").value.trim(), values2 = $("#swvalues2").value.trim();
   if (!field || !field2 || !values || !values2) {
-    $("#swnote2").textContent = "pick two dials and some values"; return;
+    $("#swnote2").textContent = t("grid.pickvalues"); return;
   }
-  $("#swnote2").textContent = "running...";
+  $("#swnote2").textContent = t("sweep.running");
   let result;
   try {
     result = await api(`/api/sweep-grid/${domain}/${version}` +
@@ -545,9 +1210,7 @@ async function runGrid() {
       `&clause2=${encodeURIComponent(clause2)}`);
   } catch (e) {
     $("#swnote2").textContent = "";
-    $("#sweepgrid").innerHTML = `<div class=empty>That grid could not be run. Both dials
-      must exist and be different, the values must be comma-separated numbers, and the
-      grid is capped at 64 points &mdash; narrow each axis with a single sweep first.</div>`;
+    $("#sweepgrid").innerHTML = `<div class=empty>${t("grid.failed")}</div>`;
     return;
   }
   const firsts = [...new Set(result.points.map(p => p.first_value))];
@@ -560,57 +1223,54 @@ async function runGrid() {
   // picture rather than a measurement.
   const shade = n => hi === lo ? 0 : (n - lo) / (hi - lo);
   const interaction = result.interaction || {};
-  $("#swnote2").innerHTML = `<span class=muted>${num(result.cases)} cases &times;
-    ${result.points.length} settings</span>`;
+  $("#swnote2").innerHTML = t("grid.note", {n: num(result.cases), p: result.points.length});
   $("#sweepgrid").innerHTML =
     `<p class=hero>${interaction.measured
-      ? `Moving <strong>${esc(result.first.field)}</strong> changes
-         ${num(interaction.effect_min_flips)}&ndash;${num(interaction.effect_max_flips)}
-         decisions depending on where <strong>${esc(result.second.field)}</strong> sits. ` +
-        (interaction.independent
-          ? "The two are independent here, so two single sweeps say the same thing."
-          : "They interact &mdash; the best setting for one depends on the other, which is "
-            + "exactly what a pair of curves cannot show.")
-      : "A grid needs at least two settings on each axis to say whether the dials interact."}
+      ? t("grid.effect", {f1: esc(result.first.field),
+                          lo: num(interaction.effect_min_flips),
+                          hi: num(interaction.effect_max_flips),
+                          f2: esc(result.second.field)}) +
+        (interaction.independent ? t("grid.independent") : t("grid.interact"))
+      : t("grid.needtwo")}
      </p>` +
     table(
       [{label: `${esc(result.first.field)} \\ ${esc(result.second.field)}`},
        ...seconds.map(v => ({label: esc(v), num: 1}))],
       firsts.map(a => `<tr>
         <td><strong>${esc(a)}</strong>${a === result.first.current
-          ? " <span class=sub>current</span>" : ""}</td>` +
+          ? ` <span class=sub>${t("sweep.current")}</span>` : ""}</td>` +
         seconds.map(b => {
           const point = byPair.get(`${a}|${b}`);
           if (!point) return `<td class="num muted">-</td>`;
           return `<td class="num${point.is_current ? " warn" : ""}"
             style="background:rgba(220,120,60,${(shade(point.flips) * 0.35).toFixed(2)})"
-            title="${esc(a)} / ${esc(b)}: ${num(point.policy_driven_flips)} caused by this policy, net ${
-              esc(result.impact_unit)} ${num(point.net_impact)}">${num(point.flips)}</td>`;
+            title="${t("grid.tip", {a: esc(a), b: esc(b),
+              n: num(point.policy_driven_flips), unit: esc(result.impact_unit),
+              net: num(point.net_impact)})}">${num(point.flips)}</td>`;
         }).join("") + `</tr>`),
-      "No points returned.");
+      t("sweep.nopoints"));
 }
 
 // ------------------------------------------------------------ cross-check
 function renderCrossCheck(result) {
   if (!result.measured) {
-    $("#crosscheck").innerHTML = `<div class=empty>${esc(result.hint)}<br><br>
-      Every other check here compares the judge to itself. A judge that misreads a clause
-      and misreads it the same way every time passes all of them.</div>`;
+    $("#crosscheck").innerHTML = `<div class=empty>${t("cross.unmeasured",
+      {hint: remote(result, "hint")})}</div>`;
     return;
   }
   const r = result.report;
   const split = r.compared - r.agreed;
-  const note = `<p class=hero>${esc(r.primary)} and ${esc(r.secondary)} agreed on
-    <strong>${num(r.agreed)} of ${num(r.compared)}</strong> cases
-    (${pct(r.agreement)}, ${pct(r.agreement_lo)}&ndash;${pct(r.agreement_hi)}), citing the
-    same clause ${pct(r.clause_agreement)} of the time.
-    ${split ? `The ${num(split)} they split on are cases the policy does not settle &mdash;
-      ${num(r.contested_flips)} of them are flips only ${esc(r.primary)} makes, so that much
-      of the headline rests on one judge. A second judge is independent, not correct.`
-    : "They never disagreed on this sample."}</p>`;
+  const note = `<p class=hero>${t("cross.note", {
+      primary: esc(r.primary), secondary: esc(r.secondary), agreed: num(r.agreed),
+      compared: num(r.compared), rate: pct(r.agreement), lo: pct(r.agreement_lo),
+      hi: pct(r.agreement_hi), clause: pct(r.clause_agreement)})}${
+    split ? t("cross.split", {n: num(split), contested: num(r.contested_flips),
+                              primary: esc(r.primary)})
+          : t("cross.never")}</p>`;
   $("#crosscheck").innerHTML = note + (split ? table(
-    [{label: "Case"}, {label: esc(r.primary)}, {label: esc(r.secondary)},
-     {label: "Clauses"}, {label: "Recorded"}, {label: "Only one flips"}],
+    [{label: t("cross.col.case")}, {label: esc(r.primary)}, {label: esc(r.secondary)},
+     {label: t("cross.col.clauses")}, {label: t("cross.col.recorded")},
+     {label: t("cross.col.onlyone")}],
     r.disagreements.map(d => `<tr>
       <td>${esc(d.case_id)}</td>
       <td><span class=pill>${esc(d.primary_outcome)}</span>
@@ -618,105 +1278,96 @@ function renderCrossCheck(result) {
       <td><span class=pill>${esc(d.secondary_outcome)}</span></td>
       <td class=muted>${esc(d.primary_clause || "-")} vs ${esc(d.secondary_clause || "-")}</td>
       <td><span class=pill>${esc(d.actual_outcome || "-")}</span></td>
-      <td class="${d.only_one_flips ? "warn" : "muted"}">${d.only_one_flips ? "yes" : "no"}</td>
+      <td class="${d.only_one_flips ? "warn" : "muted"}">${
+        d.only_one_flips ? t("yes") : t("no")}</td>
       </tr>`),
-    "No disagreements.") : "");
+    t("cross.nodisagree")) : "");
 }
 
 // ------------------------------------------------------------ deviations
 function renderDeviations(result, unit) {
   const note = result.count
-    ? `<p class=hero>${num(result.count)} recorded outcomes worth ${money(unit, result.total_impact)}
-       disagree with policy <strong>${esc(result.in_force)}</strong>, which is in force today.
-       The proposal did not cause these and is not measured by them - but somebody departed
-       from the rulebook they already had.</p>` : "";
+    ? `<p class=hero>${t("dev.note", {n: num(result.count),
+        money: money(unit, result.total_impact), v: esc(result.in_force)})}</p>` : "";
   $("#deviations").innerHTML = note + table(
-    [{label: "Case"}, {label: "Recorded"}, {label: "Both policies say"},
-     {label: "Impact", num: 1}, {label: "Conf.", num: 1}],
+    [{label: t("dev.col.case")}, {label: t("dev.col.recorded")}, {label: t("dev.col.both")},
+     {label: t("dev.col.impact"), num: 1}, {label: t("dev.col.conf"), num: 1}],
     result.cases.map(r => `<tr>
       <td>${esc(r.case_id)}</td>
       <td><span class=pill>${esc(r.actual_outcome)}</span></td>
       <td><span class=pill>${esc(r.new_outcome)}</span></td>
       <td class=num>${num(r.impact)}</td>
       <td class=num>${Math.round(r.confidence * 100)}%</td></tr>`),
-    "Every change here is attributable to the proposal - no reviewer deviations found.");
+    t("dev.empty"));
 }
 
 // ------------------------------------------------------- judge stability
 function renderStability(result, summary) {
   if (!result.measured) {
-    $("#stability").innerHTML = `<div class=empty>${esc(result.hint ||
-      "Not measured.")} Without it, the flip rate above has no error bar.</div>`;
+    $("#stability").innerHTML = `<div class=empty>${t("stab.unmeasured",
+      {hint: remote(result, "hint") || t("stab.notmeasured")})}</div>`;
     return;
   }
   const share = summary.flips && summary.cases
     ? result.disagreement_rate / (summary.flips / summary.cases) : 0;
   const cases = Object.entries(result.disagreeing_cases || {});
   const reading = result.disagreement_rate === 0
-    ? `<p class=hero>The judge reproduced itself on every sampled case. If this ran offline the
-       judge is deterministic, so 0% measures nothing - it means the check is inert until you
-       point it at a real model.</p>`
-    : `<p class=hero>The judge contradicted itself on <strong>${pct(result.disagreement_rate)}</strong>
-       of sampled cases. Against the measured flip rate, up to <strong>${pct(share)}</strong> of the
-       change above could be the model rather than the policy.</p>`;
+    ? `<p class=hero>${t("stab.zero")}</p>`
+    : `<p class=hero>${t("stab.nonzero", {rate: pct(result.disagreement_rate),
+                                          share: pct(share)})}</p>`;
   $("#stability").innerHTML = reading + table(
-    [{label: "Case"}, {label: "Verdicts it gave across repeats"}],
+    [{label: t("stab.col.case")}, {label: t("stab.col.verdicts")}],
     cases.map(([id, outcomes]) => `<tr>
       <td>${esc(id)}</td>
       <td class=bad>${esc(Object.entries(outcomes)
         .map(([o, n]) => `${o} x${n}`).join("   "))}</td></tr>`),
-    `${result.cases_sampled} cases x ${result.samples_per_case} judgements, no disagreements.`);
+    t("stab.empty", {cases: result.cases_sampled, samples: result.samples_per_case}));
 }
 
 // --------------------------------------------------------- policy preflight
 function renderPreflight(result) {
   if (!result.findings.length) {
-    $("#preflight").innerHTML = `<div class=empty>Policy <strong>${esc(result.version)}</strong>
-      is structurally sound: every rule carries a clause number, no number is used twice,
-      and every cross-reference points at a clause that exists.</div>`;
+    $("#preflight").innerHTML = `<div class=empty>${t("pre.sound",
+      {v: esc(result.version)})}</div>`;
     return;
   }
   const note = result.blocking
-    ? `<p class=hero><strong class=bad>${num(result.blocking)} blocking</strong> problem(s).
-       A replay would run and its results would not be attributable to any sentence.</p>`
-    : `<p class=hero>Nothing blocking. These are worth reading before the next edit.</p>`;
+    ? `<p class=hero>${t("pre.blocking", {n: num(result.blocking)})}</p>`
+    : `<p class=hero>${t("pre.nonblocking")}</p>`;
   $("#preflight").innerHTML = note + table(
-    [{label: "Severity"}, {label: "Clause"}, {label: "Kind"}, {label: "What is wrong"}],
+    [{label: t("pre.col.severity")}, {label: t("pre.col.clause")},
+     {label: t("pre.col.kind")}, {label: t("pre.col.detail")}],
     result.findings.map(f => `<tr>
       <td class="${f.severity === "error" ? "bad" : "warn"}">${esc(f.severity)}</td>
       <td>${esc(f.clause || "—")}</td>
       <td class=muted>${esc(f.kind)}</td>
       <td>${esc(f.detail)}</td></tr>`),
-    "Nothing to report.");
+    t("pre.empty"));
 }
 
 // ------------------------------------------------------------- disparity
 function renderDisparity(result, unit) {
   if (!result.fields.length) {
-    $("#disparity").innerHTML = `<div class=empty>This domain declares no
-      <code>segment_fields</code>, so there is nothing to compare.</div>`;
+    $("#disparity").innerHTML = `<div class=empty>${t("disp.nofields")}</div>`;
     return;
   }
   if (!result.findings.length) {
-    $("#disparity").innerHTML = `<div class=empty>No segment moves more than
-      ${esc(result.max_ratio)}x the rest of its field, or is passed over by it &mdash;
-      or no segment has the
-      ${esc(result.min_cases)} cases needed to say so. Checked:
-      <code>${result.fields.map(esc).join("</code>, <code>")}</code>.</div>`;
+    $("#disparity").innerHTML = `<div class=empty>${t("disp.none",
+      {r: esc(result.max_ratio), m: esc(result.min_cases),
+       fields: result.fields.map(esc).join("</code>, <code>")})}</div>`;
     return;
   }
-  const note = `<p class=hero>A concentration is a question, not a verdict &mdash; segments
-    differ in what they contain. These are the ones somebody should be able to explain
-    before the rule ships.</p>`;
+  const note = `<p class=hero>${remote(result, "caveat") || t("disp.note")}</p>`;
   $("#disparity").innerHTML = note + table(
-    [{label: "Segment"}, {label: "Finding"}, {label: "Moves"}, {label: "Rate (95%)"},
-     {label: "Rest of field"}, {label: "Ratio", num: 1}, {label: "Direction"},
-     {label: "Net", num: 1}],
+    [{label: t("disp.col.segment")}, {label: t("disp.col.finding")},
+     {label: t("disp.col.moves")}, {label: t("disp.col.rate")},
+     {label: t("disp.col.rest")}, {label: t("disp.col.ratio"), num: 1},
+     {label: t("disp.col.direction")}, {label: t("disp.col.net"), num: 1}],
     result.findings.map(f => `<tr>
       <td>${esc(f.field)}=<strong>${esc(f.value)}</strong>${f.significant ? ""
-        : " <span class=unstable>not significant</span>"}</td>
+        : ` <span class=unstable>${t("disp.notsig")}</span>`}</td>
       <td class="${f.kind === "concentrated" ? "tight" : "muted"}">${
-        f.kind === "concentrated" ? "lands harder here" : "largely passes it over"}</td>
+        f.kind === "concentrated" ? t("disp.concentrated") : t("disp.passes")}</td>
       <td class=num>${num(f.flips)} / ${num(f.cases)}</td>
       <td>${pct(f.flip_rate)} <span class=muted>(${pct(f.flip_rate_lo)}-${pct(f.flip_rate_hi)})</span></td>
       <td class=muted>${num(f.rest_flips)} / ${num(f.rest_cases)} = ${pct(f.rest_flip_rate)}</td>
@@ -724,80 +1375,73 @@ function renderDisparity(result, unit) {
         // 0.0 is not a ratio - it is "one side has no flips", and which side
         // that is depends on the finding. Saying so beats printing 0.00x.
         f.ratio ? f.ratio.toFixed(2) + "x"
-                : (f.kind === "concentrated" ? "rest does not move" : "does not move")}</td>
-      <td class="${f.direction === "loosening" ? "loose" : f.direction === "tightening" ? "tight" : "muted"}">${esc(f.direction)}</td>
+                : (f.kind === "concentrated" ? t("disp.restnomove") : t("disp.nomove"))}</td>
+      <td class="${f.direction === "loosening" ? "loose" : f.direction === "tightening" ? "tight" : "muted"}">${esc(dir(f.direction))}</td>
       <td class=num>${money(unit, f.net_impact)}</td></tr>`),
-    "Nothing to report.");
+    t("pre.empty"));
 }
 
 // ------------------------------------------------- rules vs the judge
 function renderRules(result) {
   if (!result.compared) {
-    $("#rules").innerHTML = `<div class=empty>${esc(result.hint ||
-      "Not measured.")} Until it is, the threshold curve above is worth exactly what the
-      offline rules are worth, and nobody knows what that is.</div>`;
+    $("#rules").innerHTML = `<div class=empty>${t("rules.unmeasured",
+      {hint: remote(result, "hint") || t("stab.notmeasured")})}</div>`;
     return;
   }
   const inert = result.inert
-    ? `<p class="hero muted">These verdicts were produced by the offline judge, which
-       <em>is</em> these rules &mdash; so the agreement below is 100% by construction and
-       measures nothing. Set <code>PTM_OFFLINE=0</code> for a real figure.</p>` : "";
-  $("#rules").innerHTML = inert + `<p class=hero>The rules reached the same outcome as the
-    judge on <strong>${num(result.agreed)} of ${num(result.compared)}</strong> cases
-    (${pct(result.rate)}, ${pct(result.rate_lo)}-${pct(result.rate_hi)}), and cited the same
-    clause on <strong>${num(result.clause_agreed)} of ${num(result.clause_compared)}</strong>
-    &mdash; that second number is the one the sweep rests on.${
-      result.unmatched ? ` ${num(result.unmatched)} case(s) matched no rule at all and took
-      the default outcome; agreement on those is agreement by accident.` : ""}</p>` + table(
-    [{label: "Case"}, {label: "Rules say"}, {label: "Judge says"}, {label: "Rule clause"},
-     {label: "Judge clause"}],
+    ? `<p class="hero muted">${t("rules.inert")}</p>` : "";
+  $("#rules").innerHTML = inert + `<p class=hero>${t("rules.note", {
+      agreed: num(result.agreed), compared: num(result.compared), rate: pct(result.rate),
+      lo: pct(result.rate_lo), hi: pct(result.rate_hi),
+      ca: num(result.clause_agreed), cc: num(result.clause_compared)})}${
+      result.unmatched ? t("rules.unmatched", {n: num(result.unmatched)}) : ""}</p>` + table(
+    [{label: t("rules.col.case")}, {label: t("rules.col.rule")},
+     {label: t("rules.col.judge")}, {label: t("rules.col.ruleclause")},
+     {label: t("rules.col.judgeclause")}],
     (result.disagreements || []).map(d => `<tr>
       <td>${esc(d.case_id)}</td>
       <td><span class=pill>${esc(d.rule_outcome)}</span></td>
       <td><span class=pill>${esc(d.judge_outcome)}</span></td>
       <td>${esc(d.rule_clause || "—")}</td>
       <td>${esc(d.judge_clause || "—")}</td></tr>`),
-    "The rules and the judge agree on every case compared.");
+    t("rules.agree"));
 }
 
 // ----------------------------------------------------------- calibration
 function renderCalibration(result) {
   if (!result.measured) {
-    $("#calibration").innerHTML = `<div class=empty>${esc(result.hint || "Not measured.")}
-      Stability says the judge repeats itself. Only this says whether repeating itself is
-      worth anything.</div>`;
+    $("#calibration").innerHTML = `<div class=empty>${t("cal.unmeasured",
+      {hint: remote(result, "hint") || t("stab.notmeasured")})}</div>`;
     return;
   }
   const r = result.report;
+  const band = {t: pct(r.review_threshold), above: pct(r.above_threshold.accuracy),
+                an: r.above_threshold.n, below: pct(r.below_threshold.accuracy),
+                bn: r.below_threshold.n};
   const threshold = r.below_threshold.n && r.above_threshold.n
-    ? (r.threshold_separates
-        ? `<p class=hero>Confidence is doing its job: above the ${pct(r.review_threshold)}
-           review threshold the judge is right ${pct(r.above_threshold.accuracy)} of the time
-           (${r.above_threshold.n} cases), below it ${pct(r.below_threshold.accuracy)}
-           (${r.below_threshold.n}).</p>`
-        : `<p class=hero><strong class=bad>The review threshold does not separate.</strong>
-           Above ${pct(r.review_threshold)} the judge is right ${pct(r.above_threshold.accuracy)}
-           of the time (${r.above_threshold.n} cases); below it, ${pct(r.below_threshold.accuracy)}
-           (${r.below_threshold.n}). A confidence that does not predict correctness is routing
-           the review budget at random.</p>`)
+    ? `<p class=hero>${t(r.threshold_separates ? "cal.separates" : "cal.notseparates",
+                         band)}</p>`
     : "";
   $("#calibration").innerHTML =
-    `<p class=hero>The judge agreed with <strong>${num(r.agreed)} of ${num(r.judged)}</strong>
-     human rulings (${pct(r.accuracy)}, ${pct(r.accuracy_lo)}-${pct(r.accuracy_hi)}) while
-     claiming ${pct(r.mean_confidence)} confidence &mdash;
-     ${r.overconfidence > 0 ? "over" : "under"}confident by ${pct(Math.abs(r.overconfidence))}.
-     ${esc(result.caveat)}</p>` + threshold + table(
-      [{label: "Claimed confidence"}, {label: "Cases", num: 1}, {label: "Actually right", num: 1},
-       {label: "Said", num: 1}, {label: "Gap", num: 1}],
+    `<p class=hero>${t("cal.note", {
+       agreed: num(r.agreed), judged: num(r.judged), acc: pct(r.accuracy),
+       lo: pct(r.accuracy_lo), hi: pct(r.accuracy_hi), conf: pct(r.mean_confidence),
+       dir: r.overconfidence > 0 ? t("cal.over") : t("cal.under"),
+       gap: pct(Math.abs(r.overconfidence)), caveat: remote(result, "caveat")})}</p>`
+    + threshold + table(
+      [{label: t("cal.col.bucket")}, {label: t("cal.col.n"), num: 1},
+       {label: t("cal.col.right"), num: 1},
+       {label: t("cal.col.said"), num: 1}, {label: t("cal.col.gap"), num: 1}],
       r.buckets.map(b => `<tr>
         <td>${pct(b.lo)} &ndash; ${pct(b.hi)}</td>
         <td class=num>${num(b.n)}</td>
         <td class=num>${num(b.agreed)} (${pct(b.accuracy)})</td>
         <td class=num>${pct(b.mean_confidence)}</td>
         <td class="num ${b.gap > 0.1 ? "bad" : ""}">${b.gap > 0 ? "+" : ""}${pct(b.gap)}</td></tr>`),
-      "No cases scored.") +
+      t("cal.nocases")) +
     (r.confusion.length ? table(
-      [{label: "Human ruled"}, {label: "Judge said"}, {label: "Times", num: 1}, {label: "Cases"}],
+      [{label: t("cal.col.ruled")}, {label: t("cal.col.judged")},
+       {label: t("cal.col.times"), num: 1}, {label: t("cal.col.cases")}],
       r.confusion.map(c => `<tr>
         <td><span class=pill>${esc(c.ruled)}</span></td>
         <td class=bad><span class=pill>${esc(c.judged)}</span></td>
@@ -814,14 +1458,14 @@ function renderHistory(h, current) {
   const unit = h.impact_unit;
   const rows = h.versions.map(r => {
     const tags = [
-      r.in_force ? `<span class=pill>in force</span>` : "",
-      r.is_draft ? `<span class="pill warn">draft</span>` : "",
-      r.policy_version === current ? `<span class=pill>shown above</span>` : "",
-      r.known ? "" : `<span class="pill warn">not in the YAML</span>`,
+      r.in_force ? `<span class=pill>${t("hist.inforce")}</span>` : "",
+      r.is_draft ? `<span class="pill warn">${t("hist.draft")}</span>` : "",
+      r.policy_version === current ? `<span class=pill>${t("hist.shown")}</span>` : "",
+      r.known ? "" : `<span class="pill warn">${t("hist.unknown")}</span>`,
     ].join(" ");
     if (!r.cases) {
       return `<tr><td>${esc(r.policy_version)} ${tags}</td>
-        <td class=muted colspan=5>never replayed — nothing measured under this version</td>
+        <td class=muted colspan=5>${t("hist.never")}</td>
         <td class=muted>—</td></tr>`;
     }
     return `<tr>
@@ -832,44 +1476,53 @@ function renderHistory(h, current) {
       <td class=num>${num(r.policy_driven_flips)}</td>
       <td class="num ${r.net_impact < 0 ? "tight" : "loose"}">${money(unit, r.net_impact)}</td>
       <td class="num ${r.reverses ? "bad" : "loose"}">${
-        r.precedents_checked ? num(r.reverses) : "<span class=muted>unchecked</span>"}</td>
+        r.precedents_checked ? num(r.reverses)
+                             : `<span class=muted>${t("hist.unchecked")}</span>`}</td>
       <td class=muted>${esc((r.last_run || "").slice(0, 10)) || "—"}</td></tr>`;
   });
   $("#history").innerHTML = table(
-    [{label: "Version"}, {label: "Cases", num: true}, {label: "Outcomes change", num: true},
-     {label: "Caused by it", num: true}, {label: "Net " + esc(unit), num: true},
-     {label: "Rulings reversed", num: true}, {label: "Last replayed"}],
+    [{label: t("hist.col.version")}, {label: t("hist.col.cases"), num: true},
+     {label: t("hist.col.flips"), num: true},
+     {label: t("hist.col.caused"), num: true},
+     {label: t("hist.col.net", {unit: esc(unit)}), num: true},
+     {label: t("hist.col.reverses"), num: true}, {label: t("hist.col.last")}],
     rows,
-    "Nothing has been replayed for this domain yet.")
-    + `<p class=note>${esc(h.caveat)}</p>`;
+    t("hist.empty"))
+    + `<p class=note>${remote(h, "caveat")}</p>`;
 }
 
 // ---------------------------------------------------------------- drafts
 function renderDrafts(rows) {
   $("#drafts").innerHTML = table(
-    [{label: "Version"}, {label: "From"}, {label: "What it changes"}, {label: "Drafted by"},
-     {label: "Against precedent"}, {label: "When"}],
+    [{label: t("drafts.col.version")}, {label: t("drafts.col.from")},
+     {label: t("drafts.col.summary")}, {label: t("drafts.col.by")},
+     {label: t("drafts.col.gate")}, {label: t("drafts.col.when")}],
     rows.map(r => {
       const v = r.verification || {};
       const checked = v.precedents
-        ? `${num((v.violations || []).length)} reversed &middot; fixed ${
-            num((v.fixed || []).length)}, introduced ${num((v.introduced || []).length)}`
-        : "not checked";
+        ? t("drafts.checked", {n: num((v.violations || []).length),
+                               f: num((v.fixed || []).length),
+                               i: num((v.introduced || []).length)})
+        : t("drafts.notchecked");
       return `<tr>
-        <td>${esc(r.version)}${r.available ? "" : " <span class=unstable>files gone</span>"}</td>
+        <td>${esc(r.version)}${r.available ? ""
+          : ` <span class=unstable>${t("drafts.gone")}</span>`}</td>
         <td class=muted>${esc(r.base_version)}</td>
         <td>${esc(r.summary || "—")}</td>
         <td class=muted>${esc(r.drafted_by || "—")}</td>
         <td class="${(v.introduced || []).length ? "bad" : "loose"}">${checked}</td>
         <td class=muted>${esc((r.created_at || "").slice(0, 10))}</td></tr>`;
     }),
-    "No drafts yet — run the propose DAG to have the next version written from the evidence.");
+    t("drafts.empty"));
 }
 
 // --------------------------------------------------------------- boot
 async function render() {
   const domain = $("#domain").value, version = $("#version").value;
-  $("#status").textContent = "Loading...";
+  // Before the request, not after: the address bar should describe what the
+  // page is showing even when the replay behind it fails to load.
+  remember(domain, version);
+  $("#status").textContent = t("status.loading");
   let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
       deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
       preflightDetail, ruleDetail, crossDetail, draftRows, historyDetail,
@@ -901,21 +1554,17 @@ async function render() {
         api(`/api/precedent-history/${domain}`),
       ]);
   } catch (e) {
-    fail("Could not load this replay. Please refresh or check the Airflow logs.");
+    fail(t("fail.load"));
     return;
   }
-  const query = $("#search").value.trim().toLowerCase();
-  const shown = query ? flipRows.filter(r => r.case_id.toLowerCase().includes(query)) : flipRows;
-  $("#status").textContent =
-    `${summary.runs} run${summary.runs === 1 ? "" : "s"} - ${shown.length}${
-      shown.length === flipRows.length ? " flips" : " shown"}`;
+  LAST = {summary, flipRows, version};
+
+  applyFilter();
 
   const draftnote = $("#draftnote");
   draftnote.hidden = !summary.is_draft;
   if (summary.is_draft) {
-    draftnote.innerHTML = `<strong class=warn>${esc(version)} is a drafted amendment</strong>,
-      written by the proposal DAG from the evidence below and approved by nobody. Everything
-      on this page measures it exactly as it would measure a policy somebody wrote.`;
+    draftnote.innerHTML = t("draft.note", {v: esc(version)});
   }
   renderTiles(summary, costs, gate, calibrationDetail);
   renderPreflight(preflightDetail);
@@ -927,7 +1576,6 @@ async function render() {
   renderRules(ruleDetail);
   renderCrossCheck(crossDetail);
   renderDeviations(deviationRows, summary.impact_unit);
-  renderFlips(shown, flipRows.length, summary.impact_unit);
   renderPrecedents(precedentRows, gate);
   renderSuperseded(supersededDetail);
   renderConflicts(conflictRows);
@@ -940,6 +1588,19 @@ async function render() {
   renderCompare();
 }
 
+// The flip table is the one panel a keystroke can change, so it is the only
+// one the filter redraws. LAST holds what the last render() fetched.
+function applyFilter() {
+  if (!LAST) return;
+  const {summary, flipRows} = LAST;
+  const query = $("#search").value.trim().toLowerCase();
+  const shown = query ? flipRows.filter(r => r.case_id.toLowerCase().includes(query)) : flipRows;
+  $("#status").textContent =
+    t("status.runs", {n: summary.runs, s: plural(summary.runs)}) + ` - ${shown.length}` +
+    (shown.length === flipRows.length ? t("status.flips") : t("status.shown"));
+  renderFlips(shown, flipRows.length, summary.impact_unit);
+}
+
 function onDomainChange() {
   const d = DOMAINS.find(x => x.name === $("#domain").value);
   // Drafts are labelled in every list they appear in. A version a model wrote
@@ -947,8 +1608,15 @@ function onDomainChange() {
   const drafts = d.draft_versions || [];
   const options = sel => d.policies.map(v =>
     `<option value="${esc(v)}"${v === sel ? " selected" : ""}>${esc(v)}${
-      drafts.includes(v) ? " (draft)" : ""}</option>`).join("");
-  const candidate = d.policies.includes("v2") ? "v2" : d.policies[d.policies.length - 1];
+      drafts.includes(v) ? t("version.draft") : ""}</option>`).join("");
+  // A version asked for by URL, restored from the last visit, or held across a
+  // language switch - but only when this domain actually has it. Following a
+  // link to expenses/v2 and then switching to refunds must not ask refunds for
+  // a version it has never had.
+  const wanted = PENDING && d.policies.includes(PENDING) ? PENDING : "";
+  PENDING = "";
+  const candidate = wanted
+    || (d.policies.includes("v2") ? "v2" : d.policies[d.policies.length - 1]);
   $("#version").innerHTML = options(candidate);
   $("#cmpleft").innerHTML = options(d.in_force);
   $("#cmpright").innerHTML = options(candidate);
@@ -959,20 +1627,52 @@ function onDomainChange() {
 async function boot() {
   try { DOMAINS = await api("/api/domains"); }
   catch (e) {
-    fail("Could not load Policy Time Machine data. Start the Airflow demo, then refresh.");
+    fail(t("fail.boot"));
     return;
   }
-  if (!DOMAINS.length) { fail("No policy domains are configured yet."); return; }
+  if (!DOMAINS.length) { fail(t("fail.nodomains")); return; }
   $("#domain").innerHTML = DOMAINS.map(d =>
     `<option value="${esc(d.name)}">${esc(d.name)}</option>`).join("");
+  // Only after the real list is known: a URL naming a domain this deployment
+  // does not have falls back to the first one rather than rendering nothing.
+  const want = requested();
+  if (want.domain && DOMAINS.some(d => d.name === want.domain)) {
+    $("#domain").value = want.domain;
+  }
+  PENDING = want.version;
   $("#domain").onchange = onDomainChange;
   $("#version").onchange = render;
-  $("#search").oninput = render;
+  let filterTimer;
+  $("#search").oninput = () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(applyFilter, 120);
+  };
   $("#cmpleft").onchange = $("#cmpright").onchange = renderCompare;
   $("#swgo").onclick = runSweep;
   $("#swgo2").onclick = runGrid;
   $("#swvalues").onkeydown = e => { if (e.key === "Enter") runSweep(); };
+  $("#swvalues2").onkeydown = e => { if (e.key === "Enter") runGrid(); };
+  $("#lang").onchange = () => setLanguage($("#lang").value);
   onDomainChange();
 }
+
+// A language switch redraws everything the page owns. The sweep panels are
+// deliberately left as they are: their contents are the result of a request
+// somebody made, and silently discarding it to relabel it is worse than a
+// heading in one language above a table in the other until the next Sweep.
+function setLanguage(code) {
+  if (!I18N[code]) return;
+  LANG = code;
+  try { localStorage.setItem("ptm.lang", code); } catch (e) { /* storage blocked */ }
+  applyStatic();
+  if (DOMAINS.length) {
+    PENDING = $("#version").value;  // a relabel must not move the reader
+    onDomainChange();
+  }
+}
+
+LANG = pickLanguage();
+$("#lang").value = LANG;
+applyStatic();
 boot();
 </script></body></html>

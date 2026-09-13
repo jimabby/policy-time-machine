@@ -118,7 +118,11 @@ class TestTheForecastIsScored:
         assert cost.reconcile(cost.estimate(1000, 10, "anthropic:claude-sonnet-5")) == \
             {"measured": False,
              "hint": "no usage reported; the ledger is the estimate alone. Usage is "
-                     "collected by ptm.metered and is only available with PTM_OFFLINE=0."}
+                     "collected by ptm.metered and is only available with PTM_OFFLINE=0.",
+             # The sentence a reader sees, and the key a non-English client renders
+             # it from. Asserted together, because a hint that loses its key falls
+             # back to English in a page that has stopped saying anything in it.
+             "hint_key": "hint.cost_unmetered"}
 
     def test_the_gap_is_reported_both_ways(self):
         ledger = {**cost.estimate(40_000, 100, "anthropic:claude-sonnet-5"),

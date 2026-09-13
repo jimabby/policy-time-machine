@@ -821,6 +821,46 @@ make draft     # have the proposal DAG write the next version of the policy
 Then open **http://localhost:8080/ptm/** for the Diff Explorer, and the
 `adjudicate_expenses` DAG to answer the human-in-the-loop tasks.
 
+The Explorer opens with **How to read this page** at the top: what each panel
+answers, in the order the panels answer it, and which DAG to trigger when one
+of them is empty. It is a `<details>`, so it costs one line once somebody knows
+the page.
+
+A **language switcher** in the header renders the whole page in English or
+Chinese (中文). Every string lives in one table at the top of
+`plugins/dashboard.html`, and anything a translation has no entry for falls
+back to English rather than going blank. The read models' own `caveat` and
+`hint` strings travel with a `caveat_key` / `hint_key`, so the limit on a
+number is rendered in the same language as the number — a page that states a
+figure in one language and its caveat in another is how a figure gets quoted
+without them. The English text is sent unchanged either way, because the CLIs
+print it and the export bundle carries it. Content that is genuinely *data* —
+a reviewer's note, an outcome name a domain defines — is shown as written.
+
+**The selection is addressable.** Domain and version go into the query string
+(`/ptm/?domain=expenses&version=v2`) as you pick them, so the URL in the
+address bar is the link to paste into the ticket. Open it and you get that
+replay: a link beats the reader's own last selection, because otherwise two
+people open the same URL, see different replays, and neither can tell. With no
+query string the last selection is restored instead, and a link naming a domain
+or version this deployment does not have falls back to the default rather than
+rendering a blank page.
+
+**The routes are not public.** Airflow mounts a plugin's `fastapi_apps` with
+`app.mount()`, and a mounted sub-application inherits none of the parent's
+dependencies — so Airflow's access control never reaches them and every case
+file behind them would be readable by anyone who can reach the port. The plugin
+applies its own dependency to the whole app, once, so a route added later
+cannot forget it. The token is taken from `Authorization: Bearer` and then from
+Airflow's `_token` cookie — the cookie is needed because it is `HttpOnly`, so
+the page's own JavaScript cannot read it to build a header — and verification is
+Airflow's `resolve_user_from_token`, never anything reimplemented here. Reading
+a cookie is only safe because every route is a read: the cookie is
+`SameSite=Lax` and the responses are JSON another origin cannot read back.
+Logging into Airflow is all a reader has to do. `PTM_ALLOW_ANONYMOUS=1` opens
+it for a context with no session to present — the test suite, or a local demo
+behind nothing — and is the only thing that does.
+
 No Airflow, no API key, whole loop in about a second:
 
 ```bash

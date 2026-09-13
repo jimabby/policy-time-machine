@@ -42,6 +42,11 @@ if not available and os.environ.get("PTM_REQUIRE_BROWSER") == "1":  # pragma: no
 needs_browser = pytest.mark.skipif(
     not available, reason=f"Airflow, FastAPI and Playwright are needed ({import_error})")
 
+# Chromium here has no Airflow login, and this suite is about what the page
+# renders rather than who may see it. The gate itself is proved in
+# tests/test_plugin.py, which takes this allowance away again.
+os.environ["PTM_ALLOW_ANONYMOUS"] = "1"
+
 
 def replay_domain(domain_name: str, version: str) -> None:
     """A full point-in-time replay, the way conftest does it for expenses."""
@@ -207,6 +212,94 @@ def page(browser, server):
     context.close()
 
 
+@pytest.fixture
+def visit(browser, server):
+    """Open the dashboard at a chosen query string, in a reusable context.
+
+    The ``page`` fixture is one page in a fresh context, which is what most of
+    this file wants. Deep links and a remembered selection are both about what a
+    *second* visit does, so they need the context to outlive the page.
+    """
+    contexts = []
+
+    def open_at(suffix: str = "", context=None):
+        if context is None:
+            context = browser.new_context(viewport={"width": 1400, "height": 1000})
+            contexts.append(context)
+        raw = context.new_page()
+        errors: list[str] = []
+        raw.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        raw.on("console",
+               lambda m: errors.append(f"console.{m.type}: {m.text}")
+               if m.type == "error" else None)
+        raw.goto(server + suffix, wait_until="domcontentloaded")
+        raw.wait_for_selector("#tiles .tile", timeout=15_000)
+        return Dashboard(raw, errors), context
+
+    yield open_at
+    for context in contexts:
+        context.close()
+
+
+@needs_browser
+class TestTheSelectionIsAddressable:
+    """Which replay you are looking at is the one thing about this page worth
+    sending to somebody else, and the one thing a refresh used to throw away.
+    """
+
+    def test_a_plain_visit_still_lands_on_the_default(self, visit):
+        page, _ = visit()
+        assert page.eval_on_selector("#domain", "e => e.value") == "expenses"
+        assert page.eval_on_selector("#version", "e => e.value") == "v2"
+
+    def test_the_address_bar_becomes_the_link(self, visit):
+        """Nobody copies a URL they had to construct."""
+        page, _ = visit()
+        page.wait_for_function(
+            "() => location.search.includes('domain=') && location.search.includes('version=')",
+            timeout=10_000)
+        query = page.evaluate("location.search")
+        assert "domain=expenses" in query and "version=v2" in query
+
+    def test_a_link_opens_the_replay_it_names(self, visit):
+        page, _ = visit("?domain=refunds&version=v2")
+        assert page.eval_on_selector("#domain", "e => e.value") == "refunds"
+        page.wait_for_function(
+            "() => document.querySelector('#segments').innerText.toLowerCase()"
+            ".includes('by tier')", timeout=15_000)
+        assert page.errors == []
+
+    def test_a_link_beats_what_that_reader_looked_at_last(self, visit):
+        """Otherwise the link is a lie: two people open the same URL and see
+        different replays, and neither of them can tell."""
+        first, context = visit()
+        first.select_option("#version", "v1")
+        first.wait_for_function(
+            "() => location.search.includes('version=v1')", timeout=10_000)
+        first.page.close()
+
+        second, _ = visit("?domain=expenses&version=v2", context=context)
+        assert second.eval_on_selector("#version", "e => e.value") == "v2"
+
+    def test_with_no_link_the_last_selection_comes_back(self, visit):
+        first, context = visit()
+        first.select_option("#domain", "refunds")
+        first.wait_for_function(
+            "() => location.search.includes('domain=refunds')", timeout=10_000)
+        first.page.close()
+
+        second, _ = visit(context=context)
+        assert second.eval_on_selector("#domain", "e => e.value") == "refunds"
+
+    def test_a_link_to_something_this_deployment_lacks_falls_back(self, visit):
+        """A stale link out of an old ticket must not render a blank page."""
+        page, _ = visit("?domain=nope&version=v99")
+        assert page.eval_on_selector("#domain", "e => e.value") == "expenses"
+        assert page.eval_on_selector("#version", "e => e.value") == "v2"
+        assert page.inner_text("#tiles").strip()
+        assert page.errors == []
+
+
 @needs_browser
 class TestItRenders:
     def test_without_a_single_console_error(self, page):
@@ -370,6 +463,148 @@ class TestPanels:
 
 
 @needs_browser
+class TestTheInstructions:
+    """The panel that explains the rest of the page.
+
+    Its steps are built from the translation table rather than written into the
+    markup, so a key that goes missing empties the list rather than announcing
+    itself - which is the failure this catches.
+    """
+
+    def opened(self, page) -> str:
+        """The panel's text with the panel open.
+
+        It ships collapsed, and a collapsed ``<details>`` renders none of its
+        content - so ``inner_text`` returns the summary alone until something
+        opens it, exactly as it would for a reader.
+        """
+        page.click("#howto > summary")
+        page.wait_for_function("() => document.querySelector('#howto').open",
+                               timeout=5_000)
+        return page.text("#howto")
+
+    def test_it_offers_a_reading_order(self, page):
+        assert "how to read this page" in page.text("#howto")
+        assert page.locator("#howtosteps li").count() == 8
+
+    def test_it_names_the_panel_that_is_easiest_to_misread(self, page):
+        """The deviation bucket is the one number here that is routinely charged
+        to the wrong party, so the instructions have to say whose it is."""
+        assert "not this policy's doing" in self.opened(page)
+
+    def test_it_says_the_page_triggers_nothing(self, page):
+        """An empty panel is a DAG that has not run, not a page that is broken,
+        and only the instructions are in a position to say so."""
+        assert "nothing on this page triggers a dag" in self.opened(page)
+
+    def test_it_starts_collapsed(self, page):
+        """Every reader after the first has already read it."""
+        assert page.eval_on_selector("#howto", "e => e.open") is False
+
+
+@needs_browser
+class TestTheLanguageSwitcher:
+    """Both languages, rendered by the same code against the same API.
+
+    English is asserted everywhere else in this file, so what is left to prove
+    is that a switch redraws the whole page rather than most of it: a panel the
+    switch does not reach keeps its old language and reads as a translation
+    nobody wrote.
+    """
+
+    def to_chinese(self, page):
+        page.select_option("#lang", "zh")
+        page.wait_for_function(
+            "() => document.documentElement.lang === 'zh-Hans'", timeout=15_000)
+        page.wait_for_selector("#tiles .tile", timeout=15_000)
+        # A tile is redrawn synchronously; the panels below it are redrawn from
+        # a fresh round of requests, so wait for the last of those to land.
+        page.wait_for_function(
+            "() => document.querySelector('#drafts').innerText.includes('尚无草案')",
+            timeout=15_000)
+
+    def test_it_defaults_to_english(self, page):
+        assert page.eval_on_selector("#lang", "e => e.value") == "en"
+        assert page.get_attribute("html", "lang") == "en"
+
+    def test_switching_redraws_every_kind_of_string(self, page):
+        self.to_chinese(page)
+        assert page.title() == "政策时光机"
+        # A tile, a table header, a row cell, an empty state and the
+        # instructions: every shape of string the page builds.
+        for panel, chinese in (("#tiles", "不是本政策造成的"),   # deviations tile
+                               ("#clauses", "责任条款"),         # a column header
+                               ("#flips", "未能复现"),           # a row cell
+                               ("#superseded", "没有任何裁定"),  # an empty state
+                               ("#howto", "如何阅读本页")):      # the instructions
+            assert chinese in page.inner_text(panel), panel
+        assert page.errors == []
+
+    def test_nothing_is_left_blank_by_the_switch(self, page):
+        """A key the Chinese table has no entry for falls back to English. A
+        panel that comes up empty instead is what this is here to catch."""
+        self.to_chinese(page)
+        empty = [panel for panel in
+                 ("#tiles", "#preflight", "#clauses", "#segments", "#disparity",
+                  "#deviations", "#flips", "#precedents", "#conflicts", "#stability",
+                  "#calibration", "#drafts", "#crosscheck", "#rules", "#history",
+                  "#superseded")
+                 if not page.inner_text(panel).strip()]
+        assert not empty, f"panels emptied by the language switch: {empty}"
+
+    def test_the_caveats_the_API_wrote_arrive_translated(self, page):
+        """A caveat is the limit on the number above it. A page that renders the
+        numbers in one language and their limits in another is the version of
+        this that gets a figure quoted without them."""
+        self.to_chinese(page)
+        page.wait_for_function(
+            "() => document.querySelector('#disparity').innerText.includes('分组')",
+            timeout=15_000)
+        assert "两个版本只有在相同的案例集上才具可比性" in page.inner_text("#history")
+        assert "集中现象是一个问题" in page.inner_text("#disparity")
+        assert "准确率的下限" in page.inner_text("#calibration")
+
+    def test_a_hint_keeps_the_DAG_name_it_tells_you_to_run(self, page):
+        """The hint's whole job is naming a command. Translating the sentence
+        around an identifier must not translate the identifier."""
+        self.to_chinese(page)
+        assert "judge_stability_expenses" in page.inner_text("#crosscheck")
+
+    def test_data_from_the_API_is_shown_as_written(self, page):
+        """A reviewer's note is evidence, not chrome. Translating it would put
+        words into a person's mouth, so it stays exactly as it was recorded."""
+        self.to_chinese(page)
+        assert "finance.lead" in page.text("#precedents")
+        assert "ruled during the browser test" in page.text("#precedents")
+
+    def test_switching_back_restores_english(self, page):
+        self.to_chinese(page)
+        page.select_option("#lang", "en")
+        page.wait_for_function(
+            "() => document.documentElement.lang === 'en'", timeout=15_000)
+        page.wait_for_function(
+            "() => document.querySelector('#drafts').innerText.includes('No drafts yet')",
+            timeout=15_000)
+        assert "not this policy's doing" in page.text("#tiles")
+
+    def test_it_does_not_move_the_reader_off_their_version(self, page):
+        """Relabelling the page is not navigation. Switching language redraws
+        through the same path that picks the default version, so without care it
+        quietly returns a reader from v1 to v2 while they are reading it."""
+        page.select_option("#version", "v1")
+        page.wait_for_function(
+            "() => location.search.includes('version=v1')", timeout=10_000)
+        self.to_chinese(page)
+        assert page.eval_on_selector("#version", "e => e.value") == "v1"
+
+    def test_the_choice_survives_a_reload(self, page):
+        self.to_chinese(page)
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector("#tiles .tile", timeout=15_000)
+        assert page.eval_on_selector("#lang", "e => e.value") == "zh"
+
+
+@needs_browser
 class TestTheSweep:
     def test_it_offers_the_dials_from_the_policy(self, page):
         options = page.text("#swdial")
@@ -431,3 +666,16 @@ class TestExportAndNavigation:
             timeout=10_000)
         assert page.locator("#flips tr.row").count() >= 1
         assert "shown" in page.text("#status")
+
+    def test_filtering_asks_the_API_for_nothing(self, page):
+        """The rows are already in hand and the query changes no other panel.
+        Re-fetching all nineteen read models on every keystroke is what this
+        replaced, and nothing about the rendering would show it came back."""
+        calls: list[str] = []
+        page.on("request", lambda r: calls.append(r.url) if "/api/" in r.url else None)
+        before = page.locator("#flips tr.row").count()
+        page.fill("#search", "exp-0084")
+        page.wait_for_function(
+            f"() => document.querySelectorAll('#flips tr.row').length < {before}",
+            timeout=10_000)
+        assert calls == []

@@ -43,6 +43,11 @@ if not available and os.environ.get("PTM_REQUIRE_PLUGIN") == "1":  # pragma: no 
 needs_plugin = pytest.mark.skipif(
     not available, reason=f"Airflow and FastAPI are needed ({import_error})")
 
+# These tests call the routes directly and have no Airflow session to present.
+# TestTheRoutesAreNotPublic takes this away again, so the gate is still proved
+# rather than merely configured around.
+os.environ["PTM_ALLOW_ANONYMOUS"] = "1"
+
 
 def load_plugin():
     """Import the plugin by path - ``plugins/`` is a DAGs-folder sibling, not a package."""
@@ -96,6 +101,59 @@ def dashboard_api_urls() -> list[str]:
 @pytest.fixture(scope="module")
 def client(replayed):
     return TestClient(load_plugin().app)
+
+
+@needs_plugin
+class TestTheRoutesAreNotPublic:
+    """Airflow mounts this app with ``app.mount()``, and a mounted app inherits
+    none of the parent's dependencies - so nothing except this plugin stands
+    between these routes and anybody who can reach the port. Every case file in
+    the domain is behind them.
+    """
+
+    @pytest.fixture
+    def locked(self, monkeypatch, replayed):
+        monkeypatch.delenv("PTM_ALLOW_ANONYMOUS", raising=False)
+        return TestClient(load_plugin().app, raise_server_exceptions=False)
+
+    def test_an_api_route_refuses_an_anonymous_caller(self, locked):
+        assert locked.get("/api/domains").status_code in (401, 403)
+
+    def test_every_api_route_refuses_one(self, locked):
+        """Read out of the app's own route table rather than listed here, so a
+        route added later is covered without anybody remembering to add it."""
+        module = load_plugin()
+        paths = [r.path for r in module.app.routes
+                 if getattr(r, "path", "").startswith("/api/")]
+        assert paths, "no API routes found to check"
+        open_routes = []
+        for path in paths:
+            # Path params are irrelevant: the dependency runs before the
+            # handler, so a placeholder that would 404 still has to 401 first.
+            url = re.sub(r"\{[^}]+\}", "x", path)
+            if locked.get(url).status_code not in (401, 403):
+                open_routes.append(path)
+        assert not open_routes, f"reachable without authentication: {open_routes}"
+
+    def test_the_page_itself_refuses_one_too(self, locked):
+        """The shell carries no data of its own, but handing somebody a page
+        whose every panel will 401 is a worse answer than saying so once."""
+        assert locked.get("/").status_code in (401, 403)
+
+    def test_a_token_it_did_not_issue_does_not_get_in(self, locked):
+        assert locked.get(
+            "/api/domains",
+            headers={"Authorization": "Bearer not-a-real-token"}).status_code != 200
+
+    def test_a_forged_cookie_does_not_get_in(self, locked):
+        """The cookie is read because Airflow's is HttpOnly and the page cannot
+        forward it. Reading it is only safe if it is still verified."""
+        locked.cookies.set("_token", "not-a-real-token")
+        assert locked.get("/api/domains").status_code != 200
+
+    def test_the_allowance_is_the_only_thing_that_opens_it(self, monkeypatch, replayed):
+        monkeypatch.setenv("PTM_ALLOW_ANONYMOUS", "1")
+        assert TestClient(load_plugin().app).get("/api/domains").status_code == 200
 
 
 @needs_plugin
@@ -287,6 +345,18 @@ class TestPluginRegistration:
         [entry] = plugin.fastapi_apps
         assert entry["url_prefix"] == "/ptm"
         assert entry["app"] is load_plugin().app or entry["app"] is not None
+
+    def test_the_dashboard_is_served_through_the_same_gate(self):
+        """One dependency on the app, not one per route.
+
+        Per-route is the version that ships a hole the first time somebody adds
+        a route and forgets, so what is asserted is that the app itself carries
+        it.
+        """
+        module = load_plugin()
+        assert any(getattr(d, "dependency", None) is module.require_user
+                   for d in module.app.router.dependencies), \
+            "the app must carry require_user for every route it has and will have"
 
     def test_registers_the_nav_view(self):
         [view] = load_plugin().PolicyTimeMachinePlugin.external_views

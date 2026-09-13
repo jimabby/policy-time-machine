@@ -757,7 +757,8 @@ def verify(domain_name: str, draft_version: str, base_version: str,
         return {"precedents": 0, "checked": 0, "violations": [], "fixed": [],
                 "introduced": [], "base_violations": [],
                 "hint": "no human rulings on file yet, so this draft has not been checked "
-                        "against anything - adjudicate some flips first"}
+                        "against anything - adjudicate some flips first",
+                "hint_key": "hint.draft_unchecked"}
 
     ids = [p.case_id for p in precedents]
     cases = store.load_cases(domain_name, until=datetime.now(), case_ids=ids)
@@ -803,6 +804,7 @@ def verify(domain_name: str, draft_version: str, base_version: str,
         "caveat": "checked against the precedent set only. A draft that reverses no "
                   "ruling has passed the regression suite, not been measured - replay "
                   "it to find out what it does to the other cases.",
+        "caveat_key": "caveat.draft_verify",
     }
 
 

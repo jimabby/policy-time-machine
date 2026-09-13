@@ -141,7 +141,8 @@ def reconcile(ledger: dict, prompt_chars: int = 0) -> dict:
     if not actual_in and not actual_cost:
         return {"measured": False,
                 "hint": "no usage reported; the ledger is the estimate alone. Usage is "
-                        "collected by ptm.metered and is only available with PTM_OFFLINE=0."}
+                        "collected by ptm.metered and is only available with PTM_OFFLINE=0.",
+                "hint_key": "hint.cost_unmetered"}
     estimated_in = int(ledger.get("estimated_input_tokens") or 0)
     estimated_cost = float(ledger.get("estimated_cost_usd") or 0)
     return {

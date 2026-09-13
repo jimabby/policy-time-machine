@@ -10,21 +10,71 @@ This module is deliberately nothing but routing: every read model lives in
 :mod:`ptm.report`, so the whole API surface is covered by the test suite without
 FastAPI installed, and is callable from a script without starting Airflow.
 
-Note: FastAPI plugin endpoints are NOT covered by Airflow's own auth. These
-routes are read-only and this is a demo, but do not expose them as-is.
+Airflow mounts a plugin's ``fastapi_apps`` with ``app.mount()``, and a mounted
+sub-application has its own route table and inherits none of the parent's
+dependencies - so Airflow's access control never reaches these routes. Every
+one of them would be readable by anybody who can reach the port. :func:`require_user`
+closes that, applied once to the whole app rather than per route, so a route
+added later cannot forget it.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from airflow.plugins_manager import AirflowPlugin
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from ptm import report
 
-app = FastAPI(title="Policy Time Machine")
+#: The cookie Airflow's UI stores its JWT in.
+AIRFLOW_TOKEN_COOKIE = "_token"
+
+#: Escape hatch for a context with no Airflow session to present: the test
+#: suite, and a local demo run behind nothing. Read per request rather than at
+#: import, so a test can set it without rebuilding the app - and named as an
+#: allowance rather than a switch, because "off" has to be the thing you type.
+ALLOW_ANONYMOUS = "PTM_ALLOW_ANONYMOUS"
+
+
+def require_user(request: Request):
+    """Authenticate the caller the way Airflow's own API does.
+
+    The token is taken from ``Authorization: Bearer``, then from the UI's
+    ``_token`` cookie. The cookie is needed because it is **HttpOnly**: the
+    browser sends it automatically and this page's JavaScript cannot read it,
+    so a header-only check would 401 the dashboard for a reader who is already
+    logged in. Verification itself is Airflow's ``resolve_user_from_token`` -
+    signature, expiry and auth manager - never anything reimplemented here.
+
+    Reading a cookie would be a CSRF hole on a route that changes something.
+    Every route here is a read, the cookie is ``SameSite=Lax`` so a cross-site
+    fetch does not carry it, and the responses are JSON another origin cannot
+    read back without CORS. Keep it that way: a POST added below this line
+    needs its own defence.
+    """
+    if os.environ.get(ALLOW_ANONYMOUS) == "1":
+        return None
+    try:
+        from airflow.api_fastapi.core_api.security import resolve_user_from_token
+    except ImportError as exc:  # pragma: no cover - a future Airflow moving it
+        # Fail closed. A version that has moved this should 401 until somebody
+        # looks, rather than serve every case file to anyone who asks.
+        raise HTTPException(
+            status_code=500,
+            detail="cannot locate Airflow's token verifier, so this plugin "
+                   "cannot authenticate you; set PTM_ALLOW_ANONYMOUS=1 only if "
+                   "this deployment is genuinely meant to be public",
+        ) from exc
+    header = request.headers.get("Authorization", "")
+    token = (header[7:].strip() if header[:7].lower() == "bearer "
+             else request.cookies.get(AIRFLOW_TOKEN_COOKIE))
+    return resolve_user_from_token(token)
+
+
+app = FastAPI(title="Policy Time Machine", dependencies=[Depends(require_user)])
 
 
 def found(fn, *args, **kwargs):

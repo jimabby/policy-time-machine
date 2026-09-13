@@ -125,7 +125,8 @@ def confirmation_summary(domain: str, version: str) -> dict:
     if not measured:
         return {"measured": 0, "stable": 0, "unstable": 0,
                 "hint": f"run judge_stability_{domain} with target=flips to put an error "
-                        f"bar on individual flips before a human rules on them"}
+                        f"bar on individual flips before a human rules on them",
+                "hint_key": "hint.flip_confirmation", "hint_args": {"domain": domain}}
     unstable = [r for r in measured.values() if not r["stable"]]
     return {
         "measured": len(measured),
@@ -188,7 +189,8 @@ def precedent_check(domain: str, version: str) -> dict:
     if not precedents:
         return {"precedents": 0, "checked": 0, "unchecked": [], "violations": [],
                 "in_force": config.in_force, "in_force_violations": [], "introduced": [],
-                "hint": "no precedents yet; run the adjudication DAG"}
+                "hint": "no precedents yet; run the adjudication DAG",
+                "hint_key": "hint.no_precedents"}
 
     wanted = {p.case_id for p in precedents}
 
@@ -255,6 +257,10 @@ def _rules_check(domain: str, version: str) -> dict:
         "gate": config.rules.gate,
         "problems": problems,
         "hint": result.get("hint", ""),
+        # Forwarded, not restated: the sweep panel shows the rules panel's hint,
+        # and a key that stops travelling with it silently drops back to English.
+        "hint_key": result.get("hint_key", ""),
+        "hint_args": result.get("hint_args", {}),
     }
 
 
@@ -501,7 +507,8 @@ def stability(domain: str, version: str) -> dict:
     if not latest:
         return {"measured": False,
                 "hint": f"run the judge_stability_{domain} DAG to put an error bar "
-                        f"on this policy's flip rate"}
+                        f"on this policy's flip rate",
+                "hint_key": "hint.stability", "hint_args": {"domain": domain}}
     rows = store.query(
         """SELECT case_id, outcome, COUNT(*) n FROM judge_samples
            WHERE run_id=? GROUP BY case_id, outcome ORDER BY case_id""",
@@ -527,7 +534,8 @@ def cross_check(domain: str, version: str) -> dict:
         return {"measured": False,
                 "hint": f"run judge_stability_{domain} with compare_model set to a second "
                         f"model to find out how much of this flip rate one judge is "
-                        f"responsible for"}
+                        f"responsible for",
+                "hint_key": "hint.crosscheck", "hint_args": {"domain": domain}}
     report_body = latest["report"]
     return {
         "measured": True,
@@ -539,6 +547,7 @@ def cross_check(domain: str, version: str) -> dict:
         "caveat": "a second judge is independent, not correct. A case they split on is "
                   "evidence the policy does not settle it - it is not evidence about "
                   "which model was right.",
+        "caveat_key": "caveat.crosscheck",
     }
 
 
@@ -590,6 +599,7 @@ def precedent_history(domain: str) -> dict:
         "caveat": "a superseded ruling is not a mistake. It was made about the policy "
                   "text as it then read, and is kept because whether it still holds is a "
                   "judgement somebody made rather than a fact the gate can recompute.",
+        "caveat_key": "caveat.superseded",
     }
 
 
@@ -606,7 +616,8 @@ def calibration(domain: str, version: str) -> dict:
     if not precedents:
         return {"measured": False, "judged": 0,
                 "hint": f"no human rulings on file for {domain}; run the adjudication "
-                        f"DAG, then the gate, and the judge can be scored against them"}
+                        f"DAG, then the gate, and the judge can be scored against them",
+                "hint_key": "hint.calibration_none", "hint_args": {"domain": domain}}
     stored = store.latest_verdicts(domain, version)
     verdicts = {
         case_id: Verdict(outcome=row["outcome"], rationale=row["rationale"],
@@ -617,7 +628,9 @@ def calibration(domain: str, version: str) -> dict:
     if not result.judged:
         return {"measured": False, "judged": 0, "report": result.model_dump(mode="json"),
                 "hint": f"{len(precedents)} precedent(s) on file but none judged under "
-                        f"{version}; run precedent_gate_{domain} to score the judge"}
+                        f"{version}; run precedent_gate_{domain} to score the judge",
+                "hint_key": "hint.calibration_unjudged",
+                "hint_args": {"n": len(precedents), "version": version, "domain": domain}}
     return {
         "measured": True,
         "judged": result.judged,
@@ -626,6 +639,7 @@ def calibration(domain: str, version: str) -> dict:
         "caveat": "precedents are the contested flips - the cases nobody could settle "
                   "by reading the rule. This is a floor on the judge's accuracy, not an "
                   "estimate of it.",
+        "caveat_key": "caveat.calibration",
     }
 
 
@@ -649,6 +663,7 @@ def disparity(domain: str, version: str) -> dict:
         "caveat": "a concentration is a question, not a verdict. Segments differ in "
                   "what they contain, and the explanation is often good - the point is "
                   "that somebody gives it before the rule ships.",
+        "caveat_key": "caveat.disparity",
     }
 
 
@@ -665,6 +680,7 @@ def preflight(domain: str, version: str) -> dict:
         "summary": preflight_engine.describe(findings, version),
         "caveat": "structural only - this reads the policy's shape, not its meaning. "
                   "Contradictions and ambiguity need the model pass on the replay DAG.",
+        "caveat_key": "caveat.preflight",
     }
 
 
@@ -688,7 +704,11 @@ def rule_agreement(domain: str, version: str) -> dict:
                 "inert": all(m in {"", "offline"} for m in models),
                 "hint": f"{'no offline rules for ' + version if not rules else 'no verdicts on file'}"
                         f"; replay {version} first, then the rules can be scored against "
-                        f"what the judge said"}
+                        f"what the judge said",
+                # Two different problems wearing one sentence. They send a reader
+                # to different files, so they are different keys.
+                "hint_key": "hint.rules_norules" if not rules else "hint.rules_noverdicts",
+                "hint_args": {"version": version}}
     verdicts = {
         case_id: Verdict(outcome=row["outcome"], rationale=row["rationale"],
                          confidence=row["confidence"], policy_clause=row["policy_clause"] or "")
@@ -773,6 +793,7 @@ def history(domain: str) -> dict:
                   "before they differ by policy, which is what the band is for - and a "
                   "version with no verdicts on file reverses no precedent because "
                   "nothing has asked it, not because it agrees.",
+        "caveat_key": "caveat.history",
     }
 
 
