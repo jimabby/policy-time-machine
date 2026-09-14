@@ -20,6 +20,7 @@ added later cannot forget it.
 
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 
@@ -39,7 +40,7 @@ AIRFLOW_TOKEN_COOKIE = "_token"
 ALLOW_ANONYMOUS = "PTM_ALLOW_ANONYMOUS"
 
 
-def require_user(request: Request):
+async def require_user(request: Request):
     """Authenticate the caller the way Airflow's own API does.
 
     The token is taken from ``Authorization: Bearer``, then from the UI's
@@ -48,6 +49,20 @@ def require_user(request: Request):
     so a header-only check would 401 the dashboard for a reader who is already
     logged in. Verification itself is Airflow's ``resolve_user_from_token`` -
     signature, expiry and auth manager - never anything reimplemented here.
+
+    **``async def``, and that is the whole security property.**
+    ``resolve_user_from_token`` is a coroutine function: it raises 401 for a
+    missing or expired token and 403 for an invalid one, but only once it is
+    awaited. Written as a plain ``def``, this returned the *coroutine object*
+    instead. FastAPI runs a sync dependency in a threadpool, saw a perfectly
+    ordinary return value, raised nothing - and served every route to anybody
+    who could reach the port, which is the exact failure the dependency was
+    added to close. Nothing about the request looked wrong; the only trace was
+    a "coroutine was never awaited" warning in a log nobody reads. Asserting
+    that the app *carries* the dependency passed the whole time, which is why
+    ``tests/test_plugin.py::TestTheRoutesAreNotPublic`` drives a real
+    ``TestClient`` against a real Airflow instead: the only check worth having
+    here is one that asks what a caller with no token actually gets back.
 
     Reading a cookie would be a CSRF hole on a route that changes something.
     Every route here is a read, the cookie is ``SameSite=Lax`` so a cross-site
@@ -71,7 +86,11 @@ def require_user(request: Request):
     header = request.headers.get("Authorization", "")
     token = (header[7:].strip() if header[:7].lower() == "bearer "
              else request.cookies.get(AIRFLOW_TOKEN_COOKIE))
-    return resolve_user_from_token(token)
+    resolved = resolve_user_from_token(token)
+    # Awaited when it is awaitable rather than unconditionally, so a future
+    # Airflow making this synchronous does not turn the fix back into the bug
+    # with the sign flipped - a TypeError on every request instead of a 200.
+    return await resolved if inspect.isawaitable(resolved) else resolved
 
 
 app = FastAPI(title="Policy Time Machine", dependencies=[Depends(require_user)])

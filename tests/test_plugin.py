@@ -358,6 +358,23 @@ class TestPluginRegistration:
                    for d in module.app.router.dependencies), \
             "the app must carry require_user for every route it has and will have"
 
+    def test_the_dependency_is_a_coroutine_function(self):
+        """Carrying it is not the same as it working, and this assertion is the
+        difference. ``resolve_user_from_token`` is ``async def``: written as a
+        plain ``def``, require_user returned the *coroutine object* instead of
+        awaiting it, FastAPI saw an ordinary return value from a threadpooled
+        dependency, nothing raised, and every route served 200 to anybody who
+        asked. The test above passed throughout.
+
+        TestTheRoutesAreNotPublic is the real check - it asks what an
+        unauthenticated caller gets back - but this one names the specific
+        mistake, so somebody who makes it again reads why rather than a 200
+        where they expected a 401.
+        """
+        import inspect
+
+        assert inspect.iscoroutinefunction(load_plugin().require_user)
+
     def test_registers_the_nav_view(self):
         [view] = load_plugin().PolicyTimeMachinePlugin.external_views
         assert view["href"] == "/ptm/"
