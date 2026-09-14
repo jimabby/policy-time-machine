@@ -187,5 +187,5 @@ def estimate_backfill(n_cases: int, policy_chars: int, case_chars: int,
     is dominated by ``n_cases * policy_chars`` - which is exactly why a cheap
     model and a long policy can be the wrong trade.
     """
-    per_prompt = policy_chars + case_chars + 800  # 800 ≈ the fixed instructions
+    per_prompt = policy_chars + case_chars + 800  # 800 ~= the fixed instructions
     return estimate(per_prompt * n_cases, n_cases, model)

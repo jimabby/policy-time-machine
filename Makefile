@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -56,7 +56,10 @@ lint:      ## Check every domain YAML against the policies it claims to implemen
 unit:      ## Run the test suite
 	$(ENV) $(PY) -m pytest -q
 
-test: lint unit  ## Lint, test, then run the whole engine end to end with no Airflow
+style:     ## Check the code the way CI does (see ruff.toml for what and why)
+	$(PY) -m ruff check .
+
+test: lint style unit  ## Lint, test, then run the whole engine end to end with no Airflow
 	$(ENV) $(PY) -m ptm.selftest
 	$(ENV) $(PY) -m ptm.pit_check
 
@@ -68,7 +71,7 @@ preflight: ## Read the policies for problems before paying to replay them
 	$(ENV) $(PY) -m ptm.preflight expenses
 	$(ENV) $(PY) -m ptm.preflight refunds
 
-calibrate: ## Score the judge against the humans who ruled on the same cases
+calibrate: ## Score the judge against the humans who ruled, and gate on it
 	$(ENV) $(PY) -m ptm.calibration expenses v2
 
 rules:     ## Do the offline rules agree with the judge they stand in for?
@@ -93,6 +96,15 @@ sweep:     ## Ask what the threshold should be, not just which clause it is in
 grid:      ## Move two thresholds together - one curve cannot show them interacting
 	$(ENV) $(PY) -m ptm.sweep expenses v2 --joint \
 		1.1:amount_gbp=25,50,75,100,150 3.1:days_notice=3,7,14,21
+
+export:    ## Everything the Explorer shows, as one file, without starting Airflow
+	$(ENV) $(PY) -m ptm.report expenses v2 -o ptm-expenses-v2.json
+	$(ENV) $(PY) -m ptm.report expenses v2 --csv -o ptm-expenses-v2-flips.csv
+
+prune:     ## Drop cache and sample rows that have stopped earning their disk
+	$(ENV) $(PY) -m ptm.prune --dry-run
+	@echo
+	@echo "drop the --dry-run to actually remove them"
 
 crosscheck: ## Ask a second model the same questions (needs PTM_OFFLINE=0)
 	docker compose exec airflow airflow dags trigger judge_stability_expenses \

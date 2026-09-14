@@ -14,13 +14,16 @@ from __future__ import annotations
 import csv
 import io
 import json
+import pathlib
+import sys
 from datetime import datetime
 
 from . import calibration as calibration_engine
+from . import cost, diff, stats, store
 from . import crosscheck as crosscheck_engine
-from . import cost, diff, disparity as disparity_engine, preflight as preflight_engine
+from . import disparity as disparity_engine
+from . import preflight as preflight_engine
 from . import rules as rules_engine
-from . import stats, store
 from . import sweep as sweep_engine
 from .config import JUDGE_MODEL, DomainConfig, available_domains, load_domain
 from .models import Flip, Verdict
@@ -631,11 +634,32 @@ def calibration(domain: str, version: str) -> dict:
                         f"{version}; run precedent_gate_{domain} to score the judge",
                 "hint_key": "hint.calibration_unjudged",
                 "hint_args": {"n": len(precedents), "version": version, "domain": domain}}
+    # Which judge produced the verdicts being scored. Offline they came from
+    # offline_rules, written from the same policy the reviewer was shown, so
+    # the figure describes the fixture rather than a judge - exactly the caveat
+    # rule_agreement carries, and for the same reason. The gate is held off
+    # while it holds; a gate that passes because the check is switched off is
+    # worse than no gate.
+    models = sorted({
+        row["judge_model"] for row in store.query(
+            "SELECT DISTINCT judge_model FROM runs WHERE domain=? AND policy_version=?",
+            (domain, version)) if row["judge_model"]})
+    inert = all(m in {"", "offline"} for m in models)
+    problems = [] if inert else calibration_engine.gate(result, config)
     return {
         "measured": True,
         "judged": result.judged,
         "report": result.model_dump(mode="json"),
         "summary": calibration_engine.describe(result),
+        "judged_by": models,
+        "inert": inert,
+        # The gate's answer travels with the measurement, the way the rules
+        # check travels with a sweep. A panel that shows a number and leaves the
+        # threshold it is judged against somewhere else is a panel nobody reads
+        # as a verdict.
+        "gate": config.calibration.gate,
+        "problems": problems,
+        "min_judged": config.calibration.min_judged,
         "caveat": "precedents are the contested flips - the cases nobody could settle "
                   "by reading the rule. This is a floor on the judge's accuracy, not an "
                   "estimate of it.",
@@ -813,3 +837,93 @@ def drafts(domain: str) -> list[dict]:
         row["state"] = ("adopted" if row["adopted"]
                         else "available" if row["available"] else "discarded")
     return rows
+
+
+# ------------------------------------------------------------------- the CLI
+
+USAGE = """usage:
+  python -m ptm.report <domain> <version> [--csv] [-o FILE]
+        Everything the Diff Explorer shows, as one JSON bundle with the
+        caveats attached - or --csv for the flip set alone.
+
+  python -m ptm.report --list
+        The domains and versions this database knows about.
+
+Writes to stdout unless -o names a file, so it pipes into jq, an attachment,
+or the spreadsheet the decision actually gets argued in."""
+
+
+def _flag(args: list[str], name: str) -> str | None:
+    """The value after ``--name``, or None. Empty string if the flag ends the line."""
+    if name not in args:
+        return None
+    index = args.index(name)
+    value = args[index + 1] if index + 1 < len(args) else ""
+    return "" if value.startswith("-") else value
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m ptm.report <domain> <version>`` - the bundle, without Airflow.
+
+    Every other measurement in this project can be reached from a shell with no
+    Airflow and no key. The one artefact built to *leave* the room could not:
+    :func:`export_bundle` assembles the numbers with their caveats attached
+    precisely so they cannot be pasted into a slide without them, and it existed
+    only behind a FastAPI route behind an Airflow login. A decision gets argued
+    about away from the dashboard, which is exactly when nobody can start the
+    dashboard.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if "--list" in args:
+        for name in available_domains():
+            config = load_domain(name)
+            versions = ", ".join(
+                v + (" (draft)" if v in config.draft_versions else "")
+                + (" (in force)" if v == config.in_force else "")
+                for v in sorted(config.policies))
+            print(f"{name:<12} {versions}")
+        return 0
+
+    as_csv = "--csv" in args
+    out_path = _flag(args, "-o") or _flag(args, "--out")
+    positional, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg in {"-o", "--out"}:
+            skip = True
+            continue
+        if arg == "--csv":
+            continue
+        if arg.startswith("-"):
+            print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
+            return 2
+        positional.append(arg)
+
+    if len(positional) < 2:
+        print(USAGE, file=sys.stderr)
+        return 2
+    domain, version = positional[0], positional[1]
+
+    store.init_db()
+    try:
+        body = (flips_csv(domain, version) if as_csv
+                else json.dumps(export_bundle(domain, version), indent=2, default=str))
+    except LookupError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+
+    if out_path:
+        # Explicit encoding, for the same reason policy_text reads one: the
+        # bundle carries policy prose and reviewer notes, and a cp1252 default
+        # would refuse the file rather than write it wrongly.
+        pathlib.Path(out_path).write_text(body, encoding="utf-8")
+        print(f"wrote {out_path} ({len(body):,} bytes)", file=sys.stderr)
+    else:
+        print(body)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

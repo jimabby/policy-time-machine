@@ -16,6 +16,13 @@ jobs:
           python-version: "3.10"
       - run: pip install -r requirements-dev.txt
 
+      # The code carries `# noqa` directives and nothing here could honour them,
+      # so three of them had gone stale and no build said so. ruff.toml explains
+      # which rules are on and why each one is worth failing a build over - the
+      # selection is about correctness and drift, not house style.
+      - name: Style
+        run: ruff check .
+
       # The domain YAML must still implement the policies it cites. This is the
       # check that catches an offline rule quietly no longer matching anything.
       - name: Lint domain configuration
@@ -61,6 +68,10 @@ jobs:
       # fixture so a change that breaks one of them fails here rather than in
       # front of an audience. The proposal step deliberately omits --write:
       # proposing and adopting are separate acts, and CI does not adopt.
+      #
+      # ptm.calibration exits non-zero on a domain whose calibration.gate is
+      # 'fail', so this step is also where a judge that has drifted away from
+      # the humans stops a build. Offline it is inert and says so.
       - name: Policy and judge checks
         run: |
           python -m ptm.preflight expenses
@@ -69,6 +80,24 @@ jobs:
           python -m ptm.calibration expenses v2
           python -m ptm.proposal expenses v2
           python -m ptm.proposal expenses --list
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The bundle is the one artefact built to *leave* the dashboard, so it is
+      # the one most likely to break unnoticed: nothing else serialises every
+      # read model at once. Written to a file and parsed back, because a
+      # traceback here is a panel that would have been blank in front of an
+      # audience. Pruning runs as a dry run - CI has nothing old to drop, and
+      # the point is that the counting query still matches the deleting one.
+      - name: Export and retention
+        run: |
+          python -m ptm.report --list
+          python -m ptm.report expenses v2 -o /tmp/bundle.json
+          python -c "import json; b=json.load(open('/tmp/bundle.json'));             assert b['summary']['flips'], 'bundle carries no flips';             assert b['caveats'], 'bundle lost its caveats';             print(len(b), 'sections,', len(b['flips']), 'flips')"
+          python -m ptm.report expenses v2 --csv -o /tmp/flips.csv
+          python -m ptm.prune --dry-run
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

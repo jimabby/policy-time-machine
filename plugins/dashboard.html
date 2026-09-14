@@ -45,6 +45,10 @@ p.note{color:var(--mute);font-size:12px;margin:8px 0 0}
 .howto code{background:#0b1222;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font:12px/1.5 ui-monospace,monospace;color:var(--accent)}
 .howto .lede{color:var(--dim);margin:0 0 14px;max-width:80ch}
 .empty{color:var(--dim);padding:16px}
+/* A gate's reasons. Indented under the sentence that says a gate fired,
+   because each one is a separate thing somebody has to answer for. */
+ul.gate{margin:0 0 22px;padding-left:20px;color:var(--dim);max-width:720px}
+ul.gate li{margin:6px 0}
 .error{color:var(--tight);padding:16px;border:1px solid #ff7b8955;border-radius:10px;background:#ff7b8910}
 .reviewed{color:var(--dim);font-size:11px}
 .bar{height:6px;border-radius:99px;background:#22304c;overflow:hidden;min-width:60px}
@@ -105,6 +109,10 @@ button:hover{border-color:var(--accent)}
   <div id=disparity></div>
 
   <h2 data-t="h.sweep">Where should the threshold be? <span class=note data-t="h.sweep.note">re-runs the replay at each value, from the offline rules</span></h2>
+  <!-- Dials the sweep refuses, named above the controls that no longer offer
+       them. A field that simply vanished from the list would read as a policy
+       with no such threshold. See ptm/sweep.py:collapsing. -->
+  <div id=swbanded></div>
   <div class=cmp>
     <select id=swdial aria-label="Threshold to sweep"></select>
     <input id=swvalues aria-label="Values to try" placeholder="25,50,75,100,150">
@@ -308,6 +316,8 @@ en: {
   "dials.option": "clause {c} · {f} (now {v})",
   "dials.pick": "Pick a dial and press Sweep.",
   "dials.nosecond": "no second dial in this version",
+  "dials.banded": "<strong class=warn>{n} dial{s} cannot be swept.</strong> {list} compared against more than one number in a single rule &mdash; that is a band, not a threshold, so moving it would collapse both ends onto one value and draw a curve for a rule that fires on nothing. Split it across two rules to sweep either end.",
+  "dials.allbanded": "Every dial in this version states a band rather than a threshold, so there is nothing here a sweep can move honestly.",
   "grid.invite": "A single curve holds every other threshold still and never says so. Press <strong>Sweep both</strong> to find out whether that assumption survives.",
   "sweep.pickvalues": "pick a dial and some values", "sweep.running": "running...",
   "sweep.failed": "That sweep could not be run. Values must be comma-separated numbers, and the dial must exist in this version.",
@@ -385,6 +395,10 @@ en: {
   "cal.col.said": "Said", "cal.col.gap": "Gap", "cal.nocases": "No cases scored.",
   "cal.col.ruled": "Human ruled", "cal.col.judged": "Judge said", "cal.col.times": "Times",
   "cal.col.cases": "Cases",
+  "cal.gatefail": "<strong class=bad>The judge is outside what this domain allows.</strong> This is not a finding about the policy &mdash; it says the verdicts every other number on this page is built from cannot be relied on yet.",
+  "cal.gatewarn": "<strong class=warn>The judge is outside what this domain allows</strong>, and <code>calibration.gate</code> is set to warn, so nothing stops. The flip rate above is this judge's.",
+  "cal.inert": "Offline the verdicts scored here came from the same <code>offline_rules</code> the sweep uses, so this measures the fixture rather than a judge. The gate is held off until <code>PTM_OFFLINE=0</code>.",
+  "cal.toofew": "Scored on {n} ruling{s}, under the {min} this domain gates from. Accuracy on that few has a band running most of the way from 0 to 1, so nothing is judged on it.",
 
   // ---- history
   "hist.inforce": "in force", "hist.draft": "draft", "hist.shown": "shown above",
@@ -555,6 +569,8 @@ zh: {
   "dials.option": "条款 {c} · {f}（当前 {v}）",
   "dials.pick": "请选择一个刻度并按「扫描」。",
   "dials.nosecond": "该版本没有第二个刻度",
+  "dials.banded": "<strong class=warn>有 {n} 个刻度无法扫描。</strong>{list} 在同一条规则中与不止一个数字比较——那是一个区间，而不是一个阈值。移动它会把区间两端压成同一个值，画出的曲线所描述的规则对任何案例都不生效。要扫描任一端，请先拆成两条规则。",
+  "dials.allbanded": "该版本的每个刻度都是区间而非阈值，因此没有任何刻度能被诚实地扫描。",
   "grid.invite": "单条曲线会把其余所有阈值固定不动，而且从不说明这一点。按<strong>同时扫描两个</strong>，看看这个假设是否成立。",
   "sweep.pickvalues": "请选择刻度并填入取值", "sweep.running": "运行中…",
   "sweep.failed": "该扫描无法运行。取值必须是以逗号分隔的数字，且该刻度必须存在于此版本中。",
@@ -632,6 +648,10 @@ zh: {
   "cal.col.said": "自称", "cal.col.gap": "差距", "cal.nocases": "没有评分的案例。",
   "cal.col.ruled": "人工裁定", "cal.col.judged": "模型判定", "cal.col.times": "次数",
   "cal.col.cases": "案例",
+  "cal.gatefail": "<strong class=bad>评判模型超出了本领域允许的范围。</strong>这不是关于政策的结论——它说的是，本页其他每一个数字所依赖的那些判决，现在还不能被信赖。",
+  "cal.gatewarn": "<strong class=warn>评判模型超出了本领域允许的范围</strong>，但 <code>calibration.gate</code> 设为 warn，所以不会停下。上方的改判率属于这个评判模型。",
+  "cal.inert": "离线时，这里被打分的判决来自与扫描所用相同的 <code>offline_rules</code>，因此它衡量的是夹具而非评判模型。闸门在 <code>PTM_OFFLINE=0</code> 之前不会生效。",
+  "cal.toofew": "仅根据 {n} 条裁定打分，低于本领域设定的 {min} 条门槛。样本这么少时，准确率的区间几乎横跨 0 到 1，因此不以此作任何判断。",
 
   // ---- history
   "hist.inforce": "现行", "hist.draft": "草案", "hist.shown": "上方所示",
@@ -800,7 +820,7 @@ function remember(domain, version) {
   history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`);
 }
 const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep",
-                "#sweepgrid","#crosscheck","#rules",
+                "#swbanded","#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
                 "#calibration","#history","#superseded","#drafts"];
 
@@ -1108,8 +1128,23 @@ function renderConflicts(rows) {
 }
 
 // ----------------------------------------------------- threshold sweep
-function renderDials(dials) {
+function renderDials(allDials) {
   const select = $("#swdial"), second = $("#swdial2");
+  // A dial whose rule states a band rather than a threshold. The API refuses to
+  // sweep one - both ends would be rewritten onto the same number and the rule
+  // would then fire on no case at any point of the curve - so offering it here
+  // is offering a button whose only outcome is an error. Named rather than
+  // silently dropped: a field that vanishes from the list reads as a policy
+  // that has no such threshold. See ptm/sweep.py:collapsing.
+  const dials = allDials.filter(d => !d.collapses);
+  const banded = allDials.filter(d => d.collapses);
+  const bandNote = banded.length
+    ? `<p class=hero>${t(dials.length ? "dials.banded" : "dials.allbanded", {
+        n: num(banded.length), s: plural(banded.length),
+        list: esc(banded.map(d => `${d.field} (clause ${d.clause || "-"})`).join(", ")),
+        })}</p>`
+    : "";
+  $("#swbanded").innerHTML = bandNote;
   if (!dials.length) {
     select.innerHTML = `<option value="">${t("dials.none")}</option>`;
     select.disabled = $("#swgo").disabled = true;
@@ -1422,13 +1457,26 @@ function renderCalibration(result) {
     ? `<p class=hero>${t(r.threshold_separates ? "cal.separates" : "cal.notseparates",
                          band)}</p>`
     : "";
+  // What the domain does about all this. Until there was a gate, every line in
+  // this panel was a statement nothing acted on - which is how a panel becomes
+  // decoration. See ptm/calibration.py:gate.
+  const problems = result.problems || [];
+  const verdict = result.inert
+    ? `<p class=note>${t("cal.inert")}</p>`
+    : r.judged < (result.min_judged || 0)
+      ? `<p class=note>${t("cal.toofew", {n: num(r.judged), s: plural(r.judged),
+                                          min: num(result.min_judged)})}</p>`
+      : problems.length
+        ? `<p class=hero>${t(result.gate === "fail" ? "cal.gatefail" : "cal.gatewarn")}</p>`
+          + `<ul class=gate>${problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`
+        : "";
   $("#calibration").innerHTML =
     `<p class=hero>${t("cal.note", {
        agreed: num(r.agreed), judged: num(r.judged), acc: pct(r.accuracy),
        lo: pct(r.accuracy_lo), hi: pct(r.accuracy_hi), conf: pct(r.mean_confidence),
        dir: r.overconfidence > 0 ? t("cal.over") : t("cal.under"),
        gap: pct(Math.abs(r.overconfidence)), caveat: remote(result, "caveat")})}</p>`
-    + threshold + table(
+    + verdict + threshold + table(
       [{label: t("cal.col.bucket")}, {label: t("cal.col.n"), num: 1},
        {label: t("cal.col.right"), num: 1},
        {label: t("cal.col.said"), num: 1}, {label: t("cal.col.gap"), num: 1}],

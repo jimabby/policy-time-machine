@@ -39,7 +39,7 @@ class _Retarget(ast.NodeTransformer):
         self.value = value
         self.hits = 0
 
-    def visit_Compare(self, node: ast.Compare) -> ast.Compare:  # noqa: N802
+    def visit_Compare(self, node: ast.Compare) -> ast.Compare:
         self.generic_visit(node)
         operands = [node.left, *node.comparators]
         positions = {i for i, n in enumerate(operands)
@@ -58,11 +58,95 @@ class _Retarget(ast.NodeTransformer):
 
 
 def retarget(expression: str, field: str, value: float) -> tuple[str, int]:
-    """Move every number ``field`` is compared against, and say how many moved."""
+    """Move every number ``field`` is compared against, and say how many moved.
+
+    A deliberately mechanical primitive: it moves *every* literal, which is
+    right for the one-sided threshold a clause normally states and wrong for a
+    two-sided one. ``40 < amount <= 100`` comes back as ``60 < amount <= 60``,
+    a condition no case can satisfy. Callers that are drawing a curve somebody
+    will act on must ask :func:`collapsing` first - see why there.
+    """
     tree = ast.parse(expression, mode="eval")
     rewriter = _Retarget(field, value)
     tree = ast.fix_missing_locations(rewriter.visit(tree))
     return ast.unparse(tree), rewriter.hits
+
+
+def compared_values(expression: str) -> dict[str, list]:
+    """Every numeric literal each field is compared against, by field.
+
+    Both spellings of a band land in the same place: ``40 < x <= 100`` is one
+    ``Compare`` node with two constants, and ``x > 40 and x <= 100`` is two
+    nodes with one each, so counting literals per field rather than per node is
+    what makes the two indistinguishable here - as they are to a reader.
+    """
+    out: dict[str, list] = {}
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return out
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        fields = [n.id for n in operands if isinstance(n, ast.Name)]
+        numbers = [n.value for n in operands
+                   if isinstance(n, ast.Constant)
+                   and isinstance(n.value, (int, float))
+                   and not isinstance(n.value, bool)]
+        if len(fields) == 1 and numbers:
+            out.setdefault(fields[0], []).extend(numbers)
+    return out
+
+
+def collapsing(domain: DomainConfig, version: str, field: str = "",
+               clause: str = "") -> list[dict]:
+    """Rules a sweep would silently destroy rather than move.
+
+    :func:`retarget` moves every literal a field is compared against, so a rule
+    stating a *band* - ``40 < amount <= 100``, the shape of every "reimbursed
+    between" clause - collapses to ``60 < amount <= 60`` at every setting
+    tried. The rewrite reports two hits, nothing raises, and the sweep returns a
+    curve for a rule that fires on no case at any point of it. That is the worst
+    failure this module can have: not a refusal, but a confident wrong answer
+    about the number a policy owner is choosing.
+
+    So it is detected rather than caveated. ``field`` and ``clause`` narrow it
+    to the dial somebody actually asked for; blank checks every dial in the
+    version, which is what :mod:`ptm.lint` wants.
+    """
+    found: list[dict] = []
+    for index, rule in enumerate(domain.offline_rules.get(version, [])):
+        if clause and str(rule.get("clause", "")) != clause:
+            continue
+        expression = rule.get("when") or ""
+        for name, values in compared_values(expression).items():
+            if field and name != field:
+                continue
+            if len(set(values)) > 1:
+                found.append({
+                    "clause": str(rule.get("clause", "")),
+                    "rule_index": index,
+                    "field": name,
+                    "values": sorted(set(values)),
+                    "expression": expression,
+                })
+    return found
+
+
+def describe_collapsing(found: list[dict], domain_name: str, version: str) -> str:
+    """Why a sweep refused, in the terms the person who wrote the rule reads."""
+    lines = [f"{len(found)} rule(s) in {domain_name}/{version} compare a field to more "
+             f"than one number, so moving that dial would not move a threshold - it "
+             f"would collapse the comparison:"]
+    for row in found:
+        lines.append(f"  clause {row['clause'] or '-'} rule[{row['rule_index']}]: "
+                     f"{row['field']} is compared against {row['values']} in "
+                     f"{row['expression']!r}")
+    lines.append("  every setting swept would rewrite all of them to the same number, and "
+                 "the rule would then match nothing at any point on the curve. Split the "
+                 "band across two rules, or sweep a dial that states one threshold.")
+    return "\n".join(lines)
 
 
 def thresholds(domain: DomainConfig, version: str) -> list[dict]:
@@ -75,28 +159,22 @@ def thresholds(domain: DomainConfig, version: str) -> list[dict]:
     found: list[dict] = []
     for index, rule in enumerate(domain.offline_rules.get(version, [])):
         expression = rule.get("when") or ""
-        try:
-            tree = ast.parse(expression, mode="eval")
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Compare):
-                continue
-            operands = [node.left, *node.comparators]
-            fields = [n.id for n in operands if isinstance(n, ast.Name)]
-            numbers = [n.value for n in operands
-                       if isinstance(n, ast.Constant)
-                       and isinstance(n.value, (int, float))
-                       and not isinstance(n.value, bool)]
-            if len(fields) == 1 and numbers:
-                found.append({
-                    "clause": str(rule.get("clause", "")),
-                    "rule_index": index,
-                    "field": fields[0],
-                    "value": numbers[0],
-                    "outcome": rule.get("outcome", ""),
-                    "expression": expression,
-                })
+        for name, values in compared_values(expression).items():
+            found.append({
+                "clause": str(rule.get("clause", "")),
+                "rule_index": index,
+                "field": name,
+                "value": values[0],
+                "outcome": rule.get("outcome", ""),
+                "expression": expression,
+                # A dial listed so it can be refused, not so it can be swept.
+                # The menu has to show it - a field that silently vanished from
+                # the list is a reader concluding the policy has no such
+                # threshold - and it has to say that sweeping it is not a thing
+                # this can do. See :func:`collapsing`.
+                "collapses": len(set(values)) > 1,
+                "values": sorted(set(values)),
+            })
     return found
 
 
@@ -143,6 +221,12 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
     baseline = None
     if baseline_version:
         baseline = {c.case_id: offline_verdict(c, domain, baseline_version) for c in cases}
+
+    # Before anything is measured: a band rule does not move, it collapses, and
+    # a curve drawn over one is wrong rather than missing. See :func:`collapsing`.
+    broken = collapsing(domain, version, field, clause)
+    if broken:
+        raise LookupError(describe_collapsing(broken, domain_name, version))
 
     dials = thresholds(domain, version)
     current = next((t["value"] for t in dials
@@ -216,6 +300,12 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
         raise LookupError(
             "both axes name the same dial, so every point on the diagonal would be the "
             "only real measurement. Sweep one axis on its own instead.")
+
+    for axis in (first, second):
+        broken = collapsing(domain, version, axis.get("field", ""),
+                            str(axis.get("clause") or ""))
+        if broken:
+            raise LookupError(describe_collapsing(broken, domain_name, version))
 
     baseline_version = domain.in_force if baseline_version is None else baseline_version
     baseline = None
@@ -444,14 +534,21 @@ def main(argv: list[str] | None = None) -> int:
         if len(axes) != 2:
             print(USAGE)
             return 2
-        _print_joint(joint(domain_name, version, parse_axis(axes[0]), parse_axis(axes[1])))
+        try:
+            _print_joint(joint(domain_name, version,
+                               parse_axis(axes[0]), parse_axis(axes[1])))
+        except LookupError as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
         _warn_about_the_rules(domain_name, version)
         return 0
     if len(args) == 2:
         print(f"numeric dials in {domain_name}/{version}:")
         for t in thresholds(domain, version):
+            note = (f"  [not sweepable: compared against {t['values']}]"
+                    if t["collapses"] else "")
             print(f"  clause {t['clause'] or '-':<6} {t['field']:<24} = {t['value']:<10} "
-                  f"-> {t['outcome']}")
+                  f"-> {t['outcome']}{note}")
         return 0
     if len(args) == 4:
         clause, field, raw = "", args[2], args[3]
@@ -461,7 +558,11 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE)
         return 2
 
-    result = sweep(domain_name, version, field, parse_values(raw), clause=clause)
+    try:
+        result = sweep(domain_name, version, field, parse_values(raw), clause=clause)
+    except LookupError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     unit = result["impact_unit"]
     where = f"clause {clause} " if clause else ""
     print(f"sweeping {where}{field} in {domain_name}/{version} over {result['cases']} cases "

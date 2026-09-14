@@ -38,7 +38,8 @@ from datetime import datetime
 
 import yaml
 
-from . import config, diff, store, sweep as sweep_engine
+from . import config, diff, store
+from . import sweep as sweep_engine
 from .config import DRAFTS_DIR, DomainConfig, load_domain
 from .judge import offline_verdict
 from .models import ClauseEdit, PolicyPatch, Verdict
@@ -124,7 +125,11 @@ def evidence(domain: DomainConfig, version: str, max_dials: int = 3) -> dict:
     # The dials that matter, not every dial: sweeping all of them is slow and
     # buries the one clause the attribution says is doing the work.
     responsible = [row["clause"] for row in clauses if row["policy_driven"]]
-    dials = sweep_engine.thresholds(domain, version)
+    # A dial the sweep refuses is a dial the proposer must not search either:
+    # ptm.sweep.variant would rewrite both ends of a band onto one number, and
+    # the proposer scores the result as though it were a policy somebody could
+    # adopt. See :func:`ptm.sweep.collapsing`.
+    dials = [d for d in sweep_engine.thresholds(domain, version) if not d["collapses"]]
     ranked = sorted(
         dials,
         key=lambda d: responsible.index(f"clause {d['clause']}")
@@ -424,7 +429,12 @@ def apply_to_markdown(domain: DomainConfig, version: str, patch: PolicyPatch,
         pattern = re.compile(rf"(^\s*{re.escape(clause)}\s+)(.*?)(?=^\s*\d+\.\d+\s|^#|\Z)",
                              re.MULTILINE | re.DOTALL)
         if pattern.search(text):
-            text = pattern.sub(lambda m: f"{m.group(1)}{proposed}\n\n", text, count=1)
+            # `proposed` bound as a default rather than closed over: sub() calls
+            # this inside the same iteration so the behaviour was already right,
+            # and a lambda reading a loop variable is one refactor away from
+            # applying the last edit to every clause.
+            text = pattern.sub(
+                lambda m, body=proposed: f"{m.group(1)}{body}\n\n", text, count=1)
         else:
             text = text.rstrip() + f"\n\n## {clause.split('.')[0]}. Added by this draft\n" \
                                    f"{clause} {proposed}\n"
@@ -439,7 +449,7 @@ def _retitle(text: str, version: str, draft_version: str) -> str:
             lines[i] = re.sub(rf"\bv?{re.escape(version.lstrip('v'))}\b",
                               draft_version, line, count=1)
             if draft_version not in lines[i]:
-                lines[i] = f"{line} — {draft_version} (DRAFT)"
+                lines[i] = f"{line} - {draft_version} (DRAFT)"
             break
     return "\n".join(lines) + "\n"
 
@@ -881,12 +891,12 @@ def main(argv: list[str] | None = None) -> int:
 
     flags = {"--write", "--list", "--discard", "--adopt", "--by", "--as"}
     positional, skip = [], False
-    for i, arg in enumerate(args):
+    for arg in args:
         if skip:
             skip = False
             continue
         if arg in flags:
-            skip = arg != "--write" and arg != "--list"
+            skip = arg not in {"--write", "--list"}
             continue
         if arg.startswith("--"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)

@@ -13,12 +13,8 @@ import textwrap
 import pytest
 
 from ptm.config import available_domains, load_domain
-from ptm.lint import (
-    check_domain,
-    main as lint_main,
-    payload_fields,
-    template_fields,
-)
+from ptm.lint import check_domain, payload_fields, template_fields
+from ptm.lint import main as lint_main
 
 
 class TestDomainContract:

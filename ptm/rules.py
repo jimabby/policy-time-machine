@@ -38,8 +38,8 @@ from . import stats
 from .config import DomainConfig, clauses_in, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
 from .lint import payload_fields
-from .safe_eval import check_expression
 from .models import Case, RuleSet, Verdict
+from .safe_eval import check_expression
 
 SYNTHESIS_SYSTEM_PROMPT = (
     "You translate written policy into a small ordered list of mechanical "

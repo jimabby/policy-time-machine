@@ -14,12 +14,13 @@ it was reported as clean and then handed the interpreter.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from ptm import rules, safe_eval
 from ptm.judge import offline_verdict
 from ptm.models import Case
-from datetime import datetime
 
 #: Reaches ``os.system`` through the object graph, reading no bare name at all.
 ESCAPE = ("().__class__.__base__.__subclasses__()[-1].__init__.__globals__"

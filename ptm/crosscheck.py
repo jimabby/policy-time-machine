@@ -95,9 +95,9 @@ def analyse(primary: dict[str, Verdict], secondary: dict[str, Verdict],
     # Confidence on the cases they split. If a judge claims high confidence
     # exactly where an independent judge disagrees, its confidence is not
     # measuring what the review routing assumes it measures.
-    split = [d for d in disagreements]
     mean_split_confidence = (
-        round(sum(d["primary_confidence"] for d in split) / len(split), 3) if split else 0.0)
+        round(sum(d["primary_confidence"] for d in disagreements) / len(disagreements), 3)
+        if disagreements else 0.0)
     mean_agreed_confidence = (
         round(sum(primary[c].confidence for c in shared
                   if primary[c].outcome == secondary[c].outcome) / agreed, 3)
@@ -117,7 +117,7 @@ def analyse(primary: dict[str, Verdict], secondary: dict[str, Verdict],
         clause_agreement=round(clause_agreed / clause_compared, 4) if clause_compared else 0.0,
         judged_only_by_primary=sorted(set(primary) - set(secondary)),
         judged_only_by_secondary=sorted(set(secondary) - set(primary)),
-        lean={k: v for k, v in sorted(lean.items(), key=lambda kv: -kv[1])},
+        lean=dict(sorted(lean.items(), key=lambda kv: -kv[1])),
         contested_flips=split_flips,
         mean_confidence_when_agreed=mean_agreed_confidence,
         mean_confidence_when_split=mean_split_confidence,

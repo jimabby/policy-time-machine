@@ -31,7 +31,7 @@ import sys
 from collections import Counter
 
 from . import stats
-from .config import DomainConfig
+from .config import DomainConfig, load_domain
 from .models import CalibrationBucket, CalibrationReport, Precedent, Verdict
 
 #: Confidence bands, ``lo <= c < hi`` with the last one closed at 1.0. Chosen to
@@ -174,8 +174,66 @@ def describe(report: CalibrationReport) -> str:
     return "\n".join(lines)
 
 
+def gate(report: CalibrationReport, domain: DomainConfig) -> list[str]:
+    """Where the judge is further from the humans than the domain allows.
+
+    Returns the reasons, or an empty list. The same two exemptions
+    :func:`ptm.rules.gate` carries, for the same reasons, plus one this check
+    needs on its own:
+
+    **Nothing scored.** No precedent judged under this version is no evidence,
+    not 0% accuracy. Failing there would make the gate fire loudest on a project
+    that has not adjudicated anything yet - which is every project on day one.
+
+    **Too little scored.** Precedents are the contested flips and there are
+    never many of them. Accuracy on three cases has a confidence band running
+    most of the way from 0 to 1, and a gate that acts on it is failing runs for
+    the sample size. ``min_judged`` is the floor, and falling below it is
+    reported as unmeasured rather than as a pass.
+
+    **An inert judge.** Offline the verdicts come from ``offline_rules``, which
+    were written from the same policy the humans were shown. What the figure
+    then measures is the fixture, and a gate that fires on it teaches people to
+    edit the fixture. Callers pass ``inert`` through
+    :func:`ptm.report.calibration`, which knows which judge answered.
+    """
+    policy = domain.calibration
+    if not report.judged or report.judged < max(policy.min_judged, 1):
+        return []
+    problems: list[str] = []
+    if policy.min_accuracy and report.accuracy < policy.min_accuracy:
+        problems.append(
+            f"the judge reaches the human's outcome on {report.accuracy:.1%} of "
+            f"{report.judged} ruling(s), below the {policy.min_accuracy:.1%} this domain "
+            f"requires. Every flip in the replay is one of this judge's verdicts, so a "
+            f"flip rate measured now describes the judge as much as the policy.")
+    if report.overconfidence > policy.max_overconfidence:
+        problems.append(
+            f"it claims {report.mean_confidence:.0%} confidence and is right "
+            f"{report.accuracy:.0%} of the time - overconfident by "
+            f"{report.overconfidence:.0%}, past the {policy.max_overconfidence:.0%} "
+            f"allowed. Confidence is what routes the review budget, and an overconfident "
+            f"wrong verdict is one that never reaches the human who would have caught it.")
+    below, above = report.below_threshold, report.above_threshold
+    # Both sides have to have cases before "does not separate" means anything.
+    # A judge confident on every ruling on file leaves nothing below the line,
+    # and ``threshold_separates`` is False there because it is *unmeasured* -
+    # reporting that as a finding would fail a run for a sample that has not
+    # arrived yet, which is the same mistake ``min_judged`` exists to avoid.
+    if (policy.require_threshold_separation and not report.threshold_separates
+            and below.get("n") and above.get("n")):
+        problems.append(
+            f"the review threshold of {report.review_threshold:.0%} does not separate: "
+            f"{above.get('accuracy', 0):.0%} right above it ({above.get('n', 0)} case(s)) "
+            f"against {below.get('accuracy', 0):.0%} below it ({below.get('n', 0)}). "
+            f"review.below_confidence is selecting the cases a human sees, so on this "
+            f"evidence that queue - and every precedent established from it - is being "
+            f"chosen at random.")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python -m ptm.calibration [domain] [version]``."""
+    """``python -m ptm.calibration [domain] [version]``; non-zero on a failing gate."""
     args = list(argv if argv is not None else sys.argv[1:])
     domain_name = args[0] if args else "expenses"
     version = args[1] if len(args) > 1 else "v2"
@@ -187,8 +245,20 @@ def main(argv: list[str] | None = None) -> int:
     except LookupError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
-    print(result.get("hint") or describe(CalibrationReport(**result["report"])))
-    return 0
+    if not result.get("measured"):
+        print(result.get("hint", "nothing to score the judge against"))
+        return 0
+    report = CalibrationReport(**result["report"])
+    print(describe(report))
+    if result.get("inert"):
+        print("  scored against verdicts the offline rules produced, so this measures the "
+              "fixture rather than a judge - the gate is held off until PTM_OFFLINE=0")
+        return 0
+    domain = load_domain(domain_name)
+    problems = gate(report, domain)
+    for problem in problems:
+        print(f"GATE  {problem}", file=sys.stderr)
+    return 1 if problems and domain.calibration.gate == "fail" else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

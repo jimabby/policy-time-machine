@@ -12,9 +12,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 
-from . import cache, calibration, cost, diff, disparity, preflight, proposal
+from . import cache, calibration, cost, diff, disparity, preflight, proposal, stability, store
 from . import rules as rules_engine
-from . import stability, store
 from .config import JUDGE_MODEL, load_domain
 from .judge import build_prompt, offline_verdict
 from .models import Precedent
@@ -250,8 +249,30 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     # pipeline compares the judge to anything but itself, and a judge can
     # reproduce its own verdicts perfectly while being reliably wrong.
     print()
-    print(calibration.describe(
-        calibration.score(domain, version, verdicts, precedents)))
+    scored = calibration.score(domain, version, verdicts, precedents)
+    print(calibration.describe(scored))
+    # And what the domain does about it. Offline the verdicts came from
+    # offline_rules, so the figure describes the fixture rather than a judge and
+    # the gate is held off - the same exemption the rules gate takes below, for
+    # the same reason. Printing the thresholds anyway is the point: a gate
+    # nobody can see the shape of is a gate nobody sets.
+    policy = domain.calibration
+    would = calibration.gate(scored, domain)
+    print(f"  the domain requires {policy.min_accuracy:.0%} accuracy, at most "
+          f"{policy.max_overconfidence:.0%} overconfidence"
+          + (" and a review threshold that separates"
+             if policy.require_threshold_separation else "")
+          + f" (gate={policy.gate}, from {policy.min_judged} scored rulings)")
+    if scored.judged < policy.min_judged:
+        print(f"  only {scored.judged} ruling(s) scored, under the {policy.min_judged} "
+              f"this domain gates from - accuracy on that few has a band running most of "
+              f"the way from 0 to 1, so the gate stays quiet rather than failing a run "
+              f"for the sample size")
+    else:
+        for problem in would:
+            print(f"  WOULD FAIL  {problem}")
+    print("  offline the verdicts scored here came from these same offline_rules, so the "
+          "gate is held off entirely - it only starts meaning anything with PTM_OFFLINE=0")
 
     # --- what judge_stability_<domain> does --------------------------------
     picked = stability.sample_cases(all_cases, 25)
@@ -315,9 +336,9 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     # Self-consistency is satisfied completely by a judge that misreads a clause
     # the same way every time, and offline there is no second judge to ask. Said
     # out loud rather than omitted: a missing panel reads as a passing one.
-    print(f"\nsecond-judge cross-check: not run. The offline judge cannot stand in for "
-          f"one - it would be these same rules answering twice, and a 100% agreement "
-          f"rate that means nothing is worse than no cross-check at all.")
+    print("\nsecond-judge cross-check: not run. The offline judge cannot stand in for "
+          "one - it would be these same rules answering twice, and a 100% agreement "
+          "rate that means nothing is worse than no cross-check at all.")
     print(f"  with PTM_OFFLINE=0: trigger judge_stability_{domain_name} with "
           f"compare_model set to a second model. Cases the two judges split on are "
           f"cases the policy does not settle - found without spending a human on any "

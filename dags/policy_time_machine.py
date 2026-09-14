@@ -49,8 +49,19 @@ import pendulum
 from airflow.exceptions import AirflowFailException
 from airflow.sdk import Asset, Param, dag, task
 
-from ptm import (cache, calibration, cost, crosscheck, diff, disparity, preflight,
-                 proposal, rules, stability, store)
+from ptm import (
+    cache,
+    calibration,
+    cost,
+    crosscheck,
+    diff,
+    disparity,
+    preflight,
+    proposal,
+    rules,
+    stability,
+    store,
+)
 from ptm.config import JUDGE_MODEL, LLM_CONN_ID, OFFLINE, available_domains, load_domain
 from ptm.judge import build_prompt, offline_verdict
 from ptm.models import Case, PolicyPatch, Precedent, RuleSet, Verdict
@@ -221,7 +232,7 @@ def _measured_usage(judge_task_id: str) -> list[dict]:
 
         pulled = get_current_context()["ti"].xcom_pull(
             task_ids=judge_task_id, key=USAGE_KEY)
-    except Exception as exc:  # noqa: BLE001 - see docstring
+    except Exception as exc:
         print(f"no usage reported by {judge_task_id}: {exc}")
         return []
     if pulled is None:
@@ -1053,8 +1064,28 @@ def build(domain_name: str) -> None:
             # whether the *judge* does. Stability says the judge repeats itself;
             # only this says whether repeating itself is worth anything - and the
             # confidence it reports is what routes the review budget.
-            print(calibration.describe(
-                calibration.score(domain, version, by_case, precedents)))
+            scored = calibration.score(domain, version, by_case, precedents)
+            print(calibration.describe(scored))
+            # And now something acts on it. Offline the verdicts came from
+            # offline_rules, so the figure describes the fixture and the gate is
+            # held off - the same exemption the rules gate takes, for the same
+            # reason. See ptm/calibration.py:gate.
+            judge_problems: list[str] = [] if OFFLINE else calibration.gate(scored, domain)
+            for problem in judge_problems:
+                print(f"JUDGE GATE  {problem}")
+            if judge_problems and domain.calibration.gate == "fail":
+                raise AirflowFailException(
+                    f"the judge scored against {scored.judged} human ruling(s) under "
+                    f"{version} is outside what this domain allows, and "
+                    f"calibration.gate=fail:\n"
+                    + "\n".join(f"  - {problem}" for problem in judge_problems)
+                    + "\n\nThis is not a finding about policy " + version + ". It says "
+                      "the verdicts every other number here is built from cannot be "
+                      "relied on yet, so passing the precedent check would not have "
+                      "meant much.")
+            elif judge_problems:
+                print("calibration.gate=warn, so the run continues - but the flip rate "
+                      "above is this judge's, and this is what that judge is worth.")
 
             # The same question asked of the policy already in force. Without
             # it, "this proposal reverses 3 rulings" reads as the proposal's
@@ -1107,7 +1138,9 @@ def build(domain_name: str) -> None:
             return {"precedents_checked": len(by_case), "violations": 0,
                     "in_force_violations": len(pre_existing),
                     "precedent_conflicts": len(found_conflicts),
-                    "stale_precedents": len(stale)}
+                    "stale_precedents": len(stale),
+                    "judge_accuracy": scored.accuracy,
+                    "judge_gate_problems": judge_problems}
 
         enforce(cases, gate_candidate, conflicts(), gate_baseline)
 

@@ -807,6 +807,46 @@ nothing, and the rows are deduplicated the same latest-row-wins way as every
 other read model here: a manual run overlapping a backfill must not make one
 version look twice as busy as the one beside it.
 
+### And is the judge worth listening to?
+
+Every number above is one of the judge's verdicts. Stability asks whether it
+repeats itself and the cross-check asks whether a second model agrees; only
+calibration asks whether it is **right**, because only the precedent set has an
+answer in it. That figure was computed, printed and rendered from the day it
+was written, and nothing anywhere acted on it — exactly the gap the rule
+agreement gate was added to close, and a worse one.
+
+```
+judge vs 8 human ruling(s) under policy v2
+  agreed on 6 of 8  -  75.0% (40.9%-92.8%)
+  mean confidence 89%, overconfident by 14% (ECE 24%)
+  the review threshold (75%) does NOT separate:
+      below it 100% right (1 cases), above it 71% right (7 cases)
+  the domain requires 70% accuracy, at most 15% overconfidence and a review
+  threshold that separates (gate=warn, from 10 scored rulings)
+```
+
+Three settings in `calibration:`, because there are three ways for this to be
+bad news and they have different owners. `min_accuracy` is the floor under
+every flip in the replay. `max_overconfidence` catches a judge that is right as
+often as before but has stopped knowing when it is not, which nothing else here
+would ever mention. And `require_threshold_separation` is the one worth
+understanding: `review.below_confidence` routes the scarcest resource in this
+project — human attention — on the judge's own claim about how sure it is, so
+if verdicts above that line are right no more often than the ones below it,
+that queue is being picked at random and **so was every precedent established
+from it**.
+
+It refuses to fire in three situations, and each refusal is the difference
+between a gate and a nuisance. Nothing adjudicated is no evidence, not 0%
+accuracy — failing there would make the gate loudest on a project that has not
+run yet. Too little adjudicated is the same problem one step on: accuracy on
+three contested cases has a band running most of the way from 0 to 1, so
+`min_judged` is a floor and falling below it reports as unmeasured rather than
+as a pass. And offline the verdicts came from the same `offline_rules` the
+sweep uses, so the figure describes the fixture; a gate that passes because the
+check is switched off is worse than no gate.
+
 ## Run it
 
 ```bash
@@ -864,8 +904,8 @@ behind nothing — and is the only thing that does.
 No Airflow, no API key, whole loop in about a second:
 
 ```bash
-make dev       # create .venv with pydantic, pyyaml, pytest
-make test      # lint + 597 engine tests + the whole loop end to end
+make dev       # create .venv with pydantic, pyyaml, pytest, ruff
+make test      # style + lint + 642 engine tests + the whole loop end to end
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
@@ -874,7 +914,31 @@ make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
 make propose   # draft the next version of the policy (writes nothing)
 make drafts    # what has been drafted, and what the gate made of each
+make export    # everything the Explorer shows, as one file
+make prune     # drop cache and sample rows that stopped earning their disk
 ```
+
+`make export` matters more than it looks. Every measurement here can be reached
+from a shell with no Airflow and no key — except the one artefact built to
+*leave* the room. The bundle assembles every panel with its caveats attached,
+precisely so the numbers cannot be pasted into a slide without them, and it
+lived only behind a FastAPI route behind an Airflow login. A policy decision
+gets argued about away from the dashboard, which is exactly when nobody can
+start the dashboard:
+
+```bash
+python -m ptm.report expenses v2 -o bundle.json   # every panel, with its caveats
+python -m ptm.report expenses v2 --csv            # the flip set, for the spreadsheet
+python -m ptm.prune --dry-run                     # count it before removing it
+```
+
+`make prune` is the other side of running for a while. `verdict_cache` grows
+*because* the loop works: edit a clause, measure again, and since the key is the
+prompt, every edit strands the generation of entries it invalidated — rows that
+can never be hit again by construction. Until now the only lever was
+`cache_clear`, which also destroys the entries about to save the next replay.
+Precedents, their history and the aggregates behind the dashboard are never
+touched: age is not a reason to forget a human ruling.
 
 A draft is a proposal, so the last step is a person's:
 
@@ -973,9 +1037,11 @@ ptm/cache.py                    do not pay twice for a prompt already answered
 ptm/cost.py                     what a replay costs, and did cost
 ptm/metered.py                  keeps the token counts LLMOperator only logs
 ptm/lint.py                     domain YAML vs the policies it claims to implement
+ptm/prune.py                    drops the rows that stopped earning their disk
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
-tests/                          612 tests; the engine's 510 need nothing but Python
+ruff.toml                       the style gate, and why each rule is on
+tests/                          778 tests; the engine's 642 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -988,7 +1054,10 @@ FastAPI installed. Beyond the panels it also serves the numbers *out*:
 whole bundle. A policy decision gets argued about away from the dashboard, so
 the figures have to be able to leave it — and the JSON carries its caveats
 along with them, rather than having them stripped off by whoever pastes the
-headline into a slide.
+headline into a slide. The same two are reachable from a shell as
+`python -m ptm.report <domain> <version> [--csv]`, because the moment a decision
+is being argued about away from the dashboard is exactly the moment nobody can
+start the dashboard.
 
 ## Verified against
 
@@ -1010,12 +1079,27 @@ Built and run against `apache/airflow:3.1.0` with
   remembering to add it;
 - the Diff Explorer is loaded in Chromium against the real API and fails on any
   console error or any panel that renders nothing;
+- the export bundle is written to a file and parsed back, because nothing else
+  serialises every read model at once — a traceback there is a panel that would
+  have been blank in front of an audience;
+- `ruff check` passes under [`ruff.toml`](ruff.toml), which is a deliberately
+  narrow selection: rules that would have caught a real bug here, not rules
+  about how a docstring is worded. It exists because the code carried `# noqa`
+  directives and nothing in CI could honour them, so three of them had gone
+  stale and no build said so;
 - `airflow dags test replay_expenses` completes and persists verdicts, flips
   and a run summary.
 
 ## Caveats
 
 - Single-container Airflow on SQLite. Fine for a demo, not a topology.
+- `verdict_cache` and `judge_samples` grow without bound, and they grow
+  *because* the loop works: the key is the prompt, so every clause edit strands
+  the generation of entries it invalidated. `make prune` drops what can no
+  longer be hit; precedents, their history and the aggregates behind the
+  dashboard are never touched. SQLite does not hand freed pages back to the
+  filesystem, so the file does not shrink until it is rewritten — `VACUUM`, or
+  just re-seed.
 - Manual runs have no meaningful data interval, so they replay all of history
   capped by the `max_cases` param (default 250). When that cap bites they keep
   the **most recent** cases: slowly-changing facts have not changed yet at the
@@ -1043,6 +1127,18 @@ Built and run against `apache/airflow:3.1.0` with
 - The threshold sweep is computed from `offline_rules`, so it answers what the
   rule evaluator would do. Treat it as a free way to narrow a range, then
   confirm the shortlist with a real replay.
+- **A dial that states a band cannot be swept, and says so rather than lying.**
+  The rewrite moves *every* number a field is compared against, which is right
+  for the one-sided threshold a clause normally states and destructive for
+  `40 < amount <= 100` — both ends land on the same value and the rule then
+  matches nothing at any point of the curve. Nothing raised: the rewrite
+  reported two hits and drew a confident curve for a rule that had stopped
+  existing. That is the worst failure this module can have, so the sweep and the
+  grid now refuse such a dial by name, `ptm.lint` warns about it before anybody
+  asks, and the Explorer lists it as un-sweepable instead of dropping it — a
+  field that vanished from the menu reads as a policy with no such threshold,
+  which is a different and equally wrong thing to believe. Split the band across
+  two rules to move either end.
 - Flip confirmation shares the judge's own sampling behaviour, so offline it
   confirms everything by construction — the same caveat as the stability
   figure, and for the same reason.
@@ -1050,8 +1146,14 @@ Built and run against `apache/airflow:3.1.0` with
   (`require_approval`). This project uses a separate `HITLOperator` instead,
   because the reviewer picks the *correct outcome* from the domain's options
   rather than approving a verdict, and that answer becomes precedent.
-- FastAPI plugin routes are read-only and **not** behind Airflow auth — Airflow
-  does not protect plugin endpoints automatically.
+- FastAPI plugin routes are read-only, and **Airflow does not protect plugin
+  endpoints automatically** — a mounted sub-application inherits none of the
+  parent's dependencies. The plugin therefore applies its own, once, to the
+  whole app, and verifies Airflow's own token; logging into the UI is all a
+  reader needs. `PTM_ALLOW_ANONYMOUS=1` is the only thing that opens them, and
+  it is for a context with no session to present. **The routes are not public**,
+  under the Diff Explorer above, has the rest: why the `_token` cookie has to be
+  read, and why that is only safe while every route is a read.
 - Airflow 3.1's `react_apps` plugin slot is marked experimental, so the
   dashboard is served as a dependency-free page from the FastAPI app instead.
 - `offline_rules` are computed by `ptm/safe_eval.py`, which walks the parsed
@@ -1093,6 +1195,12 @@ Built and run against `apache/airflow:3.1.0` with
 - **Judge accuracy is measured on the precedent set**, which is by construction
   the contested flips. It is a floor on the judge's accuracy over all cases, not
   an estimate of it, and on eight rulings its confidence band is very wide.
+  That width is why the gate on it has a `min_judged` floor and reports below it
+  as *unmeasured* rather than as a pass: a gate that fails a run on three
+  contested cases is failing it for the sample size. Like the rule-agreement
+  gate it is inert offline and does not fire, both shipped domains set it to
+  `warn`, and every threshold defaults to off — a project that has never
+  measured this must not start failing runs the first time it does.
 - **A segment carrying more of the change than the rest of its field is a
   question, not a finding of unfairness.** Segments differ in what they contain.
   The check never claims otherwise, and `min_cases` means small groups are not

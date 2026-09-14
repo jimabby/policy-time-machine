@@ -104,7 +104,7 @@ class TestTheWrapping:
         source = source.replace(
             "from airflow.providers.common.ai.operators.llm import LLMOperator", "")
         namespace = {"LLMOperator": FakeLLMOperator}
-        exec(compile(source, "ptm/metered.py", "exec"), namespace)  # noqa: S102
+        exec(compile(source, "ptm/metered.py", "exec"), namespace)
         return namespace["metered_operator"]()
 
     def _run(self, operator_class):

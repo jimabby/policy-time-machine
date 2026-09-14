@@ -1,0 +1,44 @@
+# Style gate for the engine, the DAGs and the plugin.
+#
+# The code already carried `# noqa` directives and CI never ran anything that
+# could honour them, so three of them had gone stale and nothing said so. This
+# is the smallest configuration that makes those directives mean something.
+#
+# The selection is deliberately about *correctness and drift*, not house style.
+# Rules that would have caught a real bug in this project are in; rules that
+# would produce a hundred findings about how a docstring is worded are out,
+# because a gate that fires on everything is a gate somebody switches off.
+
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = [
+    "F",      # pyflakes: an unused import, a name that does not exist
+    "E",      # pycodestyle errors
+    "W",      # trailing whitespace, no newline at end of file
+    "I",      # import order, so a merge does not reorder them for you
+    "B",      # bugbear: mutable defaults, a lambda closing over a loop variable
+    "C4",     # comprehensions that allocate a list to throw it away
+    "UP",     # syntax this project's floor (3.10) has a better spelling for
+    "RUF100", # a `# noqa` that no longer suppresses anything - see above
+    "PLE",    # pylint's errors only: raising a non-exception, bad format strings
+    "SIM101", # duplicate isinstance branches
+    "RET501", # an explicit `return None` where the annotation already says so
+]
+ignore = [
+    "E501",   # line length is reported by the formatter's own limit above; the
+              # prose comments in this project are wrapped by hand and a few
+              # sit a character or two over, which is not worth a finding
+    "B008",   # FastAPI's whole dependency syntax is a call in a default argument
+    "B905",   # zip(strict=) is 3.10+, but the pairs here are length-checked by
+              # the caller and the check is the thing that reports the mismatch
+]
+
+[lint.per-file-ignores]
+# Tests name what they are testing; an assertion on a long line is clearer than
+# the same assertion wrapped. And a fixture may shadow the import it builds on.
+"tests/*" = ["B011", "F811"]
+
+[lint.isort]
+known-first-party = ["ptm"]

@@ -28,6 +28,7 @@ import sys
 from dataclasses import dataclass
 
 from . import preflight
+from . import sweep as sweep_engine
 from .config import DomainConfig, available_domains, load_domain
 from .judge import SAFE_BUILTINS
 from .safe_eval import check_expression, names_in
@@ -166,6 +167,28 @@ def check_domain(name: str) -> list[Problem]:
                                      "the gate would fail permanently rather than catch "
                                      "drift")
 
+    if domain.calibration.gate not in {"warn", "fail"}:
+        err("calibration.gate", f"{domain.calibration.gate!r} is not 'warn' or 'fail'")
+    if not 0.0 <= domain.calibration.min_accuracy <= 1.0:
+        err("calibration.min_accuracy",
+            f"{domain.calibration.min_accuracy} is outside 0..1")
+    elif domain.calibration.min_accuracy == 1.0:
+        warn("calibration.min_accuracy",
+             "1.0 requires the judge to agree with every human ruling on file. Precedents "
+             "are the contested cases by construction, so this fails permanently rather "
+             "than catching a judge that has got worse")
+    if not 0.0 <= domain.calibration.max_overconfidence <= 1.0:
+        err("calibration.max_overconfidence",
+            f"{domain.calibration.max_overconfidence} is outside 0..1")
+    if domain.calibration.min_judged < 1:
+        err("calibration.min_judged",
+            f"{domain.calibration.min_judged} would score the judge on no rulings at all")
+    elif domain.calibration.min_judged < 5:
+        warn("calibration.min_judged",
+             f"{domain.calibration.min_judged} gates on a handful of contested cases, "
+             f"whose accuracy band runs most of the way from 0 to 1; the gate would fire "
+             f"on the sample size rather than on the judge")
+
     if not 0.0 <= domain.review.below_confidence <= 1.0:
         err("review", f"below_confidence {domain.review.below_confidence} is outside 0..1")
     if domain.review.max_reviews < 1:
@@ -247,6 +270,20 @@ def check_domain(name: str) -> list[Problem]:
                     err(at, f"confidence {confidence} is outside 0..1")
             except (TypeError, ValueError):
                 err(at, f"confidence {confidence!r} is not a number")
+
+        # A rule stating a band rather than a threshold. Not a fault in the rule
+        # - a band is often exactly what the policy says - but ptm.sweep moves
+        # every literal a field is compared against, so sweeping this dial
+        # rewrites both ends to the same number and the rule then matches
+        # nothing at any point on the curve. The sweep refuses such a dial
+        # outright; this is where somebody finds out before they ask for one.
+        for row in sweep_engine.collapsing(domain, version):
+            warn(f"{where}[{row['rule_index']}]",
+                 f"compares {row['field']!r} against {row['values']} in one rule. That is "
+                 f"a band, not a threshold, so {row['field']!r} cannot be swept in clause "
+                 f"{row['clause'] or '-'} - ptm.sweep would collapse both ends onto one "
+                 f"number and draw a curve for a rule that fires on nothing. Split it "
+                 f"across two rules if you want to move either end.")
 
         uncited = sorted(declared - cited)
         if uncited:

@@ -90,8 +90,8 @@ class TestTheRulesPeopleActuallyWriteStillRun:
     def test_every_shipped_rule_still_passes_the_lint(self):
         """The real fixtures, not a parallel set: a ceiling that quietly broke
         the demo's own rules would show up here and nowhere else."""
-        from ptm.lint import check_domain
         from ptm.config import available_domains
+        from ptm.lint import check_domain
 
         for name in available_domains():
             errors = [p for p in check_domain(name) if p.level == "ERROR"]

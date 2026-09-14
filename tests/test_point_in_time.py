@@ -132,7 +132,9 @@ class TestCapSampling:
         see the seniority exemption the proposal turns on."""
         oldest = store.load_cases("expenses", until=NOW, limit=150)
         newest = store.load_cases("expenses", until=NOW, limit=150, newest_first=True)
-        senior = lambda cases: sum(1 for c in cases if str(c.payload.get("grade")) == "3")
+        def senior(cases):
+            return sum(1 for c in cases if str(c.payload.get("grade")) == "3")
+
         assert senior(newest) > senior(oldest)
 
 

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Iterator
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from .config import DB_PATH
 from .diff import DEVIATION
@@ -358,6 +359,26 @@ def _bound(value: datetime) -> str:
     return value.isoformat()
 
 
+def _stamp() -> str:
+    """Now, in the one format every timestamp column here is written in.
+
+    Naive UTC, which is what :func:`_bound` already normalises a data-interval
+    bound to and what ``decided_at`` is seeded as. Every column in this schema
+    is compared and sorted by SQLite as TEXT, so what matters is not which zone
+    is chosen but that one is chosen: ``datetime.now()`` is the machine's local
+    time, and the same column then holds local stamps from a CLI run, UTC ones
+    from an Airflow task that used ``pendulum.now("UTC")``, and - twice a year -
+    an hour of local stamps that sort *before* rows written before them.
+
+    ``runs.started_at`` orders the backfill trend, ``precedent_history`` is
+    ordered newest-first, and ``cross_checks`` is read with ``ORDER BY
+    created_at DESC LIMIT 1`` to decide which measurement is current. All three
+    are wrong for an hour a year, silently, on a value nobody would think to
+    check.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
 @contextmanager
 def conn() -> Iterator[sqlite3.Connection]:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -490,6 +511,11 @@ def save_precedent(p: Precedent) -> None:
     cannot be recomputed. Doing the copy here means no future caller can
     re-adjudicate without leaving the earlier ruling behind - see
     ``precedent_history`` in SCHEMA.
+
+    ``established_at`` is normalised the same way every other timestamp here is.
+    It arrives tz-aware from an Airflow task (``pendulum.now("UTC")``) and naive
+    from a CLI or a test, and the two spellings of one instant do not compare
+    as TEXT - which is how this column is read back and ordered.
     """
     with conn() as c:
         c.execute(
@@ -501,7 +527,7 @@ def save_precedent(p: Precedent) -> None:
                       established_at, established_by_run, policy_version,
                       judged_outcome, judged_clause
                FROM precedents WHERE domain=? AND case_id=?""",
-            (datetime.now().isoformat(), p.domain, p.case_id),
+            (_free_supersede_stamp(c, p.domain, p.case_id), p.domain, p.case_id),
         )
         c.execute(
             """INSERT OR REPLACE INTO precedents
@@ -509,9 +535,30 @@ def save_precedent(p: Precedent) -> None:
                 established_by_run, policy_version, judged_outcome, judged_clause)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (p.case_id, p.domain, p.correct_outcome, p.ruled_by, p.note,
-             p.established_at.isoformat(), p.established_by_run,
+             _bound(p.established_at), p.established_by_run,
              p.policy_version, p.judged_outcome, p.judged_clause),
         )
+
+
+def _free_supersede_stamp(c: sqlite3.Connection, domain: str, case_id: str) -> str:
+    """An archive timestamp not already taken for this case.
+
+    ``precedent_history``'s key is ``(domain, case_id, superseded_at)``, and the
+    copy above is a plain INSERT inside the same transaction as the new ruling.
+    Two supersessions of one case landing in the same microsecond would
+    therefore raise, roll the transaction back, and lose *the ruling* - not just
+    its archive - which is the one failure this whole table exists to prevent.
+    A microsecond collision needs two reviewers finishing at once on a re-run,
+    which is rare and not impossible; stepping the stamp forward until it is
+    free costs one indexed lookup and removes the case entirely.
+    """
+    stamp = _stamp()
+    taken = {r["superseded_at"] for r in c.execute(
+        "SELECT superseded_at FROM precedent_history WHERE domain=? AND case_id=?",
+        (domain, case_id))}
+    while stamp in taken:
+        stamp = (datetime.fromisoformat(stamp) + timedelta(microseconds=1)).isoformat()
+    return stamp
 
 
 def precedent_history(domain: str, case_id: str | None = None) -> list[dict]:
@@ -636,7 +683,7 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
                 baseline_verdicts: dict[str, Verdict] | None = None,
                 case_segments: list[dict] | None = None) -> None:
     """Persist one replay atomically, including an idempotent re-run cleanup."""
-    now = datetime.now().isoformat()
+    now = _stamp()
     ledger = ledger or {}
     baseline_run = run_id + BASELINE_RUN_SUFFIX
     with conn() as c:
@@ -730,7 +777,7 @@ def save_verdicts(run_id: str, domain: str, policy_version: str,
     The precedent gate judges cases too, and storing what it found is what lets
     the dashboard show the gate's answer without paying to re-judge it.
     """
-    now = datetime.now().isoformat()
+    now = _stamp()
     with conn() as c:
         c.execute("DELETE FROM verdicts WHERE run_id = ?", (run_id,))
         c.executemany(
@@ -753,7 +800,7 @@ def save_flip_stability(domain: str, policy_version: str,
     """
     if not confirmations:
         return 0
-    now = datetime.now().isoformat()
+    now = _stamp()
     with conn() as c:
         c.executemany(
             """INSERT OR REPLACE INTO flip_stability
@@ -812,7 +859,7 @@ def cache_lookup(keys: list[str], count: bool = True) -> dict[str, dict]:
         return {}
     wanted = list(dict.fromkeys(keys))
     found: dict[str, dict] = {}
-    now = datetime.now().isoformat()
+    now = _stamp()
     with conn() as c:
         for i in range(0, len(wanted), _ID_CHUNK):
             chunk = wanted[i:i + _ID_CHUNK]
@@ -840,7 +887,7 @@ def cache_put(entries: list[dict]) -> int:
     """
     if not entries:
         return 0
-    now = datetime.now().isoformat()
+    now = _stamp()
     with conn() as c:
         c.executemany(
             """INSERT OR REPLACE INTO verdict_cache
@@ -892,7 +939,7 @@ def save_draft(domain: str, version: str, base_version: str, patch: dict,
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (domain, version, base_version, patch.get("summary", ""), json.dumps(patch),
              json.dumps(evidence or {}), json.dumps(verification or {}), drafted_by,
-             datetime.now().isoformat(), run_id),
+             _stamp(), run_id),
         )
 
 
@@ -907,7 +954,7 @@ def mark_adopted(domain: str, version: str, adopted_as: str, by: str) -> None:
         c.execute(
             """UPDATE policy_drafts SET adopted_as=?, adopted_by=?, adopted_at=?
                WHERE domain=? AND version=?""",
-            (adopted_as, by, datetime.now().isoformat(), domain, version),
+            (adopted_as, by, _stamp(), domain, version),
         )
 
 
@@ -919,6 +966,99 @@ def drafts(domain: str) -> list[dict]:
         r["evidence"] = json.loads(r["evidence"] or "{}")
         r["verification"] = json.loads(r["verification"] or "{}")
     return rows
+
+
+#: What :func:`prune` removes, as (table, WHERE clause). One definition, because
+#: a dry run that counts different rows from the one that deletes them is worse
+#: than no dry run at all - it is a promise about what is about to happen.
+#:
+#: ``{domain}`` is filled in with the domain filter or nothing, and every
+#: statement takes the cutoff as its first parameter.
+_PRUNE: list[tuple[str, str]] = [
+    # An entry is dead when it has not been *served* since the cutoff. A
+    # never-hit entry is dated by when it was written, so a fresh one survives
+    # its first window without having to be used.
+    ("verdict_cache",
+     "(CASE WHEN last_hit_at <> '' THEN last_hit_at ELSE created_at END) < ?{domain}"),
+    # Samples belonging to a stability run older than the cutoff. Dated by the
+    # run rather than per row, because a sample carries no timestamp of its own
+    # and the run is what makes it current or not. The run's summary row stays,
+    # so a disagreement rate is still readable after its samples are gone.
+    ("judge_samples",
+     """run_id IN (SELECT run_id FROM stability_runs
+                   WHERE created_at < ?{domain})"""),
+    # Superseded cross-checks. The latest per (domain, version) is kept at any
+    # age: latest_cross_check is its only reader, and an absent panel reads as a
+    # check that passed rather than as one nobody has run lately.
+    ("cross_checks",
+     """created_at < ?{domain} AND run_id NOT IN (
+          SELECT run_id FROM cross_checks x WHERE x.created_at = (
+            SELECT MAX(y.created_at) FROM cross_checks y
+            WHERE y.domain = x.domain AND y.policy_version = x.policy_version))"""),
+]
+
+
+def _prune_plan(domain: str | None, days: int,
+                keep_unhit: bool) -> tuple[str, list[tuple[str, str, tuple]]]:
+    """The cutoff, and one (table, where, params) per statement :func:`prune` runs."""
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(days=max(days, 0))).isoformat()
+    suffix = " AND domain = ?" if domain else ""
+    params: tuple = (cutoff, domain) if domain else (cutoff,)
+    plan = []
+    for table, where in _PRUNE:
+        clause = where.format(domain=suffix)
+        if table == "verdict_cache" and keep_unhit:
+            clause += " AND hits > 0"
+        plan.append((table, clause, params))
+    return cutoff, plan
+
+
+def prune(domain: str | None = None, days: int = 90,
+          keep_unhit: bool = False) -> dict[str, int]:
+    """Drop the bulk rows that have stopped earning their disk, and say what went.
+
+    Two tables grow without bound and neither is ever read once it is old.
+    ``verdict_cache`` holds one row per prompt ever judged, so the edit-and-
+    re-measure loop this project is built around adds a generation of entries
+    per edit and never removes the ones the edit invalidated - they can never be
+    hit again, because the key is the prompt and the prompt changed.
+    ``judge_samples`` holds one row per (case, repeat) for every stability run
+    ever made, and only the newest run backs a reported figure.
+
+    Until this existed the only levers were all-or-nothing:
+    :func:`clear_domain_results` drops every derived table including the ones
+    that back the dashboard, and :func:`cache_clear` destroys the whole cache -
+    including the entries that would have saved the next replay.
+
+    What is deliberately *not* pruned: precedents and their history, the drafts
+    table, and the aggregates the dashboard reads. Age is not a reason to forget
+    a human ruling, and a run row is what a trend is drawn from.
+
+    ``keep_unhit`` retains cache entries nothing has ever served, which is the
+    right setting straight after a big replay nothing has re-run yet; by default
+    an entry that is both old and never hit is exactly the stranded generation
+    this is for.
+    """
+    cutoff, plan = _prune_plan(domain, days, keep_unhit)
+    cleared: dict[str, int] = {}
+    with conn() as c:
+        for table, clause, params in plan:
+            cleared[table] = c.execute(
+                f"DELETE FROM {table} WHERE {clause}", params).rowcount
+    return {"cutoff": cutoff, **cleared}
+
+
+def prune_preview(domain: str | None = None, days: int = 90,
+                  keep_unhit: bool = False) -> dict[str, int]:
+    """What :func:`prune` would remove, counted with the same clauses it deletes by."""
+    cutoff, plan = _prune_plan(domain, days, keep_unhit)
+    counted: dict[str, int] = {}
+    with conn() as c:
+        for table, clause, params in plan:
+            counted[table] = c.execute(
+                f"SELECT COUNT(*) n FROM {table} WHERE {clause}", params).fetchone()["n"]
+    return {"cutoff": cutoff, **counted}
 
 
 def cache_clear(domain: str | None = None) -> int:
@@ -961,7 +1101,7 @@ def save_stability(run_id: str, domain: str, policy_version: str, samples: list[
                (run_id, domain, policy_version, created_at, cases_sampled, samples_per_case,
                 unstable_cases, disagreement_rate, judge_model, estimated_cost_usd)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (run_id, domain, policy_version, datetime.now().isoformat(),
+            (run_id, domain, policy_version, _stamp(),
              report["cases_sampled"], report["samples_per_case"], report["unstable_cases"],
              report["disagreement_rate"], ledger.get("judge_model", ""),
              ledger.get("estimated_cost_usd", 0.0)),
@@ -1244,7 +1384,7 @@ def save_cross_check(run_id: str, domain: str, policy_version: str, report: dict
                 contested_flips, report)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (run_id, domain, policy_version, report.get("primary", ""),
-             report.get("secondary", ""), datetime.now().isoformat(),
+             report.get("secondary", ""), _stamp(),
              report.get("compared", 0), report.get("agreed", 0),
              report.get("agreement", 0.0), report.get("clause_agreement", 0.0),
              report.get("contested_flips", 0), json.dumps(report)),

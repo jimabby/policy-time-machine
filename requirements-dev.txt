@@ -3,3 +3,7 @@
 pydantic>=2.7
 PyYAML>=6.0
 pytest>=8.0
+# The style gate. The code carries `# noqa` directives and nothing in CI
+# could honour them, so three had gone stale unnoticed; ruff.toml says which
+# rules are on and why each one is worth a build failing over.
+ruff>=0.16

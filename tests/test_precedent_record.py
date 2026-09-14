@@ -17,8 +17,8 @@ from ptm.models import Precedent
 
 
 def ruling(case_id="c1", **kwargs) -> Precedent:
-    base = dict(case_id=case_id, domain="expenses", correct_outcome="deny",
-                ruled_by="finance.lead", established_at=datetime(2025, 3, 1))
+    base = {"case_id": case_id, "domain": "expenses", "correct_outcome": "deny",
+            "ruled_by": "finance.lead", "established_at": datetime(2025, 3, 1)}
     return Precedent(**{**base, **kwargs})
 
 

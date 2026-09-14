@@ -19,7 +19,6 @@ from . import stats
 from .config import DomainConfig
 from .models import Case, Flip, Precedent, PrecedentConflict, Verdict
 
-
 #: Attribution buckets that are not a clause of the candidate policy.
 DEVIATION = "(reviewer deviated from policy)"
 UNEXPLAINED = "(no clause applies)"

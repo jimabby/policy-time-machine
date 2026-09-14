@@ -64,7 +64,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     for k in wrong[:5]:
         print(f"  {k}: correct '{correct[k].outcome}', naive '{naive[k].outcome}'")
     if len(wrong) > 5:
-        print(f"  … and {len(wrong) - 5} more")
+        print(f"  ... and {len(wrong) - 5} more")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,27 @@ rules:
   min_clause_agreement: 0.85
   gate: warn
 
+# How wrong the judge may be about the cases humans have already settled. The
+# only measurement here that scores the judge against an answer rather than
+# against itself - every other check is satisfied by a judge that misreads a
+# clause the same way every time.
+#
+# require_threshold_separation is the one worth understanding. review.
+# below_confidence above routes the scarcest resource in this project - human
+# attention - on the judge's own claim about how sure it is. If verdicts above
+# that line are right no more often than the ones below it, that queue is being
+# picked at random, and so was every precedent established from it.
+#
+# 'warn' for the same reason the rules gate is: offline these verdicts come from
+# offline_rules, so the figure describes the fixture and the gate is held off
+# entirely. Raise it to 'fail' once a real judge has been scored.
+calibration:
+  min_accuracy: 0.7
+  max_overconfidence: 0.15
+  require_threshold_separation: true
+  min_judged: 10
+  gate: warn
+
 offline_rules:
   v1:
     - when: "months_elapsed < contract_months and reason == 'medical' and documentation == 'yes'"

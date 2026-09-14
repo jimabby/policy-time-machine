@@ -12,7 +12,6 @@ import pytest
 
 from ptm import report, sweep
 
-
 AXIS_A = {"field": "amount_gbp", "clause": "1.1", "values": [25, 75, 150]}
 AXIS_B = {"field": "days_notice", "clause": "3.1", "values": [3, 7, 14]}
 

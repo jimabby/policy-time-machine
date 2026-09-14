@@ -117,6 +117,54 @@ class RulesPolicy(BaseModel):
     gate: str = "warn"
 
 
+class CalibrationPolicy(BaseModel):
+    """How wrong the judge may be about the cases humans settled before it is a failure.
+
+    :func:`ptm.calibration.score` has produced these numbers since it was
+    written and nothing has ever acted on them - the same gap
+    :class:`RulesPolicy` exists to close for the offline rules, and a worse one,
+    because this is the only measurement in the project that scores the judge
+    against an answer rather than against itself.
+
+    Three settings, because there are three separate ways for it to be bad news
+    and they have different owners:
+
+    ``min_accuracy``
+        The judge disagrees with the humans too often. The flip set is a list of
+        verdicts, so this is the floor under everything downstream of it.
+    ``max_overconfidence``
+        It is right about as often as before, but claims to be more certain than
+        it is. Nothing else notices this at all.
+    ``require_threshold_separation``
+        ``review.below_confidence`` routes the scarcest resource here - human
+        attention - on the judge's own claim about how sure it is. If verdicts
+        above that line are no more often right than the ones below it, the
+        review budget is being spent by a number that means nothing, and every
+        precedent established from that queue was chosen at random.
+
+    All three default to off, for the reason :class:`RulesPolicy` gives: a
+    project that has never measured this must not start failing runs the first
+    time it does. And like the rules gate, it stays silent on a measurement that
+    is inert or absent - see :func:`ptm.calibration.gate`.
+    """
+
+    #: Minimum share of human rulings the judge must reach the same outcome on.
+    min_accuracy: float = 0.0
+    #: Ceiling on ``mean_confidence - accuracy``. Positive is overconfident,
+    #: which is the direction that quietly breaks the review routing: an
+    #: overconfident wrong verdict never reaches the human who would catch it.
+    max_overconfidence: float = 1.0
+    #: Whether to require that ``review.below_confidence`` actually sorts the
+    #: cases - measurably, by disjoint Wilson intervals, not by a few points.
+    require_threshold_separation: bool = False
+    #: Below this many scored rulings nothing is checked. Accuracy on three
+    #: contested cases is a number with a band from 0.1 to 0.8, and gating on
+    #: it fails runs for the sample size rather than for the judge.
+    min_judged: int = 10
+    #: ``warn`` reports and carries on. ``fail`` stops the gate run.
+    gate: str = "warn"
+
+
 class DomainConfig(BaseModel):
     name: str
     label: str
@@ -148,6 +196,9 @@ class DomainConfig(BaseModel):
     #: How far the offline rules may drift from the judge before the sweep built
     #: on them stops being served. See :class:`RulesPolicy`.
     rules: RulesPolicy = Field(default_factory=RulesPolicy)
+    #: How wrong the judge may be about the cases humans have already settled.
+    #: See :class:`CalibrationPolicy`.
+    calibration: CalibrationPolicy = Field(default_factory=CalibrationPolicy)
     #: Fixtures for PTM_OFFLINE=1 only; the real judge never reads these.
     offline_rules: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     #: Versions that were drafted by :mod:`ptm.proposal` rather than written by
@@ -270,7 +321,7 @@ def clauses_in(text: str) -> list[str]:
 
 
 class _Blank(dict):
-    def __missing__(self, key: str) -> str:  # noqa: D105
+    def __missing__(self, key: str) -> str:
         return ""
 
 
