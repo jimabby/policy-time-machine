@@ -1318,3 +1318,8 @@ Built and run against `apache/airflow:3.1.0` with
 - `include/drafts/` is written by a DAG task, so a multi-worker deployment needs
   it on shared storage. The single-container demo and the compose file already
   mount it.
+
+## License
+
+[Apache-2.0](LICENSE) — the same license as Airflow itself, which is the
+ecosystem this is built for.
