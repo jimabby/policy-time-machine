@@ -27,7 +27,7 @@ import string
 import sys
 from dataclasses import dataclass
 
-from . import preflight
+from . import cli, preflight
 from . import sweep as sweep_engine
 from .config import DomainConfig, available_domains, load_domain
 from .judge import SAFE_BUILTINS
@@ -302,8 +302,24 @@ def check_domain(name: str) -> list[Problem]:
     return problems
 
 
+USAGE = """usage:
+  python -m ptm.lint [domain ...]
+
+Check every domain YAML against the policies it claims to implement: rules
+reading fields no case has, rules citing clauses the policy does not contain,
+outcomes no rule can reach, dials a sweep would collapse rather than move.
+
+  domain ...   defaults to every domain in include/domains/
+
+Exits non-zero on an error. Warnings are reported and do not fail."""
+
+
 def main(argv: list[str] | None = None) -> int:
-    names = (argv if argv is not None else sys.argv[1:]) or available_domains()
+    args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
+    names = args or available_domains()
     if not names:
         print("no domains found to lint")
         return 1

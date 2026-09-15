@@ -24,7 +24,7 @@ import ast
 import sys
 from datetime import datetime
 
-from . import diff
+from . import cli, diff
 from .config import DomainConfig, load_domain
 from .judge import offline_verdict
 from .models import Case
@@ -522,7 +522,10 @@ def _warn_about_the_rules(domain_name: str, version: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
+    args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     if len(args) < 2:
         print(USAGE)
         return 2

@@ -27,6 +27,7 @@ does alone, and it is the only thing that can tell you the four in
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 #: XCom key the per-call usage lands under. Separate from the return value, so
@@ -66,6 +67,28 @@ def metered_operator():
     inside the call rather than at module scope.
     """
     from airflow.providers.common.ai.operators.llm import LLMOperator
+
+    def _underlying_hook_builder():
+        """The provider's own ``llm_hook`` body, whatever descriptor wraps it.
+
+        The hook has to be built by the provider's code and then wrapped, which
+        means reaching past the descriptor to the function underneath. That used
+        to be spelled ``LLMOperator.llm_hook.func(self)`` - correct for the
+        ``cached_property`` the provider uses today and an ``AttributeError`` on
+        every judge task the day it becomes a plain ``property``, which is a
+        refactor no provider would consider breaking.
+
+        ``requirements.txt`` pins a floor and no ceiling, deliberately, so the
+        pin cannot be what protects this. Both descriptor shapes are handled -
+        ``cached_property`` exposes ``.func`` and ``property`` exposes ``.fget`` -
+        and anything else returns None, which :meth:`llm_hook` below turns into
+        an unmetered run rather than a failed one.
+
+        ``getattr_static`` rather than ``getattr``: fetching ``llm_hook`` off the
+        class normally would invoke the descriptor rather than hand it over.
+        """
+        descriptor = inspect.getattr_static(LLMOperator, "llm_hook", None)
+        return getattr(descriptor, "func", None) or getattr(descriptor, "fget", None)
 
     class _Recorder:
         """Stands in for the hook, and watches the agent it hands back."""
@@ -107,7 +130,21 @@ def metered_operator():
             # agent, and this only watches the result go past.
             if getattr(self, "_ptm_hook", None) is None:
                 self._ptm_usage: list[dict] = []
-                self._ptm_hook = _Recorder(LLMOperator.llm_hook.func(self), self._ptm_usage)
+                build = _underlying_hook_builder()
+                if build is None:
+                    # The measurement is the expendable half. A provider that has
+                    # reshaped llm_hook must cost the token counts and nothing
+                    # else, so fall back to the inherited hook and judge exactly
+                    # as an unmetered LLMOperator would. Said out loud, because a
+                    # ledger quietly missing its actual_* columns reads as a run
+                    # nobody metered rather than as one that could not be.
+                    self.log.warning(
+                        "ptm: cannot reach the provider's llm_hook to meter it, so this "
+                        "task reports no token usage. The verdicts are unaffected; the "
+                        "cost ledger keeps its estimate and no actual_* figures.")
+                    self._ptm_hook = super().llm_hook
+                else:
+                    self._ptm_hook = _Recorder(build(self), self._ptm_usage)
             return self._ptm_hook
 
         def execute(self, context):

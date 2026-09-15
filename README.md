@@ -96,7 +96,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | **HITL operators** | `HITLOperator` deferred in the triggerer, holding no worker slot, asking a human for the *correct outcome* — not a yes/no. |
 | **Assets** | `ptm://<domain>/flips` wakes adjudication; `ptm://<domain>/precedents` wakes the regression gate. Nothing is polled. |
 | **Plugin (FastAPI + external view)** | The Policy Diff Explorer, a tab inside the Airflow UI. |
-| **Dynamic DAG generation** | Drop a YAML in `include/domains/` and five new DAGs appear. The DAG code contains zero domain knowledge — [a test asserts it](tests/test_dags.py). |
+| **Dynamic DAG generation** | Drop a YAML in `include/domains/` and five new DAGs appear. The DAG code contains zero domain knowledge — [a test asserts it](tests/test_dags.py). `ptm_retention` is the one DAG built outside that loop, because the tables it prunes are shared by every domain. |
 | **Structured generation** | The same `LLMOperator`, pointed the other way: `output_type=PolicyPatch` has a model *write* the next version of the policy, which the precedent gate then re-judges. Typed output is what makes that checkable rather than a wall of prose. |
 | **`model_id` per run** | The second judge. One connection, the model overridden at trigger time, so cross-checking a replay against a different vendor is a `--conf` flag rather than a DAG edit. |
 
@@ -122,7 +122,8 @@ noise, it adds bias. Airflow's data-interval semantics are what stop it.
 
 ## Architecture
 
-Five DAGs per domain, generated from `include/domains/*.yaml`:
+Five DAGs per domain, generated from `include/domains/*.yaml`, plus one
+`ptm_retention` for the database they share:
 
 ```
                     ┌─────────────────────┐
@@ -164,9 +165,13 @@ Five DAGs per domain, generated from `include/domains/*.yaml`:
                      └─────────────────────┘
 
                         a person adopts it, or does not:
-                        python -m ptm.proposal <domain> --list
+                        python -m ptm.proposal <domain> --list       (make drafts)
                         python -m ptm.proposal <domain> --adopt <v> --by <name>
                         python -m ptm.proposal <domain> --discard <v>
+                        make adopt V=<v> BY="<name>"  |  make discard V=<v>
+
+   @weekly ────────▶ ptm_retention               one for the whole database,
+                                                 not one per domain
 ```
 
 `select_for_review` is deliberately stingy: humans see a flip only if the
@@ -716,6 +721,57 @@ exactly what the gate measures, which is precisely why its output is put through
 the gate like everything else — and it is a fair floor. If a model cannot beat
 a threshold search, that is worth knowing before paying for one.
 
+### Who takes out the bins
+
+Two tables here grow without bound, and they grow **because the loop works**.
+The cache key is the prompt, so every clause edit strands the entire generation
+of entries it invalidated — those rows can never be hit again, by construction.
+`judge_samples` holds one row per (case, repeat) for every stability run ever
+made, and only the newest backs a reported figure.
+
+`ptm.prune` has always known how to drop them. What it had no way to do was
+*happen*: the only lever was a command somebody had to remember to run, which in
+a project whose argument is that Airflow is the engine rather than the wrapper
+made retention the one chore left outside it. So it is a DAG.
+
+```
+ptm_retention        @weekly, one for the whole database
+  plan               count what is about to go, with the same WHERE clauses
+                     the delete uses — a dry run that counts different rows
+                     from the one that deletes them is worse than none
+  sweep_up           drop them, unless dry_run says only to count
+  compact            VACUUM, so the file actually shrinks
+```
+
+One DAG rather than one per domain, and that is the only place in this project
+where a thing is *not* generated per domain. The tables are shared, the cutoff
+is a property of the database and not of any rulebook, and the file it rewrites
+is one file — five copies would take five locks on one SQLite database to do the
+same work once.
+
+The last step is the one worth separating. SQLite keeps freed pages on a free
+list rather than handing them back, so a prune that removed ten thousand rows
+changes the file size by nothing at all. That was said out loud in the output
+and then left there — *"run VACUUM, or just re-seed"*, addressed to a reader who
+would have to go and do by hand, in another tool, against a path the command
+already knew, the one thing it had everything it needed to do. Now `--vacuum`
+does it, `make vacuum` is prune-then-compact in one, and the step is separate in
+the DAG because it is the only one whose cost is proportional to the database
+rather than to what was dropped.
+
+```
+$ make vacuum
+removed 4,182 row(s) from every domain, older than 90 day(s)
+  cross_checks                 3
+  judge_samples              600
+  verdict_cache            3,579
+vacuumed: 12,058,624 -> 3,342,336 bytes (8,716,288 reclaimed)
+```
+
+Nothing here touches precedents, their history, the drafts table, or the
+aggregates the dashboard reads. Age is not a reason to forget a human ruling,
+and a run row is what a trend is drawn from.
+
 ### The second measurement is nearly free
 
 The loop this project is built around is *edit a clause, measure again*. As
@@ -905,7 +961,7 @@ No Airflow, no API key, whole loop in about a second:
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest, ruff
-make test      # style + lint + 642 engine tests + the whole loop end to end
+make test      # style + lint + 689 engine tests + the whole loop end to end
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
@@ -915,8 +971,21 @@ make calibrate # is the judge right, scored against the humans who ruled?
 make propose   # draft the next version of the policy (writes nothing)
 make drafts    # what has been drafted, and what the gate made of each
 make export    # everything the Explorer shows, as one file
-make prune     # drop cache and sample rows that stopped earning their disk
+make prune     # count the cache and sample rows that stopped earning their disk
+make vacuum    # drop them for real, and shrink the file
+make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
+make discard V=v2-draft1                # or throw it away
 ```
+
+Every one of those is a `python -m ptm.*` entry point underneath, and every one
+of them answers `--help`. That is worth a sentence only because it did not: the
+modules parse their own arguments, and `--help` was read as the name of a
+*domain*. The best of them answered `Unknown domain: --help`; `ptm.selftest` —
+the command whose entire job is to demonstrate that the project runs cleanly —
+got as far as trying to seed a domain by that name and exited on an uncaught
+`KeyError`. `ptm/cli.py` is one flag set, checked before any argument is
+interpreted as a name, so the usage string is reachable at the moment it is
+actually wanted: when you have just got the arguments wrong.
 
 `make export` matters more than it looks. Every measurement here can be reached
 from a shell with no Airflow and no key — except the one artefact built to
@@ -938,7 +1007,9 @@ prompt, every edit strands the generation of entries it invalidated — rows tha
 can never be hit again by construction. Until now the only lever was
 `cache_clear`, which also destroys the entries about to save the next replay.
 Precedents, their history and the aggregates behind the dashboard are never
-touched: age is not a reason to forget a human ruling.
+touched: age is not a reason to forget a human ruling. Under Airflow none of
+this needs remembering — `ptm_retention` runs it weekly, and `make retain`
+triggers it now; see *Who takes out the bins*.
 
 A draft is a proposal, so the last step is a person's:
 
@@ -1038,10 +1109,11 @@ ptm/cost.py                     what a replay costs, and did cost
 ptm/metered.py                  keeps the token counts LLMOperator only logs
 ptm/lint.py                     domain YAML vs the policies it claims to implement
 ptm/prune.py                    drops the rows that stopped earning their disk
+ptm/cli.py                      one definition of --help, for all nine entry points
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
 ruff.toml                       the style gate, and why each rule is on
-tests/                          778 tests; the engine's 642 need nothing but Python
+tests/                          831 tests; the engine's 689 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1065,13 +1137,14 @@ Built and run against `apache/airflow:3.1.0` with
 `apache-airflow-providers-common-ai==0.8.0` and
 `apache-airflow-providers-standard`. Checked on every push, and in-container:
 
-- all ten DAGs parse with **zero import errors**, in both offline and
+- all eleven DAGs parse with **zero import errors**, in both offline and
   LLM-backed configurations — [CI checks both](.github/workflows/ci.yml), and
   fails if it cannot (`PTM_REQUIRE_AIRFLOW`), because a DAG job that quietly
   skips its own tests is worse than no DAG job. The structure each DAG claims
   is asserted against the parsed `DagBag`, not against the source: the cache
   sits in front of both fan-outs that repeat work, the proposer is manual-only
-  and ends in the gate, and the stability fan-out carries no cache key;
+  and ends in the gate, the stability fan-out carries no cache key, and
+  retention counts before it deletes and compacts after;
 - the plugin registers (`airflow plugins` lists its FastAPI app and external
   view) and serves at `/ptm/`. Its routes are driven through `TestClient`, and
   the list of URLs to check is extracted from `dashboard.html` rather than
@@ -1093,13 +1166,26 @@ Built and run against `apache/airflow:3.1.0` with
 ## Caveats
 
 - Single-container Airflow on SQLite. Fine for a demo, not a topology.
+- **The DAG tests do not run on Windows, and say so rather than failing.**
+  Airflow supports POSIX and warns about it on import; `DagBag` bounds a DAG
+  file's import time by arming `signal.SIGALRM`, which Windows does not have, so
+  collection raises before a single DAG is built and every structural assertion
+  fails with `'replay_<domain>' not in {}` — seventeen failures that look like a
+  broken DAG module and are nothing of the kind. They now skip with that reason
+  attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
+  turns it back into a hard error, and CI runs on Linux where the alarm exists,
+  so a skip there means something has genuinely changed. The engine's 689 tests,
+  the lint, the style gate and the whole end-to-end loop need none of this and
+  run on a Windows checkout unchanged — which is what `make dev && make test` is
+  for, and why the Makefile picks the interpreter per platform.
 - `verdict_cache` and `judge_samples` grow without bound, and they grow
   *because* the loop works: the key is the prompt, so every clause edit strands
-  the generation of entries it invalidated. `make prune` drops what can no
-  longer be hit; precedents, their history and the aggregates behind the
-  dashboard are never touched. SQLite does not hand freed pages back to the
-  filesystem, so the file does not shrink until it is rewritten — `VACUUM`, or
-  just re-seed.
+  the generation of entries it invalidated. `ptm_retention` drops what can no
+  longer be hit, weekly and on its own; `make prune` counts what would go and
+  `make vacuum` does it now. Precedents, their history, the drafts table and the
+  aggregates behind the dashboard are never touched. SQLite does not hand freed
+  pages back to the filesystem, so the file does not shrink until it is
+  rewritten — which is what `--vacuum` and the DAG's third step are for.
 - Manual runs have no meaningful data interval, so they replay all of history
   capped by the `max_cases` param (default 250). When that cap bites they keep
   the **most recent** cases: slowly-changing facts have not changed yet at the

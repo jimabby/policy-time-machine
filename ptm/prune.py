@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import sys
 
-from . import store
+from . import cli, store
 from .config import available_domains
 
 
-def describe(result: dict, domain: str | None, days: int, dry_run: bool) -> str:
+def describe(result: dict, domain: str | None, days: int, dry_run: bool,
+             vacuum: bool = False) -> str:
     rows = {k: v for k, v in result.items() if k != "cutoff"}
     total = sum(rows.values())
     where = domain or "every domain"
@@ -41,20 +42,55 @@ def describe(result: dict, domain: str | None, days: int, dry_run: bool) -> str:
         lines.append(f"  {table:<16} {n:>10,}")
     if not total:
         lines.append("  nothing old enough to drop; this database is not carrying weight")
-    elif not dry_run:
+    elif not dry_run and not vacuum:
         # Said out loud because it is the one surprise here: SQLite does not
         # hand freed pages back to the filesystem, so a prune that worked shows
-        # no change in the file size until the database is rewritten.
+        # no change in the file size until the database is rewritten. It used to
+        # stop at saying so, which left the reader to go and do by hand the one
+        # thing this command already had everything it needed to do - hence
+        # --vacuum, and hence this line naming it rather than naming SQL.
         lines.append("  the file will not shrink until SQLite is asked to rewrite it: "
-                     "run VACUUM, or just re-seed.")
+                     "add --vacuum, or just re-seed.")
     return "\n".join(lines)
 
 
+USAGE = """usage:
+  python -m ptm.prune [domain] [--days N] [--dry-run] [--keep-unhit] [--vacuum]
+
+Drop the cache and sample rows that have stopped earning their disk. Precedents,
+their history, the drafts table and the aggregates the dashboard reads are never
+touched - age is not a reason to forget a human ruling.
+
+  domain         defaults to every domain
+  --days N       how old a row must be to go. Default 90
+  --dry-run      count what would go, using the same clauses that delete it
+  --keep-unhit   keep cache entries nothing has ever served - the right setting
+                 straight after a big replay nothing has re-run yet
+  --vacuum       rewrite the database afterwards so the file actually shrinks.
+                 SQLite keeps freed pages for itself otherwise"""
+
+
+def describe_vacuum(result: dict) -> str:
+    """What rewriting the database actually gave back."""
+    reclaimed = result["bytes_reclaimed"]
+    line = (f"vacuumed: {result['bytes_before']:,} -> {result['bytes_after']:,} bytes "
+            f"({reclaimed:,} reclaimed)")
+    if not reclaimed:
+        # Not a failure, and it would read as one. A database with nothing to
+        # give back is the state this command is trying to reach.
+        line += " - nothing to give back, this database was already compact"
+    return line
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python -m ptm.prune [domain] [--days N] [--dry-run] [--keep-unhit]``."""
+    """``python -m ptm.prune [domain] [--days N] [--dry-run] [--keep-unhit] [--vacuum]``."""
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     dry_run = "--dry-run" in args
     keep_unhit = "--keep-unhit" in args
+    vacuum = "--vacuum" in args
     days = 90
     if "--days" in args:
         index = args.index("--days")
@@ -80,7 +116,15 @@ def main(argv: list[str] | None = None) -> int:
         result = store.prune_preview(domain, days, keep_unhit)
     else:
         result = store.prune(domain, days, keep_unhit)
-    print(describe(result, domain, days, dry_run))
+    print(describe(result, domain, days, dry_run, vacuum))
+    # A dry run reports and changes nothing, and rewriting the file is a change.
+    # Vacuuming under --dry-run would be the one thing that command promises not
+    # to do, however harmless the rewrite itself is.
+    if vacuum and not dry_run:
+        print(describe_vacuum(store.vacuum()))
+    elif vacuum:
+        print("  --vacuum skipped: --dry-run changes nothing, and rewriting the "
+              "database is a change")
     return 0
 
 

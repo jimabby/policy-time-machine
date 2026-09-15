@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 
 from . import calibration as calibration_engine
-from . import cost, diff, stats, store
+from . import cli, cost, diff, stats, store
 from . import crosscheck as crosscheck_engine
 from . import disparity as disparity_engine
 from . import preflight as preflight_engine
@@ -874,6 +874,9 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.
     """
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     if "--list" in args:
         for name in available_domains():
             config = load_domain(name)

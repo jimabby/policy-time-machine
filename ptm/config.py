@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 INCLUDE_DIR = Path(os.environ.get("PTM_INCLUDE_DIR", "/opt/airflow/include"))
 DB_PATH = Path(os.environ.get("PTM_DB", str(INCLUDE_DIR / "ptm.db")))
@@ -89,6 +89,34 @@ class DisparityPolicy(BaseModel):
     #: concentration is both large and statistically supported - for a domain
     #: where shipping the rule first and explaining afterwards is not an option.
     gate: str = "warn"
+
+    @field_validator("max_ratio")
+    @classmethod
+    def _ratio_must_exceed_one(cls, value: float) -> float:
+        """A ratio below 1 inverts the two findings into each other.
+
+        :mod:`ptm.disparity` reads this number twice: a segment moving more than
+        ``max_ratio`` times the rest of its field is ``concentrated``, and one
+        moving less than ``1 / max_ratio`` is ``passed_over``. Those are opposite
+        findings and the arithmetic only keeps them apart while the multiplier is
+        above one. At 0.5 the floor becomes 2.0, the two tests overlap, and a
+        segment moving at exactly the same rate as the rest of its field
+        satisfies both - so it is reported as a concentration, gated on, and
+        capable of failing a replay for being perfectly average.
+
+        Rejected at load rather than clamped. Somebody who wrote 0.5 meant
+        something by it, and the value they meant is almost certainly 2.0 with
+        the comparison the other way round; silently substituting a number they
+        did not ask for is how a gate ends up measuring something nobody chose.
+        """
+        if value <= 1.0:
+            raise ValueError(
+                f"disparity.max_ratio must be greater than 1, got {value}. It is how many "
+                f"times the rest of its field a segment may move before it is a finding, "
+                f"and the same number read as 1/{value} is what makes a segment the change "
+                f"passes over. At or below 1 those two tests overlap and a segment moving "
+                f"exactly like the rest of its field is reported as a concentration.")
+        return value
 
 
 class RulesPolicy(BaseModel):

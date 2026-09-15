@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import sys
 
-from . import stats
+from . import cli, stats
 from .config import DomainConfig, clauses_in, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
 from .lint import payload_fields
@@ -287,9 +287,26 @@ def describe(result: dict) -> str:
     return "\n".join(lines)
 
 
+USAGE = """usage:
+  python -m ptm.rules [domain] [version]
+
+Do the offline rules agree with the judge they stand in for? Every threshold
+curve is computed from these rules, so this is the number the sweep rests on.
+
+  domain    defaults to 'expenses'
+  version   defaults to 'v2'
+
+Exits non-zero when the domain's rules.gate is 'fail' and agreement is below
+its floor. Inert with PTM_OFFLINE=1, where the verdicts being scored against
+were produced by these same rules - it says so and does not gate."""
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m ptm.rules [domain] [version]`` - score the shipped rules."""
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     domain_name = args[0] if args else "expenses"
     version = args[1] if len(args) > 1 else "v2"
 

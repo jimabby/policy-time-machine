@@ -79,6 +79,12 @@ def dashboard_api_urls() -> list[str]:
     All three quote styles, not only backticks. A URL with nothing to
     interpolate is written as a plain string, so a backtick-only scan silently
     skipped those - /api/domains among them, the one call every render makes.
+
+    ``${seg(domain)}`` is unwrapped as well as bare ``${domain}``. The page
+    escapes each path segment it interpolates, and a scan that only understood
+    the bare form quietly stopped recognising every URL on the page the moment
+    it did - which reads here as "the dashboard asks for nothing", the one
+    result this extractor must never produce silently.
     """
     html = DASHBOARD.read_text(encoding="utf-8")
     urls = set()
@@ -87,7 +93,7 @@ def dashboard_api_urls() -> list[str]:
         if "?" in url:  # the sweep builds its query string separately
             url = url.split("?", 1)[0]
         if "${" in url:
-            url = re.sub(r"\$\{(\w+)\}",
+            url = re.sub(r"\$\{(?:seg\()?(\w+)\)?\}",
                          lambda m: CONCRETE.get(m.group(1), m.group(1)), url)
         if "${" in url or "$" in url:
             continue  # anything still interpolated is not a fixed endpoint

@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -13,6 +13,11 @@ PY        ?= .venv/bin/python
 BOOTSTRAP ?= python3
 endif
 ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
+# Which domain the draft-lifecycle targets act on. Every other target names
+# `expenses` inline because it is demonstrating one thing; adopt and discard
+# take a version the caller has to look up first, so the domain has to be
+# overridable in the same breath: make adopt D=refunds V=v2-draft1 BY="..."
+D ?= expenses
 
 help:      ## List targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
@@ -104,7 +109,24 @@ export:    ## Everything the Explorer shows, as one file, without starting Airfl
 prune:     ## Drop cache and sample rows that have stopped earning their disk
 	$(ENV) $(PY) -m ptm.prune --dry-run
 	@echo
-	@echo "drop the --dry-run to actually remove them"
+	@echo "drop the --dry-run to actually remove them, or 'make vacuum' to do both"
+
+vacuum:    ## Prune for real, then rewrite the file so it actually shrinks
+	$(ENV) $(PY) -m ptm.prune --vacuum
+
+retain:    ## The same retention pass, on Airflow's schedule instead of yours
+	docker compose exec airflow airflow dags trigger ptm_retention
+	@echo "runs weekly on its own; this triggers it now. Add"
+	@echo "  --conf '{\"dry_run\":true}'  to count without removing."
+
+adopt:     ## Promote a draft into include/policies/ and register it. make adopt V=v2-draft1 BY="your name"
+	@test -n "$(V)" || (echo "ERROR set V=<draft version>; 'make drafts' lists them" && exit 2)
+	@test -n "$(BY)" || (echo "ERROR set BY=\"your name\" - adopting a policy records who did" && exit 2)
+	$(ENV) $(PY) -m ptm.proposal $(D) --adopt $(V) --by "$(BY)" $(if $(AS),--as $(AS),)
+
+discard:   ## Delete a draft's files, keeping what it proposed and why. make discard V=v2-draft1
+	@test -n "$(V)" || (echo "ERROR set V=<draft version>; 'make drafts' lists them" && exit 2)
+	$(ENV) $(PY) -m ptm.proposal $(D) --discard $(V)
 
 crosscheck: ## Ask a second model the same questions (needs PTM_OFFLINE=0)
 	docker compose exec airflow airflow dags trigger judge_stability_expenses \

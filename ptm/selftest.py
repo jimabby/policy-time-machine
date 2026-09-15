@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 
-from . import cache, calibration, cost, diff, disparity, preflight, proposal, stability, store
+from . import cache, calibration, cli, cost, diff, disparity, preflight, proposal, stability, store
 from . import rules as rules_engine
 from .config import JUDGE_MODEL, load_domain
 from .judge import build_prompt, offline_verdict
@@ -387,5 +387,49 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
               f"DAG then treats as an ordinary policy version.")
 
 
+USAGE = """usage:
+  python -m ptm.selftest [domain] [version]
+
+Run the entire loop - seed, preflight, replay, attribute, adjudicate, gate,
+propose - with no Airflow, no API key and no network. The same code the DAGs
+call, driven by a plain loop instead of the scheduler.
+
+  domain    defaults to 'expenses'
+  version   defaults to 'v2'
+
+Note that it re-seeds the domain it runs, so it replaces that domain's cases."""
+
+
+def cli_main(argv: list[str] | None = None) -> int:
+    """``python -m ptm.selftest [domain] [version]``.
+
+    A wrapper rather than a signature change on :func:`main`, which is called
+    positionally by the tests and reads better as ``main("refunds", "v2")``.
+    What this adds is the argument handling every sibling entry point has: an
+    unknown domain reached :func:`ptm.seed.seed_domain` and came back as an
+    uncaught ``KeyError`` - a traceback out of the one command whose entire job
+    is to demonstrate that the project runs cleanly. ``--help`` got the same
+    treatment, having been read as the name of a domain to seed.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
+    unknown = [a for a in args if a.startswith("-")]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        main(*args[:2])
+    except (KeyError, LookupError, FileNotFoundError) as exc:
+        # The three ways a bad domain or version gets this far. Printed the way
+        # every other entry point prints a refusal, because a stack trace tells
+        # a reader that the project is broken rather than that they mistyped.
+        print(f"ERROR {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    raise SystemExit(cli_main())

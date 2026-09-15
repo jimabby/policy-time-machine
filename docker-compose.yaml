@@ -18,6 +18,23 @@ services:
       # model actually called comes from the connection below.
       PTM_JUDGE_MODEL: "${PTM_JUDGE_MODEL:-anthropic:claude-sonnet-5}"
       PTM_PRICE: "${PTM_PRICE:-}"
+      # The verdict cache, on by default. 0 stops reads without stopping writes;
+      # the epoch is mixed into every key, so bumping it stops every earlier
+      # answer being served while leaving the entries on disk. Both are levers a
+      # reader is told about in .env.example and in the README - and neither
+      # reached the container until they were named here. Compose reads .env for
+      # ${...} interpolation but only passes what this block declares, so setting
+      # either one and running `make up` did exactly nothing, silently, which is
+      # the worst way for a documented switch to be off.
+      PTM_CACHE: "${PTM_CACHE:-1}"
+      PTM_CACHE_EPOCH: "${PTM_CACHE_EPOCH:-}"
+      # Opens the Diff Explorer to anyone who can reach the port. Default empty,
+      # which is the same as off: the plugin authenticates every route against
+      # Airflow's own token and logging into the UI is all a reader needs. Listed
+      # for the same reason as the two above - a documented escape hatch that
+      # cannot be reached is worse than one that does not exist, because somebody
+      # sets it, sees the login, and concludes the auth cannot be turned off.
+      PTM_ALLOW_ANONYMOUS: "${PTM_ALLOW_ANONYMOUS:-}"
       # Only read when PTM_OFFLINE=0.
       AIRFLOW_CONN_PYDANTICAI_DEFAULT: "${AIRFLOW_CONN_PYDANTICAI_DEFAULT:-}"
       _AIRFLOW_WWW_USER_USERNAME: admin

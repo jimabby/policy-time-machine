@@ -38,7 +38,7 @@ from datetime import datetime
 
 import yaml
 
-from . import config, diff, store
+from . import cli, config, diff, store
 from . import sweep as sweep_engine
 from .config import DRAFTS_DIR, DomainConfig, load_domain
 from .judge import offline_verdict
@@ -882,6 +882,9 @@ def main(argv: list[str] | None = None) -> int:
     drafts folder fills up with amendments nobody will decide about.
     """
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     write = "--write" in args
     listing = "--list" in args
     discarding = _flag(args, "--discard")

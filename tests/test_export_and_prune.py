@@ -176,12 +176,30 @@ class TestThePruneCli:
 
     def test_it_says_the_file_will_not_shrink_on_its_own(self, fresh_db, capsys):
         """SQLite does not hand freed pages back, so a prune that worked shows
-        no change in the file size - the one surprise worth saying out loud."""
+        no change in the file size - the one surprise worth saying out loud.
+
+        It names the flag that fixes it rather than the SQL. Saying "run VACUUM"
+        left the reader to go and do by hand, in another tool, against a path
+        this command already knew, the one thing it had everything it needed to
+        do - which is how the advice got read as a limitation.
+        """
         store.cache_put([entry("stale")])
         with store.conn() as c:
             c.execute("UPDATE verdict_cache SET created_at=?", (utc_days_ago(200),))
         prune_cli.main([])
-        assert "VACUUM" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "will not shrink" in out
+        assert "--vacuum" in out
+
+    def test_the_advice_is_dropped_when_the_flag_already_did_it(self, fresh_db, capsys):
+        """Telling somebody to add a flag they just used is noise."""
+        store.cache_put([entry("stale")])
+        with store.conn() as c:
+            c.execute("UPDATE verdict_cache SET created_at=?", (utc_days_ago(200),))
+        prune_cli.main(["--vacuum"])
+        out = capsys.readouterr().out
+        assert "will not shrink" not in out
+        assert "vacuumed" in out
 
 
 class TestTimestamps:

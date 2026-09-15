@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import signal
 
 import pytest
 
@@ -37,6 +38,50 @@ if not has_airflow and os.environ.get("PTM_REQUIRE_AIRFLOW") == "1":  # pragma: 
 
 needs_airflow = pytest.mark.skipif(
     not has_airflow, reason=f"Airflow could not be imported ({airflow_import_error})")
+
+#: Why DagBag cannot be used here, if it cannot. Separate from importing Airflow
+#: at all, because the two fail for unrelated reasons and only one of them is
+#: about this project.
+#:
+#: ``DagBag`` bounds how long a DAG file may take to import by arming an alarm -
+#: ``signal.SIGALRM`` and ``signal.setitimer``, neither of which exists on
+#: Windows. The collection then raises before a single DAG is built and
+#: ``bag.dags`` comes back empty, so every assertion below fails with
+#: ``'replay_<domain>' not in {}``: seventeen failures that look like the DAG
+#: module is broken and are nothing of the kind. Airflow says plainly that it
+#: runs on POSIX and warns about it on import; the Makefile still supports a
+#: Windows checkout for the *engine*, which needs none of this.
+#:
+#: So it is named rather than endured. The refusal below is what stops the skip
+#: becoming the other failure this file exists to prevent - CI sets
+#: PTM_REQUIRE_AIRFLOW and runs on Linux, where SIGALRM exists, so a skip there
+#: would mean something has genuinely changed and it is turned back into an error.
+dagbag_error: str | None = None
+if has_airflow and not hasattr(signal, "SIGALRM"):  # pragma: no cover - platform
+    dagbag_error = (
+        "Airflow's DagBag arms a SIGALRM import timeout, and this platform has no "
+        "SIGALRM. Airflow supports POSIX only; run the DAG tests in the container "
+        "(make up) or under WSL2. The engine tests need none of this.")
+
+can_parse = has_airflow and dagbag_error is None
+
+if has_airflow and dagbag_error and os.environ.get("PTM_REQUIRE_AIRFLOW") == "1":  # pragma: no cover
+    raise RuntimeError(
+        "PTM_REQUIRE_AIRFLOW=1 but the DAG-parse tests cannot run here, so they would "
+        f"have silently skipped: {dagbag_error}")
+
+#: Always a string, never None. ``skipif`` with a boolean condition rejects a
+#: reason of None outright - "you need to specify reason=STRING when using
+#: booleans as conditions" - and it does so at *fixture setup*, as an error
+#: rather than a failure. On the platform where everything works, which is the
+#: one CI runs on, that would have turned twenty-two passing tests into twenty-two
+#: errors. The reason is what pytest prints for a skip, so it is only ever read
+#: when one happens; that is exactly why the unread branch has to be safe.
+DAGBAG_SKIP_REASON = (
+    f"Airflow could not be imported ({airflow_import_error})" if not has_airflow
+    else dagbag_error or "DagBag is usable on this platform")
+
+needs_dagbag = pytest.mark.skipif(not can_parse, reason=DAGBAG_SKIP_REASON)
 
 
 class TestStatic:
@@ -170,7 +215,24 @@ class TestStatic:
             "the cap has to be conditional on the run being a manual one"
 
 
-@needs_airflow
+    def test_retention_is_one_dag_for_the_whole_database(self):
+        """Not generated per domain, unlike every other DAG here.
+
+        The tables it prunes are shared by every domain, the cutoff is a
+        property of the database rather than of any rulebook, and the file it
+        rewrites is one file. Five copies would take five locks on one SQLite
+        database to do the same work once - so this is the one DAG built outside
+        the per-domain loop, and a future refactor that folds it back into
+        build() should have to notice.
+        """
+        source = DAG_FILE.read_text(encoding="utf-8")
+        assert "def build_retention()" in source
+        build_body = source[source.index("def build(domain_name"):
+                            source.index("def build_retention()")]
+        assert "ptm_retention" not in build_body,             "retention belongs outside the per-domain loop"
+
+
+@needs_dagbag
 class TestParses:
     @pytest.fixture(scope="class")
     def dagbag(self):
@@ -187,6 +249,48 @@ class TestParses:
             for prefix in ("replay", "adjudicate", "precedent_gate", "judge_stability",
                            "propose"):
                 assert f"{prefix}_{name}" in dagbag.dags
+
+
+    def test_retention_runs_on_a_schedule_rather_than_by_hand(self, dagbag):
+        """The chore that was left outside Airflow.
+
+        verdict_cache and judge_samples grow *because* the loop works - the key
+        is the prompt, so every clause edit strands the generation of entries it
+        invalidated - and the only lever was a command somebody had to remember
+        to run. In a project arguing that Airflow is the engine rather than the
+        wrapper, that was the odd one out.
+        """
+        dag = dagbag.dags["ptm_retention"]
+        assert dag.schedule == "@weekly"
+        assert {"days", "domain", "keep_unhit", "dry_run", "vacuum"} <= set(dag.params)
+
+    def test_retention_counts_before_it_deletes_and_compacts_after(self, dagbag):
+        """Three steps in order, and the order is the point.
+
+        The count comes from the same WHERE clauses the delete runs, so the log
+        says what is about to go before it goes. The compaction is last and
+        separate because VACUUM rewrites the whole file - the one step whose
+        cost is proportional to the database rather than to what was dropped.
+        """
+        dag = dagbag.dags["ptm_retention"]
+        assert {t.task_id for t in dag.tasks} == {"plan", "sweep_up", "compact"}
+        assert [t.task_id for t in dag.get_task("plan").downstream_list] == ["sweep_up"]
+        assert [t.task_id for t in dag.get_task("sweep_up").downstream_list] == ["compact"]
+
+    def test_retention_defaults_to_doing_the_work_but_can_only_count(self, dagbag):
+        """Scheduled runs should actually prune; a curious click should be able
+        to ask what would happen without it happening."""
+        dag = dagbag.dags["ptm_retention"]
+        assert dag.params["dry_run"] is False
+        assert dag.params["vacuum"] is True
+        assert dag.params["days"] == 90
+
+    def test_retention_does_not_multiply_by_domain(self, dagbag, seeded):
+        from ptm.config import available_domains
+
+        for name in available_domains():
+            assert f"ptm_retention_{name}" not in dagbag.dags
+        assert "ptm_retention" in dagbag.dags
 
     def test_replay_is_schedulable_and_backfillable(self, dagbag):
         dag = dagbag.dags["replay_expenses"]

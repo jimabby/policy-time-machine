@@ -1061,6 +1061,36 @@ def prune_preview(domain: str | None = None, days: int = 90,
     return {"cutoff": cutoff, **counted}
 
 
+def vacuum() -> dict:
+    """Rewrite the database so freed pages go back to the filesystem.
+
+    :func:`prune` deletes rows and the file does not get smaller. That is SQLite
+    working as designed - freed pages are kept on a free list and reused - but it
+    is also the one genuinely surprising thing about running a prune, and until
+    now the only advice was a line of output telling the reader to go and run
+    VACUUM themselves, in a shell, against a path the tool already knew.
+
+    Reported as before and after bytes rather than as a bare success, because
+    the useful answer is *how much came back*: a prune that removed a thousand
+    stranded cache entries and recovered nothing is a database that was already
+    compact, which is worth knowing before scheduling another one.
+
+    VACUUM cannot run inside a transaction, so this deliberately does not use
+    :func:`conn` - that context manager commits on the way out, and Python's
+    sqlite3 opens one implicitly for the statements it thinks are writes.
+    ``isolation_level=None`` is autocommit, which is the mode VACUUM needs.
+    """
+    before = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    c = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    try:
+        c.execute("VACUUM")
+    finally:
+        c.close()
+    after = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+    return {"bytes_before": before, "bytes_after": after,
+            "bytes_reclaimed": max(before - after, 0)}
+
+
 def cache_clear(domain: str | None = None) -> int:
     with conn() as c:
         if domain:

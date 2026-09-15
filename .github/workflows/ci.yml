@@ -64,6 +64,21 @@ jobs:
           PTM_DB: ./include/ptm.db
           PTM_OFFLINE: "1"
 
+      # Every entry point answers --help, and answers it without doing any
+      # work. It is a small thing to check and it was not true: eight of the
+      # nine read --help as the name of a domain, and ptm.selftest got as far
+      # as trying to seed one and exited on a traceback. Exit status is the
+      # assertion - `set -e` fails this step if any of them returns non-zero.
+      - name: Every entry point answers --help
+        run: |
+          for m in preflight calibration rules lint prune sweep report proposal selftest; do
+            python -m ptm.$m --help > /dev/null
+          done
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
       # The checks that need no model and no key, run against the shipped
       # fixture so a change that breaks one of them fails here rather than in
       # front of an audience. The proposal step deliberately omits --write:
@@ -98,6 +113,13 @@ jobs:
           python -c "import json; b=json.load(open('/tmp/bundle.json'));             assert b['summary']['flips'], 'bundle carries no flips';             assert b['caveats'], 'bundle lost its caveats';             print(len(b), 'sections,', len(b['flips']), 'flips')"
           python -m ptm.report expenses v2 --csv -o /tmp/flips.csv
           python -m ptm.prune --dry-run
+          # And the deleting path, with the compaction on the end of it. A dry
+          # run only proves the counting query works; this is the one that
+          # proves the statements it counted with can actually execute, and
+          # that VACUUM runs outside a transaction - which it has to, and which
+          # nothing else here would notice. --days 99999 removes nothing, so
+          # the fixture the later steps read is untouched.
+          python -m ptm.prune --days 99999 --vacuum
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

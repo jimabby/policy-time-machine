@@ -31,6 +31,7 @@ import re
 import sys
 from collections import Counter
 
+from . import cli
 from .config import DomainConfig, load_domain
 from .models import PolicyFinding
 
@@ -232,9 +233,26 @@ def check(domain_name: str, version: str) -> list[PolicyFinding]:
     return structural(load_domain(domain_name), version)
 
 
+USAGE = """usage:
+  python -m ptm.preflight [domain] [version]
+
+Read a policy for problems before paying to replay it. Structural only: clause
+numbering, cross-references, outcomes the policy never mentions. No model, no
+network, milliseconds.
+
+  domain    defaults to 'expenses'
+  version   defaults to every version the domain declares
+
+Exits non-zero when a finding is blocking - a replay would run and its results
+would not be attributable to any sentence."""
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m ptm.preflight [domain] [version]``; non-zero on a blocking finding."""
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     domain_name = args[0] if args else "expenses"
 
     try:

@@ -30,7 +30,7 @@ from __future__ import annotations
 import sys
 from collections import Counter
 
-from . import stats
+from . import cli, stats
 from .config import DomainConfig, load_domain
 from .models import CalibrationBucket, CalibrationReport, Precedent, Verdict
 
@@ -232,9 +232,27 @@ def gate(report: CalibrationReport, domain: DomainConfig) -> list[str]:
     return problems
 
 
+USAGE = """usage:
+  python -m ptm.calibration [domain] [version]
+
+Score the judge against the humans who ruled on the same cases, and gate on it.
+The only measurement here that scores the judge against an answer rather than
+against itself.
+
+  domain    defaults to 'expenses'
+  version   defaults to 'v2'
+
+Exits non-zero when the domain's calibration.gate is 'fail' and a threshold is
+breached. Inert with PTM_OFFLINE=1, where the verdicts came from the offline
+rules rather than from a judge - it says so and does not gate."""
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m ptm.calibration [domain] [version]``; non-zero on a failing gate."""
     args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     domain_name = args[0] if args else "expenses"
     version = args[1] if len(args) > 1 else "v2"
 
