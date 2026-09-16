@@ -1114,14 +1114,22 @@ make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
 make discard V=v2-draft1                # or throw it away
 ```
 
-**On Windows, `make` is not there.** A default box has Python, Git and Docker and
-no `make` at all, which makes the task runner the one thing in this project a
-Windows reader cannot start it with. `demo.ps1` is the same tour in the shell
-that *is* there:
+**On Windows, `make` is not there.** A default box has Python, git and Docker and
+no `make` at all, which made the task runner the one thing in this project a
+Windows reader could not start it with. `demo.py` is the same tour, and it runs
+wherever the engine does:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\demo.ps1
+```bash
+python demo.py        # Windows
+python3 demo.py       # macOS, Linux
+make tour             # wherever make exists
 ```
+
+One file rather than a `.sh` and a `.ps1`, for the reason the rest of this
+codebase keeps making: two definitions of one thing drift, and the half that
+drifts is the half nobody runs. Python is the one interpreter this project
+already requires everywhere, and the only genuinely per-platform thing in it is
+which subdirectory a virtualenv keeps its interpreter in.
 
 Sixteen steps in about nine seconds, ordered the way the argument above builds
 rather than alphabetically, each printing the question it answers before the
@@ -1129,13 +1137,16 @@ output. It finds the virtualenv itself and sets the three environment variables,
 which is the other thing that goes wrong first: without `PTM_INCLUDE_DIR` the
 engine resolves `/opt/airflow/include`, a path that exists only inside the
 container, and says `no domain config 'expenses'` with an empty list of
-available ones. `-Setup` builds the virtualenv on a machine with none, `-Step`
-pauses between sections, `-Quick` drops the two slow ones.
+available ones — which reads as a broken checkout rather than as an unset
+variable. `--setup` builds the virtualenv on a machine with none, `--step`
+pauses between sections, `--quick` drops the two slow ones, `--list` prints the
+plan without running it.
 
 It also knows which steps are *supposed* to exit non-zero. `ptm.gate expenses v2`
 fails on the shipped fixture and that is the correct answer — v1 reverses the
-same two rulings, so the proposal introduces neither — and a script that treated
-that as a broken install would be teaching the wrong lesson on the first run.
+same two rulings, so the proposal introduces neither, and the step after it
+proves that with `--introduced-only`. A runner that called that a failure would
+teach the wrong lesson on the first run anybody does.
 
 Every one of those is a `python -m ptm.*` entry point underneath, and every one
 of them answers `--help`. That is worth a sentence only because it did not: the
@@ -1305,7 +1316,7 @@ ptm/prune.py                    drops the rows that stopped earning their disk
 ptm/cli.py                      one definition of --help, for every entry point
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
-demo.ps1                        the Makefile's tour, for a box with no make
+demo.py                         the Makefile's tour, for a box with no make
 ruff.toml                       the style gate, and why each rule is on
 tests/                          995 tests; the engine's 849 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project

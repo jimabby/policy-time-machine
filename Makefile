@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -54,6 +54,9 @@ confirm:   ## Re-judge the biggest flips to check each one reproduces
 
 draft:     ## Have the proposal DAG write the next version of the policy
 	docker compose exec airflow airflow dags trigger propose_expenses
+
+tour:      ## The whole engine end to end, one command, no Airflow. Also: python demo.py
+	$(BOOTSTRAP) demo.py
 
 dev:       ## Create the local venv used by test/lint/unit
 	$(BOOTSTRAP) -m venv .venv && $(PY) -m pip install -q -r requirements-dev.txt
