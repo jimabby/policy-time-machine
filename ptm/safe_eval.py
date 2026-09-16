@@ -166,6 +166,178 @@ def check_expression(expression: str, known: set[str] | frozenset[str] | None = 
     return []
 
 
+# ------------------------------------------------- does one rule shadow another
+# ``offline_rules`` are tried in order and the first match decides the case, so a
+# rule whose condition is implied by an earlier one can never fire. It parses, it
+# cites a real clause, it reads only real fields - every check in this project
+# passes it - and it contributes nothing except an outcome that is never produced
+# and a clause that is never cited. That is the same silent wrongness a rule
+# reading a misspelled field has, from a source that is now far more prolific:
+# ``propose_<domain>`` has a model write these.
+#
+# The test is deliberately one-directional and sound rather than complete. It
+# reports a shadow only where it can *prove* one, so it never cries wolf on a
+# rule set somebody has thought about; it will happily miss a rule made
+# unreachable by two earlier rules between them, which is a harder question than
+# this needs to answer.
+
+
+def _conjuncts(expression: str) -> list[ast.AST]:
+    """The top-level ``and`` terms of an expression, flattened."""
+    out: list[ast.AST] = []
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            for value in node.values:
+                walk(value)
+        else:
+            out.append(node)
+
+    walk(parse(expression).body)
+    return out
+
+
+#: A comparison read from the other side reads as its mirror: ``75 < amount`` is
+#: ``amount > 75``, and a check that did not know that would miss half the rules
+#: anybody writes.
+_MIRROR = {"Lt": "Gt", "Gt": "Lt", "LtE": "GtE", "GtE": "LtE", "Eq": "Eq", "NotEq": "NotEq"}
+
+
+def _term(node: ast.AST) -> tuple | None:
+    """``(field, op, value)`` for a one-sided comparison against a literal, else None."""
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+        return None
+    op = type(node.ops[0]).__name__
+    left, right = node.left, node.comparators[0]
+    if isinstance(left, ast.Name) and isinstance(right, ast.Constant):
+        return (left.id, op, right.value)
+    if isinstance(right, ast.Name) and isinstance(left, ast.Constant) and op in _MIRROR:
+        return (right.id, _MIRROR[op], left.value)
+    return None
+
+
+def _interval(op: str, value: Any) -> tuple | None:
+    """A numeric comparison as ``(lo, lo_closed, hi, hi_closed)``, else None.
+
+    Only numbers. ``category == 'travel'`` is a point on an unordered set and
+    implication between two of those is equality, which the exact-match path
+    above already covers.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    inf = float("inf")
+    return {
+        "Gt": (value, False, inf, False),
+        "GtE": (value, True, inf, False),
+        "Lt": (-inf, False, value, False),
+        "LtE": (-inf, False, value, True),
+        "Eq": (value, True, value, True),
+    }.get(op)
+
+
+def _within(inner: tuple, outer: tuple) -> bool:
+    """Whether every value satisfying ``inner`` also satisfies ``outer``."""
+    i_lo, i_lo_closed, i_hi, i_hi_closed = inner
+    o_lo, o_lo_closed, o_hi, o_hi_closed = outer
+    low_ok = i_lo > o_lo or (i_lo == o_lo and (o_lo_closed or not i_lo_closed))
+    high_ok = i_hi < o_hi or (i_hi == o_hi and (o_hi_closed or not i_hi_closed))
+    return low_ok and high_ok
+
+
+def implies(narrow: str, wide: str) -> bool:
+    """Whether every case matching ``narrow`` also matches ``wide``.
+
+    Proved term by term: ``wide`` holds whenever each of its ``and`` terms is
+    guaranteed by one of ``narrow``'s. A term ``narrow`` does not state at all
+    cannot be guaranteed, so ``amount > 100`` implies ``amount > 75`` and
+    neither implies ``amount > 75 and receipt == 'no'``.
+
+    Unparsable input is not an implication. It is reported elsewhere, by
+    :func:`check_expression`, and guessing here would turn a syntax error into a
+    claim about reachability.
+    """
+    try:
+        narrow_terms = _conjuncts(narrow)
+        wide_terms = _conjuncts(wide)
+    except RuleError:
+        return False
+    narrow_text = {ast.unparse(t) for t in narrow_terms}
+    narrow_parsed = [_term(t) for t in narrow_terms]
+    for term in wide_terms:
+        if ast.unparse(term) in narrow_text:
+            continue
+        wanted = _term(term)
+        if wanted is None:
+            return False
+        outer = _interval(wanted[1], wanted[2])
+        if outer is None:
+            return False
+        if not any(have is not None and have[0] == wanted[0]
+                   and (inner := _interval(have[1], have[2])) is not None
+                   and _within(inner, outer)
+                   for have in narrow_parsed):
+            return False
+    return True
+
+
+def shadowed(rules: list[dict]) -> list[dict]:
+    """Rules an earlier rule in the list makes unreachable.
+
+    ``rules`` are ``offline_rules`` entries. Each finding names the dead rule,
+    the rule that eats it, and whether the two would have given the same answer
+    - which is the difference between a duplicate somebody can delete and a
+    replay that is quietly producing the wrong outcome for every case the dead
+    rule was written to catch.
+    """
+    found: list[dict] = []
+    for index, rule in enumerate(rules):
+        condition = (rule.get("when") or "").strip()
+        if not condition:
+            continue
+        for earlier_index, earlier in enumerate(rules[:index]):
+            before = (earlier.get("when") or "").strip()
+            if not before or not implies(condition, before):
+                continue
+            same = (rule.get("outcome") == earlier.get("outcome")
+                    and str(rule.get("clause", "")) == str(earlier.get("clause", "")))
+            found.append({
+                "rule_index": index,
+                "clause": str(rule.get("clause", "")),
+                "outcome": rule.get("outcome", ""),
+                "expression": condition,
+                "shadowed_by": earlier_index,
+                "shadowed_by_clause": str(earlier.get("clause", "")),
+                "shadowed_by_outcome": earlier.get("outcome", ""),
+                "shadowed_by_expression": before,
+                # Same answer from the same clause is dead weight. A different
+                # answer, or the same answer credited to a different sentence, is
+                # a replay reporting something that is not true.
+                "harmless": same,
+            })
+            break  # one proof is enough; the rule is dead either way
+    return found
+
+
+def describe_shadowed(found: list[dict], where: str = "") -> str:
+    """Shadowed rules as the lint and the proposal DAG report them."""
+    if not found:
+        return f"no rule in {where or 'this set'} is unreachable"
+    lines = [f"{len(found)} rule(s) in {where or 'this set'} can never fire - an earlier "
+             f"rule matches every case they would:"]
+    for row in found:
+        lines.append(
+            f"  rule[{row['rule_index']}] (clause {row['clause'] or '-'} -> "
+            f"{row['outcome']}) is shadowed by rule[{row['shadowed_by']}] "
+            f"(clause {row['shadowed_by_clause'] or '-'} -> {row['shadowed_by_outcome']}): "
+            f"{row['expression']!r} implies {row['shadowed_by_expression']!r}")
+        if not row["harmless"]:
+            lines.append(f"      every case rule[{row['rule_index']}] was written for is "
+                         f"decided {row['shadowed_by_outcome']!r} by clause "
+                         f"{row['shadowed_by_clause'] or '-'} instead. Move it earlier in "
+                         f"the list, or narrow the rule above it.")
+    return "\n".join(lines)
+
+
 def evaluate(expression: str, scope: dict[str, Any]) -> Any:
     """Compute an expression against ``scope``. Never runs arbitrary Python."""
     return _eval(parse(expression).body, scope)
@@ -385,7 +557,21 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             _fail("calls something other than a named helper")
         if node.keywords:
             _fail("passes keyword arguments to a helper, which is not supported")
-        result = SAFE_BUILTINS[node.func.id](*[_eval(a, scope) for a in node.args])
+        arguments = [_eval(a, scope) for a in node.args]
+        try:
+            result = SAFE_BUILTINS[node.func.id](*arguments)
+        except RuleError:
+            raise
+        except Exception as exc:
+            # A helper refusing its own argument is still this evaluator
+            # refusing the expression, and callers are promised RuleError.
+            # ``int('1' * 100000)`` is the live example: CPython caps
+            # integer-string conversion, so the helper raises ValueError from
+            # inside a language this module claims to have bounded. Letting it
+            # through means offline_verdict swallows it as "does not match"
+            # while ptm.rules.validate and ptm.lint - which only ever ask
+            # statically - report the rule as sound.
+            _fail(f"calls {node.func.id}() with an argument it refuses: {exc}")
         # str() of a large integer is the one helper that can grow its argument
         # rather than shrink it, so the same ceiling applies on the way out.
         _guard(_size_of(result), "a value", "units")

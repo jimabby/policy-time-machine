@@ -95,6 +95,10 @@ button:hover{border-color:var(--accent)}
   </details>
 
   <div class=tiles id=tiles></div>
+  <!-- What this much history could have detected, next to the numbers somebody
+       is about to compare. Every other band on this page is retrospective; this
+       is the one that says whether the comparison was ever measurable. -->
+  <p class=note id=power></p>
 
   <h2 data-t="h.preflight">Before you spend anything <span class=note data-t="h.preflight.note">problems readable in the policy text itself</span></h2>
   <div id=preflight></div>
@@ -230,6 +234,11 @@ en: {
   "tile.replayed": "Decisions replayed",
   "tile.flips": "Outcomes that change",
   "tile.flips.sub": "{pct} of cases ({lo}-{hi}), {tail}",
+  // What this many cases could have detected in the first place. Every other
+  // band here is retrospective; this is the one that says whether a difference
+  // somebody is about to argue about was ever measurable.
+  "power.note": "On {n} cases, a difference smaller than <strong>{mde}</strong> is not measurable here at all: anything between {lo} and {hi} is this sample's noise. Two versions that differ by less than that differ by sample size before they differ by policy.",
+  "power.unmeasured": "Nothing has been replayed yet, so there is no rate to size a sample against.",
   "tile.flips.caused": "{n} caused by this policy",
   "tile.flips.nobaseline": "attribution needs a baseline pass",
   "tile.deviations": "Not this policy's doing",
@@ -329,8 +338,13 @@ en: {
   "sweep.pickvalues": "pick a dial and some values", "sweep.running": "running...",
   "sweep.failed": "That sweep could not be run. Values must be comma-separated numbers, and the dial must exist in this version.",
   "sweep.note": "<span class=muted>{n} cases &middot; from the offline rules, not the markdown policy</span>",
+  // A flat curve is not an insensitive threshold, it is a threshold that
+  // decides nothing - and the two read the same way in a column of numbers.
+  "sweep.inert": "<strong class=warn>No setting moves a single decision.</strong> {where}{field} changes which clause gets cited, not what anybody gets: a rule above it in the order is already deciding these cases. The fix is the rule order, not the number.",
+  "grid.inert": "<strong class=warn>{where}{field} decides nothing here.</strong> At every setting of the other dial, moving it changes no outcome at all - which is a stronger statement than the two being independent, and the opposite of the one to act on.",
   "sweep.col.flips": "Flips", "sweep.col.rate": "Rate", "sweep.col.loose": "More generous",
   "sweep.col.tight": "More strict", "sweep.col.net": "Net", "sweep.col.caused": "Caused by this policy",
+  "sweep.clause": "clause",
   "sweep.current": "current", "sweep.nopoints": "No points returned.",
   "grid.pickvalues": "pick two dials and some values",
   "grid.failed": "That grid could not be run. Both dials must exist and be different, the values must be comma-separated numbers, and the grid is capped at 64 points &mdash; narrow each axis with a single sweep first.",
@@ -483,6 +497,8 @@ zh: {
   "tile.replayed": "已重放的决策",
   "tile.flips": "结果发生改变",
   "tile.flips.sub": "占案例 {pct}（{lo}-{hi}），{tail}",
+  "power.note": "在 {n} 个案例上，小于 <strong>{mde}</strong> 的差异在这里根本无法测出：{lo} 到 {hi} 之间的任何数值都属于本样本的噪声。两个版本之间的差异若小于这个幅度，那么它们首先是样本量不同，其次才是政策不同。",
+  "power.unmeasured": "尚未进行任何重放，因此没有可用于确定样本量的比率。",
   "tile.flips.caused": "{n} 条由本政策造成",
   "tile.flips.nobaseline": "归因需要一次基线重放",
   "tile.deviations": "不是本政策造成的",
@@ -582,8 +598,11 @@ zh: {
   "sweep.pickvalues": "请选择刻度并填入取值", "sweep.running": "运行中…",
   "sweep.failed": "该扫描无法运行。取值必须是以逗号分隔的数字，且该刻度必须存在于此版本中。",
   "sweep.note": "<span class=muted>{n} 个案例 &middot; 来自离线规则，而非 markdown 政策文本</span>",
+  "sweep.inert": "<strong class=warn>没有任何取值能改变哪怕一个决定。</strong>{where}{field} 改变的只是引用了哪一条条款，而不是任何人实际得到的结果：规则顺序中排在它前面的某条规则已经先行判定了这些案例。要改的是规则顺序，而不是这个数字。",
+  "grid.inert": "<strong class=warn>{where}{field} 在这里什么也决定不了。</strong>无论另一个阈值取何值，移动它都不会改变任何结果 —— 这比“两者互不影响”是更强的结论，也是需要采取行动的那一个。",
   "sweep.col.flips": "改判数", "sweep.col.rate": "比率", "sweep.col.loose": "更宽松",
   "sweep.col.tight": "更严格", "sweep.col.net": "净额", "sweep.col.caused": "由本政策造成",
+  "sweep.clause": "条款",
   "sweep.current": "当前", "sweep.nopoints": "没有返回任何取值点。",
   "grid.pickvalues": "请选择两个刻度并填入取值",
   "grid.failed": "该网格无法运行。两个刻度都必须存在且互不相同，取值必须是以逗号分隔的数字，且网格上限为 64 个点 &mdash; 请先用单条扫描缩小每个轴的范围。",
@@ -826,7 +845,7 @@ function remember(domain, version) {
   query.set("version", version);
   history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`);
 }
-const PANELS = ["#tiles","#preflight","#clauses","#segments","#disparity","#sweep",
+const PANELS = ["#tiles","#power","#preflight","#clauses","#segments","#disparity","#sweep",
                 "#swbanded","#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
                 "#calibration","#history","#superseded","#drafts"];
@@ -843,6 +862,26 @@ function fail(message) {
 const table = (head, rows, empty) => rows.length
   ? `<table><thead><tr>${head.map(h => `<th class="${h.num ? "num" : ""}">${h.label}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`
   : `<div class=empty>${esc(empty)}</div>`;
+
+// ---------------------------------------------------------------- power
+//: What this much history could have detected, rendered above every panel that
+//: invites a comparison. It is the only band on this page that is not about a
+//: measurement already taken: two versions differing by less than this differ
+//: by sample size before they differ by policy, and nothing else here says so.
+function renderPower(result) {
+  const el = $("#power");
+  if (!el) return;
+  if (!result || !result.measured) {
+    el.innerHTML = t("power.unmeasured");
+    return;
+  }
+  el.innerHTML = t("power.note", {
+    n: num(result.cases),
+    mde: pct(result.detectable_difference),
+    lo: pct(result.detectable_rate_lo),
+    hi: pct(result.detectable_rate_hi),
+  });
+}
 
 // ---------------------------------------------------------------- tiles
 function renderTiles(summary, costs, gate, calibration) {
@@ -1213,7 +1252,13 @@ async function runSweep() {
   const unit = result.impact_unit;
   const max = Math.max(1, ...result.points.map(p => p.flips));
   $("#swnote").innerHTML = t("sweep.note", {n: num(result.cases)});
-  $("#sweep").innerHTML =
+  const inert = result.inert || {};
+  const inertNote = inert.measured && inert.inert
+    ? `<p class=hero>${t("sweep.inert", {
+        field: esc(inert.field),
+        where: inert.clause ? `${t("sweep.clause")} ${esc(inert.clause)} ` : ""})}</p>`
+    : "";
+  $("#sweep").innerHTML = inertNote +
     `<div class=spark>${result.points.map(p =>
       `<i class="${p.is_current ? "cur" : ""}" style="height:${(p.flips / max * 100).toFixed(1)}%"
         title="${esc(p.value)}: ${p.flips} flips"></i>`).join("")}</div>` +
@@ -1266,7 +1311,14 @@ async function runGrid() {
   const shade = n => hi === lo ? 0 : (n - lo) / (hi - lo);
   const interaction = result.interaction || {};
   $("#swnote2").innerHTML = t("grid.note", {n: num(result.cases), p: result.points.length});
-  $("#sweepgrid").innerHTML =
+  const axisNote = ["first_inert", "second_inert"]
+    .map(side => result[side] || {})
+    .filter(reading => reading.measured && reading.inert)
+    .map(reading => `<p class=hero>${t("grid.inert", {
+      field: esc(reading.field),
+      where: reading.clause ? `${t("sweep.clause")} ${esc(reading.clause)} ` : ""})}</p>`)
+    .join("");
+  $("#sweepgrid").innerHTML = axisNote +
     `<p class=hero>${interaction.measured
       ? t("grid.effect", {f1: esc(result.first.field),
                           lo: num(interaction.effect_min_flips),
@@ -1581,12 +1633,12 @@ async function render() {
   let summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
       deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
       preflightDetail, ruleDetail, crossDetail, draftRows, historyDetail,
-      supersededDetail;
+      supersededDetail, powerDetail;
   try {
     [summary, flipRows, precedentRows, clauseRows, segmentRows, conflictRows, costs,
      deviationRows, gate, stabilityDetail, dials, calibrationDetail, disparityDetail,
      preflightDetail, ruleDetail, crossDetail, draftRows, historyDetail,
-     supersededDetail] =
+     supersededDetail, powerDetail] =
       await Promise.all([
         api(`/api/summary/${seg(domain)}/${seg(version)}`),
         api(`/api/flips/${seg(domain)}/${seg(version)}`),
@@ -1607,6 +1659,7 @@ async function render() {
         api(`/api/drafts/${seg(domain)}`),
         api(`/api/history/${seg(domain)}`),
         api(`/api/precedent-history/${seg(domain)}`),
+        api(`/api/power/${seg(domain)}/${seg(version)}`),
       ]);
   } catch (e) {
     fail(t("fail.load"));
@@ -1622,6 +1675,7 @@ async function render() {
     draftnote.innerHTML = t("draft.note", {v: esc(version)});
   }
   renderTiles(summary, costs, gate, calibrationDetail);
+  renderPower(powerDetail);
   renderPreflight(preflightDetail);
   renderClauses(clauseRows, summary.impact_unit, summary);
   renderSegments(segmentRows, summary.impact_unit,

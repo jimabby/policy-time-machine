@@ -156,3 +156,81 @@ class TestCli:
     def test_usage_when_called_with_too_little(self, capsys):
         assert sweep.main([]) == 2
         assert "usage:" in capsys.readouterr().out
+
+
+class TestADialThatDecidesNothing:
+    """A flat curve is not an insensitive threshold, it is a threshold that
+    decides nothing - and the two look identical in a column of numbers.
+
+    The shipped fixture has one. expenses/v2 clause 6.1 exempts grade 3+ from
+    the receipt requirement, and it is only ever reached by cases clause 1.1 has
+    already declined to decide; the outcome it gives, ``approve``, is the one
+    they fall through to anyway. So the exemption changes which clause is
+    *cited* and nothing else, and sweeping its threshold draws four identical
+    columns while the interaction panel reports the two dials "independent" -
+    true, and read as the opposite of the finding to act on.
+    """
+
+    def test_the_shipped_inert_dial_is_reported_as_inert(self, seeded):
+        result = sweep.sweep("expenses", "v2", "grade", [2, 3, 4, 6], clause="6.1")
+        assert len({point["flips"] for point in result["points"]}) == 1
+        assert result["inert"]["measured"] is True
+        assert result["inert"]["inert"] is True
+        assert "changes which clause is cited" in result["inert"]["note"]
+
+    def test_a_dial_that_moves_decisions_is_not(self, seeded):
+        result = sweep.sweep("expenses", "v2", "amount_gbp", [25, 75, 250], clause="1.1")
+        assert result["inert"]["measured"] is True
+        assert result["inert"]["inert"] is False
+
+    def test_one_setting_measures_nothing_rather_than_reporting_inert(self, seeded):
+        """A single point cannot say whether a dial moves anything, and saying
+        it does not would be a finding invented from one measurement."""
+        result = sweep.sweep("expenses", "v2", "amount_gbp", [75], clause="1.1")
+        assert result["inert"]["measured"] is False
+        assert "at least two settings" in result["inert"]["hint"]
+
+    def test_it_compares_which_cases_moved_not_how_many(self, seeded, monkeypatch):
+        """Two settings can reach the same flip count through different cases.
+        Counting would call that 'no effect', which is the same confident wrong
+        answer the collapsing check exists to prevent."""
+        import ptm.sweep as module
+
+        seen = []
+        original = module._signature
+        monkeypatch.setattr(module, "_signature",
+                            lambda found: seen.append(found) or original(found))
+        module.sweep("expenses", "v2", "amount_gbp", [50, 75], clause="1.1")
+        assert seen, "the sweep did not take a per-setting signature"
+
+    def test_the_cli_says_so_after_the_table(self, seeded, capsys):
+        assert sweep.main(["expenses", "v2", "6.1", "grade", "2,3,4,6"]) == 0
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert out.index("WARNING") > out.index("flips")
+
+
+class TestAGridAxisThatDecidesNothing:
+    def test_the_inert_axis_is_named(self, seeded):
+        result = sweep.joint(
+            "expenses", "v2",
+            {"field": "amount_gbp", "clause": "2.1", "values": [30, 45, 60, 75]},
+            {"field": "grade", "clause": "6.1", "values": [2, 3, 4, 6]})
+        assert result["first_inert"]["inert"] is False
+        assert result["second_inert"]["inert"] is True
+        # The interaction reading is still true and still not the point.
+        assert result["interaction"]["independent"] is True
+
+    def test_an_axis_of_one_setting_measures_nothing(self, seeded):
+        result = sweep.joint(
+            "expenses", "v2",
+            {"field": "amount_gbp", "clause": "2.1", "values": [30, 60]},
+            {"field": "grade", "clause": "6.1", "values": [3]})
+        assert result["second_inert"]["measured"] is False
+
+    def test_the_cli_warns_before_the_interaction_reading(self, seeded, capsys):
+        assert sweep.main(["expenses", "v2", "--joint",
+                           "2.1:amount_gbp=30,60", "6.1:grade=2,4"]) == 0
+        out = capsys.readouterr().out
+        assert "WARNING" in out and "interaction:" in out
+        assert out.index("WARNING") < out.index("interaction:")

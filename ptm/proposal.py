@@ -521,7 +521,19 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
     what was proposed, from what evidence, and what checking it found - and a
     draft somebody looked at and rejected is a more useful record than no record
     at all. :func:`ptm.report.drafts` reports such a row as unavailable.
+
+    The version is checked the way :func:`adopt` checks it, and for a sharper
+    reason. ``adopt`` refused anything that was not a draft so that nobody could
+    promote a policy over a policy; this built a path out of the argument and
+    unlinked whatever was there, so ``--discard ../../policies/expenses/v1``
+    deleted a policy somebody is accountable for. Drafts are cheap to drop and
+    that is exactly why this command must only ever drop one.
     """
+    if not _is_draft_name(draft_version):
+        raise LookupError(
+            f"{draft_version!r} is not a draft version name. A draft is one path "
+            f"segment - no slashes, no '..' - because this deletes files, and the "
+            f"only files it may delete are in include/{DRAFTS_DIR}/{domain_name}/.")
     folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
     removed = []
     for path in (folder / f"{draft_version}.md", folder / f"{draft_version}.rules.yaml"):
@@ -530,6 +542,13 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
             removed.append(str(path))
     load_domain.cache_clear()
     return removed
+
+
+def _is_draft_name(version: str) -> bool:
+    """Whether a string can name a draft file rather than reach out of its folder."""
+    version = (version or "").strip()
+    return bool(version) and version not in {".", ".."} and not (
+        set(version) & set("/\\") or version.startswith("."))
 
 
 def drafts_on_disk(domain_name: str) -> list[dict]:
@@ -891,6 +910,12 @@ def main(argv: list[str] | None = None) -> int:
     adopting = _flag(args, "--adopt")
     adopter = _flag(args, "--by") or ""
     adopt_as = _flag(args, "--as")
+    if adopt_as == "":
+        # Distinguished from absent, for the same reason ptm.report distinguishes
+        # them: "" is the flag given with nothing after it, and falling back to
+        # the next free version number would adopt under a name nobody typed.
+        print(f"ERROR --as needs a version\n\n{USAGE}", file=sys.stderr)
+        return 2
 
     flags = {"--write", "--list", "--discard", "--adopt", "--by", "--as"}
     positional, skip = [], False
@@ -924,7 +949,11 @@ def main(argv: list[str] | None = None) -> int:
         if not discarding:
             print(f"ERROR --discard needs a version\n\n{USAGE}", file=sys.stderr)
             return 2
-        removed = discard(domain_name, discarding)
+        try:
+            removed = discard(domain_name, discarding)
+        except LookupError as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
         if not removed:
             print(f"ERROR no draft {discarding!r} on disk for {domain_name}; "
                   f"`--list` shows what there is", file=sys.stderr)

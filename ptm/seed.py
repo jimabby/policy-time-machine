@@ -19,6 +19,7 @@ import random
 import sys
 from datetime import datetime, timedelta
 
+from . import cli
 from .config import load_domain
 from .judge import offline_verdict
 from .models import Case
@@ -274,10 +275,40 @@ def seed_all(force: bool = False) -> dict:
     return {name: seed_domain(name, force=force) for name in SEEDERS}
 
 
+USAGE = """usage:
+  python -m ptm.seed [domain ...] [--force]
+
+Generate the synthetic decision history the demo replays. Idempotent: a domain
+that already has cases is left alone, because the compose file seeds on every
+container start and a re-seed that always fired would throw away the replay you
+ran before restarting.
+
+  domain ...   defaults to every domain with a fixture
+  --force      regenerate, and clear every derived result for the domain.
+               Precedents survive: they are the one durable artefact here and
+               they outlive the fixture on purpose."""
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
+    args = list(argv if argv is not None else sys.argv[1:])
+    # Before anything is interpreted, and before anything is *written*. This was
+    # the one entry point where reading --help as an argument did real work:
+    # `python -m ptm.seed --help` seeded every domain, and with --force in front
+    # of it would have cleared every derived table for them. See ptm/cli.py.
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
     force = "--force" in args
+    unknown = [a for a in args if a.startswith("-") and a != "--force"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
     names = [a for a in args if not a.startswith("-")] or sorted(SEEDERS)
+    for name in names:
+        if name not in SEEDERS:
+            print(f"ERROR no synthetic fixture for domain {name!r}; have "
+                  f"{sorted(SEEDERS)}", file=sys.stderr)
+            return 2
     for name in names:
         print(f"{name}: {seed_domain(name, force=force)}")
     return 0

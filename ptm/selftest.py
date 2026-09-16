@@ -12,7 +12,19 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 
-from . import cache, calibration, cli, cost, diff, disparity, preflight, proposal, stability, store
+from . import (
+    cache,
+    calibration,
+    cli,
+    cost,
+    diff,
+    disparity,
+    preflight,
+    proposal,
+    stability,
+    stats,
+    store,
+)
 from . import rules as rules_engine
 from .config import JUDGE_MODEL, load_domain
 from .judge import build_prompt, offline_verdict
@@ -81,6 +93,12 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     print(f"  {s['loosening']} more generous  {unit} {s['impact_loosening']:,.0f}")
     print(f"  {s['tightening']} more strict    {unit} {s['impact_tightening']:,.0f}")
     print(f"  net {unit} {s['net_impact']:,.0f}")
+    # What this much history could have detected in the first place. The band
+    # above says how precise the rate turned out to be; this says which
+    # differences were never measurable here at all, which is the sentence a
+    # version comparison needs before anybody draws a conclusion from four
+    # points of difference.
+    print("  " + stats.describe_power(stats.power_report(s["flip_rate"], total_cases)))
 
     # --- which clause is doing it ------------------------------------------
     print(f"\nwhat in policy {version} causes the change "

@@ -49,6 +49,37 @@ class ReviewPolicy(BaseModel):
     #: queue. Requires a confirmation pass (``judge_stability`` with
     #: ``target=flips``); with no measurement on file nothing is excluded.
     exclude_unstable: bool = True
+    #: Who is allowed to settle these cases, as Airflow user ids. Empty means
+    #: anybody who can reach the UI, which is the demo's setting and nobody
+    #: else's: ``ruled_by`` is the field that makes a precedent a fact about a
+    #: person, and a queue anyone can answer records whoever happened to click.
+    assigned_users: list[str] = Field(default_factory=list)
+    #: Hours to wait for a human before the review task gives up. 0 waits
+    #: forever, which is what this did and is the wrong default for a queue
+    #: nobody is told about: an adjudication that silently waits is
+    #: indistinguishable from one nobody raised.
+    #:
+    #: A timed-out review does **not** become precedent. Airflow answers the
+    #: task with ``defaults`` on timeout - here the most generous outcome - and
+    #: writing that into the one durable artefact in this system because nobody
+    #: looked is the worst thing this pipeline could do. The DAG refuses any
+    #: response that came from the clock rather than from a person, and the flip
+    #: stays in the queue.
+    response_timeout_hours: float = 0.0
+    #: Dotted import paths to :class:`~airflow.sdk.bases.notifier.BaseNotifier`
+    #: instances, called when a review is raised. Resolved at DAG-parse time;
+    #: one that cannot be imported is reported and skipped rather than taking
+    #: the DAG down, because a broken Slack webhook must not stop adjudication.
+    notifiers: list[str] = Field(default_factory=list)
+
+    @field_validator("response_timeout_hours")
+    @classmethod
+    def _timeout_cannot_be_negative(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError(
+                f"review.response_timeout_hours must be 0 (wait forever) or positive, "
+                f"got {value}")
+        return value
 
 
 class ConflictPolicy(BaseModel):

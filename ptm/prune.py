@@ -1,17 +1,25 @@
 """Drop the bulk rows that have stopped earning their disk.
 
-Two tables here grow without bound and are never read once they are old, and
+Four tables here grow without bound and are never read once they are old, and
 until this existed the only levers were all-or-nothing.
 
-``verdict_cache`` is the bigger one, and it grows *because* the project works:
-the loop it is built around is edit a clause, measure again, and the key is the
-prompt - so every edit strands the generation of entries it invalidated. Those
-rows can never be hit again by construction, and nothing removed them.
-``ptm.store.cache_clear`` would, along with every entry that is about to save
-the next replay.
+``verdict_cache`` grows *because* the project works: the loop it is built around
+is edit a clause, measure again, and the key is the prompt - so every edit
+strands the generation of entries it invalidated. Those rows can never be hit
+again by construction, and nothing removed them. ``ptm.store.cache_clear``
+would, along with every entry that is about to save the next replay.
 
 ``judge_samples`` is one row per (case, repeat) for every stability run ever
 made, and only the newest run backs a reported figure.
+
+``verdicts`` and ``flips`` are the largest of the four and were the last to be
+noticed, because they do not look like scratch space: they are one row per case
+per run, six hundred at a time on the shipped fixture, and they hold real
+results. But every reader of either one - ``latest_verdicts``,
+``flips_for_policy``, the clause breakdown, the blast radius - takes the newest
+row per case and nothing else, so a superseded row is unreachable the moment the
+next run writes over it. The newest row for each case is never dropped at any
+age; see :func:`ptm.store.prune`.
 
     python -m ptm.prune                 # everything older than 90 days
     python -m ptm.prune expenses --days 30
@@ -57,9 +65,10 @@ def describe(result: dict, domain: str | None, days: int, dry_run: bool,
 USAGE = """usage:
   python -m ptm.prune [domain] [--days N] [--dry-run] [--keep-unhit] [--vacuum]
 
-Drop the cache and sample rows that have stopped earning their disk. Precedents,
-their history, the drafts table and the aggregates the dashboard reads are never
-touched - age is not a reason to forget a human ruling.
+Drop the cache, sample, verdict and flip rows that have stopped earning their
+disk. Precedents, their history, the drafts table, the aggregates the dashboard
+reads and the newest verdict and flip for every case are never touched - age is
+not a reason to forget a human ruling.
 
   domain         defaults to every domain
   --days N       how old a row must be to go. Default 90

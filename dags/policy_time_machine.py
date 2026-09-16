@@ -45,6 +45,8 @@ DAG code below contains no domain knowledge at all.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pendulum
 from airflow.exceptions import AirflowFailException
 from airflow.sdk import Asset, Param, dag, task
@@ -92,6 +94,52 @@ DEFAULTS = {"owner": "policy-time-machine", "retries": 1}
 #: is a different answerer from any model, and serving one's verdict as the
 #: other's would make a comparison between them agree with itself perfectly.
 JUDGE_ID = JUDGE_MODEL if not OFFLINE else "offline"
+
+
+def _review_timeout(domain) -> timedelta | None:
+    """How long a review waits before the task gives up. None waits forever."""
+    hours = float(domain.review.response_timeout_hours or 0)
+    return timedelta(hours=hours) if hours > 0 else None
+
+
+def _assigned_users(domain) -> list[dict] | None:
+    """The reviewers a queue is addressed to, in the shape HITLOperator wants.
+
+    ``HITLUser`` is a TypedDict of ``id`` and ``name``, so plain dicts are the
+    whole contract and nothing has to be imported to build one. None means the
+    domain named nobody, and the queue is then open to anybody who can reach the
+    UI - which is the demo's setting and should not be a deployment's, because
+    ``ruled_by`` is what makes a precedent a fact about a person.
+    """
+    users = [u.strip() for u in domain.review.assigned_users if u and u.strip()]
+    return [{"id": user, "name": user} for user in users] or None
+
+
+def _notifiers(domain) -> list:
+    """Notifier instances named by the domain, skipping any that will not import.
+
+    Resolved at parse time and defensively: a Slack webhook that has been
+    removed, or a provider that is not installed in this image, must cost the
+    notification and never the adjudication. A DAG that fails to parse because
+    nobody could be told about a queue is strictly worse than a queue nobody is
+    told about.
+    """
+    import importlib
+
+    out = []
+    for path in domain.review.notifiers:
+        module, _, name = str(path).rpartition(".")
+        if not module or not name:
+            print(f"review.notifiers: {path!r} is not a dotted import path; skipped")
+            continue
+        try:
+            resolved = getattr(importlib.import_module(module), name)
+        except Exception as exc:  # any import problem here is the same problem
+            print(f"review.notifiers: cannot import {path!r} ({exc}); reviews for "
+                  f"{domain.name} will be raised without notifying anybody")
+            continue
+        out.append(resolved() if isinstance(resolved, type) else resolved)
+    return out
 
 
 def _as_verdict(raw) -> Verdict:
@@ -825,6 +873,19 @@ def build(domain_name: str) -> None:
             task_id="review",
             options=domain.outcomes,
             defaults=[domain.outcomes[0]],
+            # Who the queue is addressed to, how long it waits, and who is told
+            # it exists. All three were available on this operator from the
+            # start and none of them was set, so a contested case sat in the UI
+            # indefinitely, answerable by anybody who happened to find it.
+            #
+            # The timeout is safe to add only because `record` below refuses a
+            # response that came from the clock: Airflow answers a timed-out
+            # HITL task with `defaults`, which here is the most generous
+            # outcome, and writing that into permanent precedent because nobody
+            # looked would be the worst failure this pipeline has.
+            assigned_users=_assigned_users(domain),
+            response_timeout=_review_timeout(domain),
+            notifiers=_notifiers(domain),
             # The reviewer's reasoning, not just their answer. `record` below
             # has always read this out of `params_input`, but nothing ever
             # declared the parameter, so every precedent on file carries an
@@ -862,10 +923,26 @@ def build(domain_name: str) -> None:
                     f"the failed review task(s) instead."
                 )
             version = ctx["params"]["policy_version"]
-            saved, reconfirmed, revised = [], [], []
+            saved, reconfirmed, revised, expired = [], [], [], []
             for f, resp in zip(flips, responses):
                 chosen = (resp or {}).get("chosen_options") or []
                 if not chosen:
+                    continue
+                # Who answered. The payload key is `responded_by_user`, a
+                # HITLUser of id and name - never `user_id`, which is what this
+                # read and which meant every precedent on file was attributed to
+                # 'unknown'. That is the one field a permanent record cannot
+                # afford to lose: a ruling nobody is named for is not a fact
+                # about a person, and the gate enforces it forever either way.
+                responder = (resp or {}).get("responded_by_user") or {}
+                ruled_by = responder.get("id") or responder.get("name") or ""
+                # A response the clock produced, not a person. Airflow answers a
+                # timed-out HITL task with `defaults` and leaves
+                # `responded_by_user` empty, so this is the whole difference
+                # between a ruling and a shrug - and the shrug is the most
+                # generous outcome in the domain.
+                if (resp or {}).get("timedout") or not ruled_by:
+                    expired.append(f["case_id"])
                     continue
                 # A re-adjudication replaces a ruling rather than making a first
                 # one, and which of those happened is the result: a reviewer
@@ -878,7 +955,7 @@ def build(domain_name: str) -> None:
                      else revised).append(f["case_id"])
                 store.save_precedent(Precedent(
                     case_id=f["case_id"], domain=domain_name, correct_outcome=chosen[0],
-                    ruled_by=(resp.get("user_id") or "unknown"),
+                    ruled_by=ruled_by,
                     note=(resp.get("params_input") or {}).get("note", ""),
                     established_at=pendulum.now("UTC"), established_by_run=ctx["run_id"],
                     # The circumstances, not just the answer. Which policy the
@@ -892,6 +969,11 @@ def build(domain_name: str) -> None:
                 ))
                 saved.append(f["case_id"])
             store.mark_reviewed(domain_name, version, saved)
+            if expired:
+                print(f"{len(expired)} review(s) timed out and were NOT recorded: "
+                      f"{expired[:10]}. Airflow answers an expired review with the "
+                      f"default option, which is the most generous outcome here, and "
+                      f"that is not a ruling. They stay in the queue.")
             if reconfirmed or revised:
                 print(f"{len(reconfirmed)} ruling(s) re-confirmed against {version}, "
                       f"{len(revised)} changed. Each earlier ruling is archived, not "
@@ -900,6 +982,7 @@ def build(domain_name: str) -> None:
                     print(f"  {case_id}: the ruling on file has been superseded")
             return {"precedents_recorded": len(saved), "case_ids": saved,
                     "held_back_unconfirmed": len(held_back),
+                    "expired_unanswered": expired,
                     "reconfirmed": reconfirmed, "revised": revised}
 
         record(flips, reviews.output, held_back)
@@ -912,6 +995,12 @@ def build(domain_name: str) -> None:
         schedule=[precedents_asset],
         start_date=START,
         catchup=False,
+        # One at a time, like every other DAG here. This one is asset-triggered
+        # and re-fires on every adjudication run, so it is the likeliest in the
+        # file to be asked to run twice at once - against a single SQLite file
+        # that each concurrent run would take a write lock on, to re-judge the
+        # same handful of precedent cases and reach the same answer.
+        max_active_runs=1,
         default_args=DEFAULTS,
         params={
             "policy_version": policy_param,
@@ -1153,6 +1242,10 @@ def build(domain_name: str) -> None:
         schedule=None,
         start_date=START,
         catchup=False,
+        # Manual, but two of these at once is two fan-outs of paid judging at
+        # the same model endpoint writing to one SQLite file, and the second
+        # would overwrite the first's flip_stability rows for the same cases.
+        max_active_runs=1,
         default_args=DEFAULTS,
         params={
             "policy_version": policy_param,

@@ -37,8 +37,29 @@ services:
       PTM_ALLOW_ANONYMOUS: "${PTM_ALLOW_ANONYMOUS:-}"
       # Only read when PTM_OFFLINE=0.
       AIRFLOW_CONN_PYDANTICAI_DEFAULT: "${AIRFLOW_CONN_PYDANTICAI_DEFAULT:-}"
-      _AIRFLOW_WWW_USER_USERNAME: admin
-      _AIRFLOW_WWW_USER_PASSWORD: admin
+      # No login, and that is a deliberate choice for a demo rather than an
+      # oversight. What was here before was _AIRFLOW_WWW_USER_USERNAME and
+      # _AIRFLOW_WWW_USER_PASSWORD set to admin/admin, which is what an Airflow 2
+      # image reads and what the README, the Makefile and the demo script all
+      # promised. Airflow 3.1 has no `airflow users` command and no FAB user
+      # table: the default SimpleAuthManager generates a random password into
+      # $AIRFLOW_HOME/simple_auth_manager_passwords.json.generated, prints it
+      # once into the startup logs, and - because AIRFLOW_HOME is not on a
+      # volume here - generates a different one every `docker compose up`. So
+      # the documented credential did not work, and the working one was a line
+      # of log output nobody was told to look for.
+      #
+      # all_admins is what Airflow provides for exactly this: no login screen,
+      # everybody an admin. It keeps the Diff Explorer working, which matters
+      # more here than it looks - the plugin authenticates every one of its own
+      # routes against Airflow's token, and SimpleAllAdminMiddleware appends a
+      # bearer token to every request before routing, so the plugin resolves it
+      # exactly as it resolves a real session.
+      #
+      # This is a single-container demo with no data anybody else's. A
+      # deployment sets simple_auth_manager_users and a passwords file, or an
+      # auth manager that is not this one.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "${PTM_OPEN_UI:-true}"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./plugins:/opt/airflow/plugins

@@ -131,6 +131,25 @@ def adjudicated(replayed):
     flips = report.flips("expenses", "v2", limit=3)
     agreed, reversed_, shaky = flips[0], flips[1], flips[2]
 
+    # Start from no rulings at all, for the two domains this fixture sets up.
+    #
+    # This suite is the only one whose assertions are about the *absence* of a
+    # ruling - the Superseded panel says "no ruling has been superseded", and it
+    # is true only if nothing has been. Precedents and their history are
+    # deliberately outside DERIVED_TABLES, which is right (a re-seed must not
+    # forget a human ruling) and means they accumulate across the whole session
+    # in the one database conftest builds. Any earlier module that recorded a
+    # ruling twice on the same case - test_calibration_gate did, once per test
+    # using its fixture - left a precedent_history row here and failed two tests
+    # in this file. Only when the full suite ran: CI runs this job on its own,
+    # so the leak was invisible to it.
+    #
+    # Raw SQL because there is no API for this and there should not be. Deleting
+    # a precedent is the one operation the engine deliberately does not offer.
+    with store.conn() as connection:
+        for table in ("precedents", "precedent_history"):
+            connection.execute(f"DELETE FROM {table} WHERE domain IN ('expenses', 'refunds')")
+
     # One ruling with its circumstances recorded and one without, so the panel
     # renders both halves: a ruling that can be re-read later, and one made
     # before the circumstances were captured - which the page has to mark rather

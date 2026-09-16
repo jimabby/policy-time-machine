@@ -382,6 +382,7 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
         "disparity": disparity(domain, version),
         "preflight": preflight(domain, version),
         "rule_agreement": rule_agreement(domain, version),
+        "power": power(domain, version),
         "flips": flips(domain, version, limit=limit),
         "caveats": [
             "Impact is the value of the cases whose outcome changes, not a cash-flow "
@@ -406,6 +407,8 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
             "estimate of it.",
             "A segment carrying more of the change than the rest of its field is a "
             "question to answer, not a finding of unfairness.",
+            "'power' is what this many cases could have detected. A difference smaller "
+            "than it is not a finding, whichever direction it points in.",
         ],
     }
 
@@ -500,6 +503,47 @@ def cost_report(domain: str, version: str) -> dict:
         "reconciliation": check,
         "cache": cached,
         "judge_model": JUDGE_MODEL,
+    }
+
+
+def power(domain: str, version: str, target: float | None = None) -> dict:
+    """How big a change this much history could actually detect. :mod:`ptm.stats`.
+
+    The question that comes *before* a backfill and that nothing here could
+    answer. Every other band in this project is retrospective - it says how
+    precise a measurement turned out to be once it had been paid for - and the
+    decision somebody is actually making is whether to pay for it at all. A
+    replay of one month's 120 cases cannot tell a 24% flip rate from a 20% one
+    at any confidence worth quoting, and finding that out from two overlapping
+    bands afterwards costs a backfill.
+
+    ``target`` is a rate somebody cares about reaching - "we need this under
+    20%" - and turns the answer from a statement about precision into a
+    statement about whether this history can check the claim at all.
+
+    Costs nothing: it reads the case count and the measured rate off the
+    aggregates and does arithmetic.
+    """
+    config = _checked(domain, version)
+    head = summary(domain, version)
+    cases = head["cases"]
+    report = stats.power_report(head["flip_rate"], cases, target)
+    return {
+        "domain": domain,
+        "version": version,
+        "impact_unit": config.impact_unit,
+        "measured": bool(cases),
+        **report,
+        "summary": stats.describe_power(report) if cases else "",
+        "hint": "" if cases else
+                f"nothing has been replayed under {domain}/{version}, so there is no rate "
+                f"to size a sample against. Replay it first.",
+        "hint_key": "" if cases else "hint.power_unmeasured",
+        "hint_args": {"domain": domain, "version": version},
+        "caveat": "this is sampling error and nothing else. A judge that contradicts "
+                  "itself, or that disagrees with the humans, moves the answer further "
+                  "than any of this - and those two bands do not add to this one.",
+        "caveat_key": "caveat.power",
     }
 
 
@@ -846,6 +890,10 @@ USAGE = """usage:
         Everything the Diff Explorer shows, as one JSON bundle with the
         caveats attached - or --csv for the flip set alone.
 
+  python -m ptm.report <domain> <version> --power [--target RATE]
+        How big a change this much history could actually detect, and how
+        many cases it would take to settle a comparison it cannot.
+
   python -m ptm.report --list
         The domains and versions this database knows about.
 
@@ -888,7 +936,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     as_csv = "--csv" in args
-    out_path = _flag(args, "-o") or _flag(args, "--out")
+    as_power = "--power" in args
+    target: float | None = None
+    if "--target" in args:
+        index = args.index("--target")
+        raw = args[index + 1] if index + 1 < len(args) else ""
+        try:
+            target = float(raw)
+        except ValueError:
+            print(f"ERROR --target needs a rate between 0 and 1, e.g. 0.20\n\n{USAGE}",
+                  file=sys.stderr)
+            return 2
+        if not 0.0 <= target <= 1.0:
+            print(f"ERROR --target must be between 0 and 1, got {target}", file=sys.stderr)
+            return 2
+        args.pop(index + 1)
+    # Not `_flag(-o) or _flag(--out)`: _flag returns "" for a flag with nothing
+    # after it, `or` collapses that to the second lookup and then to None, and
+    # `python -m ptm.report expenses v2 -o` printed the whole bundle to the
+    # terminal instead of saying the filename was missing. An empty string here
+    # means the flag was given without a value, which is a mistake to report.
+    out_path = _flag(args, "-o")
+    if out_path is None:
+        out_path = _flag(args, "--out")
+    if out_path == "":
+        print(f"ERROR -o needs a file to write to\n\n{USAGE}", file=sys.stderr)
+        return 2
     positional, skip = [], False
     for arg in args:
         if skip:
@@ -897,7 +970,8 @@ def main(argv: list[str] | None = None) -> int:
         if arg in {"-o", "--out"}:
             skip = True
             continue
-        if arg == "--csv":
+        # --target's value is popped above, so only the flag itself is left.
+        if arg in {"--csv", "--power", "--target"}:
             continue
         if arg.startswith("-"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
@@ -911,8 +985,15 @@ def main(argv: list[str] | None = None) -> int:
 
     store.init_db()
     try:
-        body = (flips_csv(domain, version) if as_csv
-                else json.dumps(export_bundle(domain, version), indent=2, default=str))
+        if as_power:
+            result = power(domain, version, target)
+            body = result["summary"] or result["hint"]
+            if result["measured"]:
+                body += "\n  " + result["caveat"]
+        elif as_csv:
+            body = flips_csv(domain, version)
+        else:
+            body = json.dumps(export_bundle(domain, version), indent=2, default=str)
     except LookupError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2

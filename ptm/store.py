@@ -570,6 +570,36 @@ def precedent_history(domain: str, case_id: str | None = None) -> list[dict]:
             ORDER BY superseded_at DESC, case_id""", params)
 
 
+def import_precedent_history(rows: list[dict]) -> int:
+    """Merge archived rulings in, keeping any this database already has.
+
+    ``INSERT OR IGNORE`` on the natural key ``(domain, case_id, superseded_at)``,
+    so importing the same export twice adds nothing and importing two
+    environments' archives merges them. It is the one write here that must not
+    overwrite: an archived ruling is the record of what somebody said before
+    somebody else disagreed, and the whole reason it is kept is that nothing
+    should be able to quietly replace it - :func:`save_precedent` included.
+    """
+    if not rows:
+        return 0
+    with conn() as c:
+        before = c.execute("SELECT COUNT(*) n FROM precedent_history").fetchone()["n"]
+        c.executemany(
+            """INSERT OR IGNORE INTO precedent_history
+               (domain, case_id, superseded_at, correct_outcome, ruled_by, note,
+                established_at, established_by_run, policy_version, judged_outcome,
+                judged_clause)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            [(r["domain"], r["case_id"], r["superseded_at"], r["correct_outcome"],
+              r["ruled_by"], r.get("note") or "", r["established_at"],
+              r.get("established_by_run") or "", r.get("policy_version") or "",
+              r.get("judged_outcome") or "", r.get("judged_clause") or "")
+             for r in rows],
+        )
+        after = c.execute("SELECT COUNT(*) n FROM precedent_history").fetchone()["n"]
+    return after - before
+
+
 def revision_counts(domain: str) -> dict[str, int]:
     """How many times each case's ruling has been replaced, keyed by case id."""
     return {r["case_id"]: r["n"] for r in query(
@@ -995,6 +1025,29 @@ _PRUNE: list[tuple[str, str]] = [
           SELECT run_id FROM cross_checks x WHERE x.created_at = (
             SELECT MAX(y.created_at) FROM cross_checks y
             WHERE y.domain = x.domain AND y.policy_version = x.policy_version))"""),
+    # Verdicts a later verdict on the same (domain, version, case) replaced.
+    #
+    # The biggest table here by some distance - one row per case per run, six
+    # hundred at a time on the shipped fixture - and the one nothing could drop.
+    # Every reader takes MAX(rowid) per case (latest_verdicts, summary,
+    # version_totals), so a superseded row is unreachable by construction, which
+    # is the same argument that justifies dropping a stranded cache entry. The
+    # *newest* verdict per case is never touched at any age: it is what the
+    # precedent check, the calibration score and the rule agreement are all
+    # computed from, and losing it would make a version look unjudged rather
+    # than unchanged.
+    ("verdicts",
+     """created_at < ?{domain} AND rowid NOT IN (
+          SELECT MAX(rowid) FROM verdicts GROUP BY domain, policy_version, case_id)"""),
+    # Flip rows a later run replaced, dated by their run because a flip carries
+    # no timestamp of its own. Same argument as the verdicts above:
+    # flips_for_policy, clause_breakdown and segment_breakdown all collapse to
+    # MAX(rowid) per case, so an older row is already invisible - it is only
+    # taking up disk and making every one of those joins scan further.
+    ("flips",
+     """run_id IN (SELECT run_id FROM runs WHERE started_at < ?{domain})
+        AND rowid NOT IN (
+          SELECT MAX(rowid) FROM flips GROUP BY domain, policy_version, case_id)"""),
 ]
 
 
@@ -1018,13 +1071,16 @@ def prune(domain: str | None = None, days: int = 90,
           keep_unhit: bool = False) -> dict[str, int]:
     """Drop the bulk rows that have stopped earning their disk, and say what went.
 
-    Two tables grow without bound and neither is ever read once it is old.
+    Four tables grow without bound and none of them is ever read once it is old.
     ``verdict_cache`` holds one row per prompt ever judged, so the edit-and-
     re-measure loop this project is built around adds a generation of entries
     per edit and never removes the ones the edit invalidated - they can never be
     hit again, because the key is the prompt and the prompt changed.
     ``judge_samples`` holds one row per (case, repeat) for every stability run
-    ever made, and only the newest run backs a reported figure.
+    ever made, and only the newest run backs a reported figure. ``verdicts`` and
+    ``flips`` are the same failure one order of magnitude larger: one row per
+    case per run, and every reader of both collapses to the newest row per case,
+    so a superseded one is unreachable the moment it is written.
 
     Until this existed the only levers were all-or-nothing:
     :func:`clear_domain_results` drops every derived table including the ones
@@ -1032,8 +1088,11 @@ def prune(domain: str | None = None, days: int = 90,
     including the entries that would have saved the next replay.
 
     What is deliberately *not* pruned: precedents and their history, the drafts
-    table, and the aggregates the dashboard reads. Age is not a reason to forget
-    a human ruling, and a run row is what a trend is drawn from.
+    table, the aggregates the dashboard reads, and the newest verdict and flip
+    row for every case. Age is not a reason to forget a human ruling, a run row
+    is what a trend is drawn from, and the current verdict for a case is what
+    the precedent check and the calibration score are computed from - dropping
+    it would make a version read as unjudged rather than as unchanged.
 
     ``keep_unhit`` retains cache entries nothing has ever served, which is the
     right setting straight after a big replay nothing has re-run yet; by default

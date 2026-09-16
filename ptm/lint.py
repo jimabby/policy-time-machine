@@ -14,6 +14,15 @@ it simply never matches, and the replay quietly comes out wrong. The same check
 now also refuses a rule written in constructs :mod:`ptm.safe_eval` will not
 evaluate, which fails in exactly the same silent way.
 
+**A rule an earlier rule has already eaten.** Rules are tried in order and the
+first match decides the case, so a general restriction written above the
+exemption it was meant to carve out of makes that exemption unreachable. It
+parses, it reads real fields, it cites a real clause - and it never fires, so
+its clause is never cited and every case it was written for is decided by
+something else. :func:`ptm.safe_eval.shadowed` proves it statically; the failure
+is silent in exactly the same way as the one above, and now arrives from a model
+as well as from a person, because ``propose_<domain>`` writes these.
+
     python -m ptm.lint            # every domain
     python -m ptm.lint expenses   # one domain
 
@@ -32,6 +41,7 @@ from . import sweep as sweep_engine
 from .config import DomainConfig, available_domains, load_domain
 from .judge import SAFE_BUILTINS
 from .safe_eval import check_expression, names_in
+from .safe_eval import shadowed as shadowed_rules
 
 
 @dataclass
@@ -285,6 +295,27 @@ def check_domain(name: str) -> list[Problem]:
                  f"number and draw a curve for a rule that fires on nothing. Split it "
                  f"across two rules if you want to move either end.")
 
+        # A rule an earlier rule makes unreachable. Every other check in this
+        # module passes it - it parses, it reads real fields, it cites a real
+        # clause - and it decides nothing, so its outcome is never produced and
+        # its clause never cited. An error when the two rules disagree, because
+        # then the replay is reporting a different answer from a different
+        # sentence for every case the dead rule was written to catch; a warning
+        # when they agree, because that is only dead weight.
+        for row in shadowed_rules(rules):
+            at = f"{where}[{row['rule_index']}]"
+            message = (f"can never fire: rule[{row['shadowed_by']}] "
+                       f"({row['shadowed_by_expression']!r}) already matches every case "
+                       f"{row['expression']!r} would")
+            if row["harmless"]:
+                warn(at, f"{message}, and gives the same outcome from the same clause - "
+                         f"so it is dead weight rather than a wrong answer. Delete it.")
+            else:
+                err(at, f"{message}, and decides them {row['shadowed_by_outcome']!r} from "
+                        f"clause {row['shadowed_by_clause'] or '-'} instead of "
+                        f"{row['outcome']!r} from clause {row['clause'] or '-'}. Move the "
+                        f"specific rule above the general one.")
+
         uncited = sorted(declared - cited)
         if uncited:
             warn(where, f"policy clause(s) {uncited} are not exercised by any offline rule. "
@@ -307,7 +338,8 @@ USAGE = """usage:
 
 Check every domain YAML against the policies it claims to implement: rules
 reading fields no case has, rules citing clauses the policy does not contain,
-outcomes no rule can reach, dials a sweep would collapse rather than move.
+rules an earlier rule makes unreachable, outcomes no rule can reach, dials a
+sweep would collapse rather than move.
 
   domain ...   defaults to every domain in include/domains/
 

@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -22,9 +22,12 @@ D ?= expenses
 help:      ## List targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
 
-up:        ## Start Airflow 3.1 at http://localhost:8080 (admin/admin)
+up:        ## Start Airflow 3.1 at http://localhost:8080 (no login)
 	docker compose up --build -d
 	@echo "Airflow starting -> http://localhost:8080  |  Diff Explorer -> http://localhost:8080/ptm/"
+	@echo "No login: the compose file sets simple_auth_manager_all_admins for the demo."
+	@echo "Set PTM_OPEN_UI=false to turn that off; Airflow then generates a password"
+	@echo "into simple_auth_manager_passwords.json.generated and prints it to the logs."
 
 down:      ## Stop Airflow
 	docker compose down
@@ -67,6 +70,19 @@ style:     ## Check the code the way CI does (see ruff.toml for what and why)
 test: lint style unit  ## Lint, test, then run the whole engine end to end with no Airflow
 	$(ENV) $(PY) -m ptm.selftest
 	$(ENV) $(PY) -m ptm.pit_check
+	$(ENV) $(PY) -m ptm.gate expenses v2 --introduced-only
+
+gate:      ## Run the precedent regression suite without Airflow. Non-zero on a reversal
+	$(ENV) $(PY) -m ptm.gate expenses v2 --introduced-only
+
+rulings:   ## Export every human ruling, with what each one replaced
+	$(ENV) $(PY) -m ptm.precedents expenses -o ptm-expenses-precedents.json
+	@echo
+	@echo "load it into another database with:"
+	@echo "  python -m ptm.precedents expenses --import ptm-expenses-precedents.json"
+
+power:     ## How big a change could this much history actually detect?
+	$(ENV) $(PY) -m ptm.report expenses v2 --power
 
 cost:      ## Forecast what a full LLM-backed replay would cost
 	$(ENV) $(PY) -c "import json; from ptm import report; \

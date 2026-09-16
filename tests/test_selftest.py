@@ -198,18 +198,28 @@ class TestOtherDomain:
 
 
 class TestPointInTimeCheck:
+    """``run`` is the demonstration; ``main`` is the argv-taking entry point.
+
+    They were one function, which is why ``python -m ptm.pit_check --help`` ran
+    the whole comparison instead of printing usage, and why the domain and
+    version arguments it already took could not be reached from a shell. The
+    refusals below are about ``run``, because that is where they are raised;
+    ``main`` turns each of them into an exit code and a line on stderr, which is
+    what tests/test_hardening.py checks.
+    """
+
     def test_reports_the_documented_error_count(self, fresh_db, capsys):
         from ptm.seed import seed_expenses
 
         seed_expenses()
-        pit_check.main("expenses", "v2")
+        pit_check.run("expenses", "v2")
         out = capsys.readouterr().out
         assert number_before(out, "flips") == 147
         assert re.search(r"wrong on 39 / 600 cases", out), out
 
     def test_refuses_without_data_rather_than_reporting_zero(self, fresh_db):
         with pytest.raises(SystemExit, match="no cases"):
-            pit_check.main("expenses", "v2")
+            pit_check.run("expenses", "v2")
 
     def test_refuses_a_domain_with_no_point_in_time_fact(self, fresh_db, expenses):
         import ptm.config as config
@@ -220,4 +230,11 @@ class TestPointInTimeCheck:
             m.setattr(config, "load_domain", lambda name: bare)
             m.setattr(pit_check, "load_domain", lambda name: bare)
             with pytest.raises(SystemExit, match="no pit_field"):
-                pit_check.main("expenses", "v2")
+                pit_check.run("expenses", "v2")
+
+    def test_the_entry_point_turns_those_into_exit_codes(self, fresh_db, capsys):
+        """A traceback out of the one command whose job is to show the project
+        running cleanly is the failure ptm/cli.py exists for."""
+        assert pit_check.main(["expenses", "v2"]) == 2
+        err = capsys.readouterr().err
+        assert "no cases" in err and "Traceback" not in err

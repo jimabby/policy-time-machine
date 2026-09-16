@@ -233,6 +233,7 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
                     if t["field"] == field and (not clause or t["clause"] == clause)), None)
 
     points = []
+    signatures = []
     for value in values:
         patched, hits = variant(domain, version, field, value, clause)
         if not hits:
@@ -244,6 +245,10 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
         verdicts = {c.case_id: offline_verdict(c, patched, version) for c in cases}
         found = diff.flips(cases, verdicts, patched, baseline=baseline)
         summary = diff.summarise(found, len(cases), patched)
+        # Which cases moved, not how many. Two settings can reach the same count
+        # through different cases, and calling that "no effect" would be the same
+        # confident wrong answer the collapsing check exists to prevent.
+        signatures.append(_signature(found))
         points.append({
             "value": value,
             "is_current": current is not None and float(value) == float(current),
@@ -267,6 +272,56 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
         "cases": len(cases),
         "impact_unit": domain.impact_unit,
         "points": points,
+        "inert": (_reading(len(set(signatures)) == 1, field, clause)
+                  if len(signatures) > 1 else _unmeasured()),
+    }
+
+
+def _signature(found: list) -> frozenset:
+    """Which cases moved and where to - the thing a setting either changes or not."""
+    return frozenset((f.case_id, f.new_outcome) for f in found)
+
+
+def _unmeasured() -> dict:
+    """Too few settings to say anything, said rather than defaulted to 'moves'."""
+    return {"measured": False,
+            "inert": False,
+            "hint": "a dial needs at least two settings before anything can be said about "
+                    "whether it moves decisions",
+            "hint_key": "hint.dial_needs_two"}
+
+
+def _reading(inert: bool, field: str, clause: str = "") -> dict:
+    """Whether a dial moved any decision at all, across the settings tried.
+
+    The finding a flat curve is actually making, said out loud. A dial can be
+    perfectly sweepable, rewrite cleanly at every setting, and still not change
+    one outcome anywhere on its range - because a rule before it in the order
+    decides those cases first, or because the outcome it would give is the one
+    they fall through to anyway. The shipped fixture has exactly that: clause
+    6.1's ``grade`` exemption is only ever reached by cases clause 1.1 has
+    already declined to decide, and the outcome it gives is the default. Moving
+    it changes which clause is *cited* and nothing else.
+
+    A column of identical numbers is not wrong there, it just reads as "this
+    threshold is not very sensitive" - a far weaker claim than "this threshold
+    decides nothing". The first invites somebody to pick a round number off the
+    curve; the second sends them to look at rule order.
+    """
+    where = f"clause {clause} " if clause else ""
+    return {
+        "measured": True,
+        "inert": inert,
+        "field": field,
+        "clause": clause,
+        "note": (f"no setting tried moves a single decision: {where}{field} changes which "
+                 f"clause is cited, not what anybody gets. The fix is in the rules before "
+                 f"it in the order - one of them is deciding these cases first - not in "
+                 f"the number."
+                 if inert else
+                 f"{where}{field} moves decisions across the range swept"),
+        "note_key": "note.dial_inert" if inert else "note.dial_moves",
+        "note_args": {"field": field, "clause": clause},
     }
 
 
@@ -322,6 +377,7 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
 
     current_first, current_second = current_of(first), current_of(second)
     points = []
+    signatures: dict[tuple, frozenset] = {}
     for a in first["values"]:
         patched_a, hits_a = variant(domain, version, first["field"], a,
                                     str(first.get("clause") or ""))
@@ -335,6 +391,7 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
             verdicts = {c.case_id: offline_verdict(c, patched, version) for c in cases}
             found = diff.flips(cases, verdicts, patched, baseline=baseline)
             summary = diff.summarise(found, len(cases), patched)
+            signatures[(a, b)] = _signature(found)
             points.append({
                 first["field"]: a,
                 second["field"]: b,
@@ -367,7 +424,38 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
         "impact_unit": domain.impact_unit,
         "points": points,
         "interaction": _interaction(points, first["values"], second["values"]),
+        # Each axis on its own. A grid of identical columns reports
+        # ``independent``, which is true and is read as the opposite of the
+        # sentence a reader needs: that one of these two dials decides nothing
+        # at any setting of the other.
+        "first_inert": _axis_inert(signatures, first, second, "first"),
+        "second_inert": _axis_inert(signatures, first, second, "second"),
     }
+
+
+def _axis_inert(signatures: dict, first: dict, second: dict, axis: str) -> dict:
+    """Whether one axis of a grid moves anything, at every setting of the other.
+
+    Every setting rather than one of them, which is the only reading that
+    survives two dials interacting: a threshold that does nothing while its
+    neighbour sits at 25 and a great deal at 250 is not an inert dial, and a
+    single row or column would report it as one.
+    """
+    moving, holding = (first, second) if axis == "first" else (second, first)
+    field, clause = moving["field"], str(moving.get("clause") or "")
+    if len(moving["values"]) < 2:
+        return _unmeasured()
+    measured = False
+    for held in holding["values"]:
+        along = [signatures.get((a, held) if axis == "first" else (held, a))
+                 for a in moving["values"]]
+        along = [sig for sig in along if sig is not None]
+        if len(along) < 2:
+            continue
+        measured = True
+        if len(set(along)) > 1:  # it moved somewhere, which settles it
+            return _reading(False, field, clause)
+    return _reading(True, field, clause) if measured else _unmeasured()
 
 
 def _no_dial(domain_name: str, version: str, axis: dict, dials: list[dict]) -> str:
@@ -477,6 +565,10 @@ def _print_joint(result: dict) -> None:
         print(f"{a:<{width}}" + "".join(cells))
     print(f"  (* = the settings in force. net {unit} and the policy-driven split are in "
           f"the JSON form of this result.)")
+    for side in ("first_inert", "second_inert"):
+        reading = result.get(side) or {}
+        if reading.get("measured") and reading.get("inert"):
+            print(f"\n  WARNING {reading['note']}")
     interaction = result["interaction"]
     if interaction.get("measured"):
         print(f"\ninteraction: moving {first['field']} changes "
@@ -577,6 +669,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{p['value']:>14}{p['flips']:>8}{p['flip_rate']:>7.1%}{p['loosening']:>8}"
               f"{p['tightening']:>9}{p['net_impact']:>13,.0f}"
               f"{p['policy_driven_flips']:>15}{mark}")
+    # Ahead of the caveat about the rules, because it is the stronger statement:
+    # a flat curve is not a curve anybody should be picking a round number off.
+    inert = result.get("inert") or {}
+    if inert.get("measured") and inert.get("inert"):
+        print(f"\n  WARNING {inert['note']}")
     # After the table, not before it: the caveat is about the numbers a reader
     # has just seen, and above them it is read as preamble and skipped.
     _warn_about_the_rules(domain_name, version)

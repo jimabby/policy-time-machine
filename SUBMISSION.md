@@ -92,7 +92,15 @@ into `include/domains/` and five new DAGs appear.
 | `precedent_gate_<domain>` | Woken by *that* asset. Re-judges every human ruling under the candidate and **fails** on a reversal. |
 | `judge_stability_<domain>` | Judges the same cases repeatedly to measure how often the judge contradicts itself — the error bar on everything else. |
 | `propose_<domain>` | Points the same `LLMOperator` the other way: `output_type=PolicyPatch` has a model *write* the next version, which the gate then re-judges. |
-| `ptm_retention` | Weekly. Drops the cache and sample rows that have stopped earning their disk, and compacts the file. |
+| `ptm_retention` | Weekly. Drops the cache, sample, verdict and flip rows that have stopped earning their disk, and compacts the file. |
+
+Every one of those has a `python -m ptm.*` counterpart that needs no Airflow —
+including the gate, which for a long time was the exception: the regression
+suite this project is *for* could only be reached by starting Airflow and
+triggering a DAG, while the lint, the preflight, the sweep and the calibration
+score all ran in CI. `python -m ptm.gate` is that DAG's enforce step reading
+stored verdicts, with three exit codes, because a precedent nothing has judged
+is not a pass and a shell testing for zero has to be able to tell the two apart.
 
 **Typed verdicts, not parsed prose.** `LLMOperator` with `output_type=Verdict`
 means every answer arrives as a validated object with an outcome, a confidence
@@ -180,6 +188,32 @@ open — with nothing in the logs but an unawaited-coroutine warning. Asserting
 that the app *carried* the dependency passed the whole time, which is why the
 test now drives a real client with no token and asserts on what it gets back.
 
+**A rule that can never fire.** `offline_rules` are tried in order and the first
+match decides the case, so a general restriction written above the exemption it
+was meant to carve out of makes that exemption unreachable. It passes every
+other check here — it parses, reads real fields, cites a real clause — and it
+decides nothing, so its outcome is never produced and its clause never cited.
+Silent in exactly the way a misspelled field name is, and now arriving from a
+model as well as from a person, because the proposer writes these. The lint
+proves it statically and one-directionally: it reports a shadow only where it
+can show one, so it never fires on a rule set somebody has thought about.
+
+**A curve that was flat for the wrong reason.** A threshold sweep that returns
+the same number at every setting reads as "this dial is not very sensitive". The
+shipped fixture has one where the truth is much stronger — the grade exemption
+in clause 6.1 is only ever reached by cases clause 1.1 has already declined to
+decide, and the outcome it gives is the one they fall through to anyway, so
+moving it changes which clause is *cited* and nothing else. The grid reported
+the two dials "independent", which is true and reads as the opposite of the
+finding. A dial that moves no decision at any setting now says so.
+
+**The question that comes before the backfill.** Every band here was
+retrospective: how precise a rate turned out to be, once it had been paid for.
+Nothing could answer *how many cases do I need to tell 20% from 24%* — and the
+answer for the shipped fixture is 1,340 per arm against the 600 that exist, so a
+version comparison turning on four points is a comparison about sample size.
+That refusal now sits under the tiles, in the export bundle and in CI.
+
 **The boring things that only fail in production.** Timestamps written in three
 different zones into columns SQLite compares as *text* (wrong for one hour a
 year, silently). A data-interval bound serialising with a `+00:00` suffix that
@@ -187,12 +221,28 @@ sorts *above* a naive timestamp, dropping cases decided exactly on a boundary �
 the one loss a point-in-time replay must never have. A cache keyed on
 `(case, version)` instead of on the prompt, which would serve a stale verdict
 after every clause edit because editing a clause does not change the version
-label.
+label. A HITL queue addressed to nobody, with no timeout and no notifier, so a
+contested case waited indefinitely and was answerable by whoever found it — and
+the reviewer's id read off a key the operator does not send, so every precedent
+a real run recorded was filed against `unknown`, on the one field whose entire
+point is that a named person is accountable. Adding the timeout meant first
+making the timeout safe: Airflow answers an expired HITL task with `defaults`,
+which here is the most generous outcome in the domain, and a review the clock
+answered is now refused rather than written into the permanent record.
+
+And a login that did not exist. `_AIRFLOW_WWW_USER_USERNAME`/`PASSWORD` set to
+`admin`/`admin` is what an Airflow 2 image reads; 3.1 has no `airflow users`
+command and no FAB user table, so the demo's first instruction — in the README,
+the Makefile and the demo script — named a credential that could not work, while
+the one that did was a random password regenerated on every container start and
+printed once into the logs.
 
 ---
 
-**Verified:** 831 tests (689 need nothing but Python), `ruff` clean, all eleven
+**Verified:** 995 tests (849 need nothing but Python), `ruff` clean, all eleven
 DAGs parsing under a real Airflow in both offline and LLM-backed configurations,
 the plugin's routes driven through a real client, and the Diff Explorer loaded in
 Chromium and clicked through — failing on any console error or any panel that
-renders nothing.
+renders nothing. The precedent gate runs as an ordinary CI step, and the
+precedent set is exported and imported back, because an export nothing can read
+back is a backup nobody has tested.

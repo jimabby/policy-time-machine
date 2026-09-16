@@ -6,13 +6,13 @@ rather it were not in the repo.
 **Before you start**
 
 ```bash
-make up                      # Airflow at localhost:8080 (admin/admin), seeds on boot
+make up                      # Airflow at localhost:8080 (no login), seeds on boot
 ```
 
 Have three things open and ready to switch between:
 
 - **A** — a terminal in the repo, font large enough to read at 720p
-- **B** — the Airflow UI, already logged in, on the DAGs list
+- **B** — the Airflow UI (no login needed), on the DAGs list
 - **C** — the Diff Explorer at `localhost:8080/ptm/`, expenses / v2 selected and
   already loaded (it fetches on select; do not let the judges watch it load)
 

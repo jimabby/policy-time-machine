@@ -7,5 +7,12 @@ include/ptm.db
 # which is also the act of a person taking responsibility for it.
 include/drafts/
 logs/
+# What `make export` and `make rulings` write into the working directory.
+# Generated output, like the database: a bundle is a snapshot of a replay and
+# a rulings export is a copy of the precedents table, and the copy going stale
+# beside the thing it was copied from is how a regression suite gets argued
+# from a file nobody can date.
+ptm-*.json
+ptm-*.csv
 .env
 .pytest_cache/

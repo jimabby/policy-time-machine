@@ -69,9 +69,17 @@ jobs:
       # nine read --help as the name of a domain, and ptm.selftest got as far
       # as trying to seed one and exited on a traceback. Exit status is the
       # assertion - `set -e` fails this step if any of them returns non-zero.
+      #
+      # The list was written from that count of nine and then fell behind it:
+      # ptm.seed and ptm.pit_check kept the old behaviour with nothing to say
+      # so, and `python -m ptm.seed --help` did not merely fail to print usage,
+      # it seeded every domain. The list is now also asserted against the
+      # modules that actually have a main() - see tests/test_cli_and_retention.py
+      # - so this loop cannot silently cover less than it claims again.
       - name: Every entry point answers --help
         run: |
-          for m in preflight calibration rules lint prune sweep report proposal selftest; do
+          for m in preflight calibration rules lint prune sweep report proposal \
+                   selftest seed pit_check gate precedents; do
             python -m ptm.$m --help > /dev/null
           done
         env:
@@ -95,6 +103,54 @@ jobs:
           python -m ptm.calibration expenses v2
           python -m ptm.proposal expenses v2
           python -m ptm.proposal expenses --list
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The regression suite this whole project is for, run the way CI runs
+      # everything else. It was the one measurement with no entry point: the
+      # lint, the preflight, the sweep and the calibration score all ran here
+      # and the gate could only be reached by starting Airflow. It reads the
+      # verdicts the steps above stored, so it costs nothing and checks the
+      # same numbers the dashboard shows.
+      #
+      # --introduced-only because the shipped fixture's status quo reverses two
+      # rulings and the candidate introduces neither; failing on those would be
+      # failing this build for a decision nobody in it made. Drop the flag to
+      # hold a policy to every ruling on file, which is what the DAG does.
+      - name: The precedent gate
+        run: |
+          python -m ptm.gate expenses v2 --introduced-only
+          python -m ptm.gate refunds v2 --introduced-only --offline-judge
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # What this much history could have detected in the first place. Cheap,
+      # and the one band here that is not about a measurement already taken -
+      # two versions differing by less than it differ by sample size before
+      # they differ by policy.
+      - name: Sample size
+        run: |
+          python -m ptm.report expenses v2 --power
+          python -m ptm.report expenses v2 --power --target 0.20
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # Precedents are the only output here that cannot be recomputed, and the
+      # only one worth moving between databases. Round-tripped rather than
+      # merely exported: an export nothing can read back is a backup nobody has
+      # tested. The re-import must be a no-op - every ruling already on file and
+      # saying the same thing - which is what exit 0 asserts.
+      - name: Precedents round-trip
+        run: |
+          python -m ptm.precedents expenses -o /tmp/rulings.json
+          python -c "import json; p=json.load(open('/tmp/rulings.json'));             assert p['format'] == 'ptm-precedents/1', p['format'];             print(len(p['precedents']), 'ruling(s),', len(p['superseded']), 'superseded')"
+          python -m ptm.precedents expenses --import /tmp/rulings.json
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

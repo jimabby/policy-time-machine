@@ -3,13 +3,21 @@
 Three things that were true of this project and are not the kind of thing a
 feature test catches, because none of them is about what the engine computes.
 
-**Every entry point could be asked for help except one, by accident.** Nine
-modules parse their own arguments and only :mod:`ptm.sweep` answered ``--help``,
-because its usage string happened to be what it printed when given too few
-arguments. The rest read ``--help`` as the name of a domain: the best of them
-said "unknown domain '--help'" and :mod:`ptm.selftest` - the command whose whole
-job is to show the project running cleanly - got as far as trying to seed it and
-exited on an uncaught ``KeyError``.
+**Every entry point could be asked for help except one, by accident.** The
+modules here parse their own arguments and only :mod:`ptm.sweep` answered
+``--help``, because its usage string happened to be what it printed when given
+too few arguments. The rest read ``--help`` as the name of a domain: the best of
+them said "unknown domain '--help'" and :mod:`ptm.selftest` - the command whose
+whole job is to show the project running cleanly - got as far as trying to seed
+it and exited on an uncaught ``KeyError``.
+
+That was fixed for nine of them and the list below was written from the same
+count, so :mod:`ptm.seed` and :mod:`ptm.pit_check` kept the old behaviour with
+nothing to say so - and ``python -m ptm.seed --help`` was the worst of the lot,
+because it did not merely fail to print usage, it *seeded every domain*, and
+with ``--force`` in front of it would have cleared every derived table for them.
+Hence the assertion at the bottom of this file: the list is checked against the
+modules that actually have a ``main``, so it cannot fall behind again.
 
 **Retention was the one chore left outside Airflow.** ``verdict_cache`` and
 ``judge_samples`` grow because the loop works, and the only way to drop them was
@@ -28,7 +36,22 @@ import re
 
 import pytest
 
-from ptm import calibration, cli, lint, preflight, proposal, prune, report, rules, store, sweep
+from ptm import (
+    calibration,
+    cli,
+    gate,
+    lint,
+    pit_check,
+    precedents,
+    preflight,
+    proposal,
+    prune,
+    report,
+    rules,
+    seed,
+    store,
+    sweep,
+)
 from ptm import selftest as selftest_module
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -46,6 +69,10 @@ ENTRY_POINTS = [
     ("ptm.report", report.main),
     ("ptm.proposal", proposal.main),
     ("ptm.selftest", selftest_module.cli_main),
+    ("ptm.seed", seed.main),
+    ("ptm.pit_check", pit_check.main),
+    ("ptm.gate", gate.main),
+    ("ptm.precedents", precedents.main),
 ]
 ENTRY_IDS = [name for name, _ in ENTRY_POINTS]
 
@@ -76,6 +103,35 @@ class TestEveryEntryPointAnswersHelp:
         """
         assert main(["nosuchdomain", "--help"]) == 0
         assert "usage" in capsys.readouterr().out.lower()
+
+    def test_the_list_above_holds_every_module_with_a_cli(self):
+        """The list is hand-maintained, which is how two modules fell off it.
+
+        Discovered here rather than in place of the list: a module that stops
+        having a CLI should fail loudly instead of quietly dropping out of the
+        sweep above, and a module that grows one should fail here instead of
+        quietly never being checked. Both directions, because the list was wrong
+        in the second one for two releases - ptm.seed answered --help by seeding
+        every domain, and nothing in this file could see it.
+        """
+        import importlib
+        import pkgutil
+
+        import ptm
+
+        listed = {name for name, _ in ENTRY_POINTS}
+        found = set()
+        for module in pkgutil.iter_modules(ptm.__path__):
+            loaded = importlib.import_module(f"ptm.{module.name}")
+            main = getattr(loaded, "main", None) or getattr(loaded, "cli_main", None)
+            # A `main` that is somebody else's import, not this module's own
+            # entry point - ptm.report imports nothing of the kind, but a future
+            # module might.
+            if callable(main) and main.__module__ == loaded.__name__:
+                found.add(f"ptm.{module.name}")
+        assert found == listed, (
+            f"entry points not covered by the --help sweep: {sorted(found - listed)}; "
+            f"listed but no longer entry points: {sorted(listed - found)}")
 
     def test_a_domain_named_help_would_still_be_reachable(self):
         """Only the dashed spellings count.

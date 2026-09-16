@@ -93,7 +93,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | **Data intervals** | Make the replay *honest*. Each run only sees cases inside its own window, and each case is hydrated with facts known on its decision date. **Skip this and 39 of 600 cases come out wrong** — see below. |
 | **Dynamic task mapping** | One judge task per case, with concurrency capped so you don't melt the model endpoint. Doubled when the baseline pass is on. |
 | **Common AI provider** | `LLMOperator` with `output_type=Verdict`, so every verdict is typed, not parsed out of prose. `usage_limits` caps spend per task. The vendor lives in a connection — switching models never touches DAG code. |
-| **HITL operators** | `HITLOperator` deferred in the triggerer, holding no worker slot, asking a human for the *correct outcome* — not a yes/no. |
+| **HITL operators** | `HITLOperator` deferred in the triggerer, holding no worker slot, asking a human for the *correct outcome* — not a yes/no. Addressed to named reviewers, with a notifier and a response timeout; a review the clock answers is refused rather than written into precedent. |
 | **Assets** | `ptm://<domain>/flips` wakes adjudication; `ptm://<domain>/precedents` wakes the regression gate. Nothing is polled. |
 | **Plugin (FastAPI + external view)** | The Policy Diff Explorer, a tab inside the Airflow UI. |
 | **Dynamic DAG generation** | Drop a YAML in `include/domains/` and five new DAGs appear. The DAG code contains zero domain knowledge — [a test asserts it](tests/test_dags.py). `ptm_retention` is the one DAG built outside that loop, because the tables it prunes are shared by every domain. |
@@ -222,6 +222,24 @@ What is recorded is the *circumstances* as well as the answer — which candidat
 policy the reviewer was shown, and the verdict they were overturning. A ruling
 that does not say what it was a ruling about cannot be re-read later, which
 matters because the gate below enforces it forever.
+
+**And who ruled.** `ruled_by` is the field that makes a precedent a fact about a
+person rather than a row in a table, and it was being read off the wrong key:
+`HITLOperator` returns the reviewer as `responded_by_user`, a `{id, name}` pair,
+and this read `user_id`. Every precedent a real run recorded was therefore filed
+against `unknown` — on the one field a permanent record cannot afford to lose,
+in the one place this pipeline defers to a human.
+
+The queue now also carries the three rails the operator has always offered and
+nothing set: `assigned_users`, so it is addressed to the people accountable for
+it rather than to whoever finds it; `notifiers`, so somebody is told it exists;
+and `response_timeout_hours`, so a contested case does not wait forever in
+silence. The timeout is only safe because of what sits behind it — Airflow
+answers an expired HITL task with `defaults`, which here is the **most generous
+outcome in the domain**, and writing that into the only durable artefact in this
+system because nobody looked would be the worst failure it has. So `record`
+refuses any response that came from the clock rather than from a person, says so
+in the log, and leaves the flip in the queue.
 
 **`precedent_gate_<domain>`** — the regression suite, and the only place the
 judge is scored against an answer rather than against itself. Fails on a reversal, and
@@ -723,11 +741,22 @@ a threshold search, that is worth knowing before paying for one.
 
 ### Who takes out the bins
 
-Two tables here grow without bound, and they grow **because the loop works**.
+Four tables here grow without bound, and they grow **because the loop works**.
 The cache key is the prompt, so every clause edit strands the entire generation
 of entries it invalidated — those rows can never be hit again, by construction.
 `judge_samples` holds one row per (case, repeat) for every stability run ever
 made, and only the newest backs a reported figure.
+
+`verdicts` and `flips` are the other two, they are the largest of the four, and
+they were the last to be noticed because they do not *look* like scratch space:
+one row per case per run, six hundred at a time, holding real results. But every
+reader of either — `latest_verdicts`, `flips_for_policy`, the clause breakdown,
+the blast radius — takes the newest row per case and nothing else, so the moment
+the next run writes over one, the old row is unreachable by exactly the argument
+that justifies dropping a stranded cache entry. The newest row for each case is
+never dropped at any age: it is what the precedent check, the calibration score
+and the rule agreement are all computed from, and losing it would make a version
+read as *unjudged* rather than as unchanged.
 
 `ptm.prune` has always known how to drop them. What it had no way to do was
 *happen*: the only lever was a command somebody had to remember to run, which in
@@ -761,16 +790,18 @@ rather than to what was dropped.
 
 ```
 $ make vacuum
-removed 4,182 row(s) from every domain, older than 90 day(s)
+removed 9,782 row(s) from every domain, older than 90 day(s)
   cross_checks                 3
+  flips                    2,200
   judge_samples              600
   verdict_cache            3,579
+  verdicts                 3,400
 vacuumed: 12,058,624 -> 3,342,336 bytes (8,716,288 reclaimed)
 ```
 
-Nothing here touches precedents, their history, the drafts table, or the
-aggregates the dashboard reads. Age is not a reason to forget a human ruling,
-and a run row is what a trend is drawn from.
+Nothing here touches precedents, their history, the drafts table, the aggregates
+the dashboard reads, or the current verdict and flip for any case. Age is not a
+reason to forget a human ruling, and a run row is what a trend is drawn from.
 
 ### The second measurement is nearly free
 
@@ -839,6 +870,90 @@ found again. It leaves the old entries on disk — unlike clearing the table —
 so *what did the judge say before the model changed underneath us* stays a
 question the database can answer.
 
+### The gate, without Airflow
+
+`precedent_gate_<domain>` is what this README calls the point, and it was the
+one measurement here you could not run from a shell. The lint, the preflight,
+the sweep, the calibration score and the export bundle all have a `python -m
+ptm.*` entry point, precisely so they can run in CI and on a laptop with no key.
+The regression suite needed you to start Airflow and trigger a DAG.
+
+```bash
+$ python -m ptm.gate expenses v2
+gate: policy v2 vs 8 of 8 precedent(s), against v1 in force
+  exp-0478: finance.lead ruled 'approve' on 2026-09-16, v2 gives 'deny'  (so does v1)
+  exp-0559: finance.lead ruled 'approve' on 2026-09-16, v2 gives 'deny'  (so does v1)
+  0 introduced by v2; 2 the policy in force already reverses, so fixing those is
+  a separate job from this proposal
+every ruling on file was made about policy v2's text as it stands
+
+GATE FAILS: 2 established ruling(s) reversed by v2.     # exit 1
+```
+
+It is the DAG's `enforce` task reading rather than judging: verdicts come from
+whatever the last gate or replay stored, so it costs nothing and scores the same
+numbers the dashboard shows. `--introduced-only` fails only on reversals the
+candidate introduces, which is the right setting for a repository whose status
+quo already reverses a ruling and whose candidate is not to blame for it.
+`--offline-judge` settles a precedent nothing has judged using the offline rules
+— free, deterministic, and the *fixture* answering, which it says out loud.
+
+**Three exit codes, and the third is the one that matters.** 0 passed, 1 failed,
+2 could not be run. A precedent with no verdict on file is not a pass: the DAG
+refuses to report a check it did not make, and a CLI reading stored verdicts has
+the same obligation and an easier way to get it wrong. A shell that only tests
+for zero has to be able to tell "nothing is reversed" from "nothing was
+checked".
+
+### How big a change could this history even detect?
+
+Every other band in this project is retrospective. A flip rate arrives with a
+Wilson interval saying how precise it turned out to be, the judge's noise floor
+says how much of it is the model, and the calibration score says whether the
+judge is right. All three are about a measurement already paid for. The question
+that comes *before* the backfill — **how many cases do I need to tell 20% from
+24%?** — had no answer here at all.
+
+```bash
+$ python -m ptm.report expenses v2 --power --target 0.20
+600 case(s) can detect a move of 7.3% or more from 24.5% (95% confidence, 80% power)
+  anything between 17.2% and 31.8% is inside this sample's noise and must not be
+  reported as a change
+  telling 24.5% from 20.0% needs 1,340 case(s), 740 more than exist. That
+  comparison cannot be settled on this history however much is spent judging it.
+```
+
+That last line is the useful one, and it is a refusal. Two years of expense
+decisions cannot separate a 24.5% flip rate from a 20% one, so a version
+comparison that turns on four points is a comparison about sample size. The
+number sits under the tiles in the Explorer and in the export bundle, because
+the place it is needed is next to the figures somebody is about to argue from.
+
+It is sampling error and nothing else. The judge's noise floor and its accuracy
+against the humans both move the answer further, and none of the three add.
+
+### Carrying the rulings somewhere else
+
+Precedents are the only output here that cannot be recomputed — which is why
+`clear_domain_results` drops every other table and keeps them, why retention
+never touches them, and why the gate exists. There was no way to move them.
+Carrying a regression suite from staging to production, or checking it into
+version control beside the policy it guards, meant copying the whole SQLite
+file, cases and cache and all.
+
+```bash
+python -m ptm.precedents expenses -o rulings.json          # rulings + the archive
+python -m ptm.precedents expenses --import rulings.json    # merge them in
+```
+
+The archive travels with them: a ruling that replaced an earlier one is only
+half the record, and `precedent_history` holds what it replaced. And an import
+**does not overwrite**. A case this database has already ruled on differently is
+reported and skipped, with both answers and both reviewers named, because two
+people disagreeing is settled by them rather than by whichever import ran last.
+`--replace` is the flag that means it, and even then the ruling it replaces is
+archived rather than lost.
+
 ### So did the edit help?
 
 Every panel above is about one version. The question the whole loop exists for
@@ -906,7 +1021,7 @@ check is switched off is worse than no gate.
 ## Run it
 
 ```bash
-make up        # Airflow 3.1 at localhost:8080 (admin/admin), history auto-seeded
+make up        # Airflow 3.1 at localhost:8080 (no login), history auto-seeded
 make demo      # backfill 24 months of replay
 make confirm   # re-judge the biggest flips to check each one reproduces
 make stability # measure the judge's noise floor
@@ -916,6 +1031,25 @@ make draft     # have the proposal DAG write the next version of the policy
 
 Then open **http://localhost:8080/ptm/** for the Diff Explorer, and the
 `adjudicate_expenses` DAG to answer the human-in-the-loop tasks.
+
+**There is no login, deliberately.** The compose file sets
+`simple_auth_manager_all_admins`, which is Airflow's own switch for exactly this
+situation. It replaces `_AIRFLOW_WWW_USER_USERNAME`/`PASSWORD` set to
+`admin`/`admin`, which this file used to carry and which three places here used
+to document — and which does nothing at all on Airflow 3.1, because 3.1 has no
+`airflow users` command and no FAB user table. The default `SimpleAuthManager`
+generates a random password into
+`$AIRFLOW_HOME/simple_auth_manager_passwords.json.generated`, prints it once
+into the startup logs, and generates a different one on every `docker compose
+up`. So the documented credential did not work and the working one was a line of
+log output nobody was told to look for. Set `PTM_OPEN_UI=false` to go back to
+that generated password; a real deployment sets `simple_auth_manager_users` and
+a passwords file, or an auth manager that is not this one.
+
+The Diff Explorer keeps working either way: Airflow's `SimpleAllAdminMiddleware`
+appends a bearer token to every request before routing, and the plugin resolves
+it exactly as it resolves a real session — see **The routes are not public**
+below.
 
 The Explorer opens with **How to read this page** at the top: what each panel
 answers, in the order the panels answer it, and which DAG to trigger when one
@@ -961,13 +1095,16 @@ No Airflow, no API key, whole loop in about a second:
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest, ruff
-make test      # style + lint + 689 engine tests + the whole loop end to end
+make test      # style + lint + 849 engine tests + the whole loop, gate included
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
 make grid      # two thresholds at once - one curve cannot show them interacting
 make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
+make gate      # the precedent regression suite; non-zero if a ruling is reversed
+make power     # how big a change could this much history actually detect?
+make rulings   # export every human ruling, with what each one replaced
 make propose   # draft the next version of the policy (writes nothing)
 make drafts    # what has been drafted, and what the gate made of each
 make export    # everything the Explorer shows, as one file
@@ -986,6 +1123,14 @@ got as far as trying to seed a domain by that name and exited on an uncaught
 `KeyError`. `ptm/cli.py` is one flag set, checked before any argument is
 interpreted as a name, so the usage string is reachable at the moment it is
 actually wanted: when you have just got the arguments wrong.
+
+That fix covered nine modules and the list it was written from was the bug
+itself: `ptm.seed` and `ptm.pit_check` kept the old behaviour, with the test and
+the CI loop both counting to nine and neither able to see them. `python -m
+ptm.seed --help` did not merely fail to print usage — it *seeded every domain*,
+and with `--force` in front of it would have cleared every derived table for
+them. The list is now asserted against the modules that actually have a `main`,
+so it cannot fall behind again.
 
 `make export` matters more than it looks. Every measurement here can be reached
 from a shell with no Airflow and no key — except the one artefact built to
@@ -1071,18 +1216,41 @@ the config, run the same pipeline on a completely different domain.
 ### Lint your domain first
 
 `offline_rules` are maintained by hand next to, but separate from, the markdown
-policy — so they can drift. Two ways that drift is silent:
+policy — so they can drift. Three ways that drift is silent:
 
 ```
 $ python -m ptm.lint
 ERROR broken/offline_rules/v1[0]: 'when' reads unknown field(s) ['employee_grade'];
       the rule would never match and the replay would be silently wrong
 ERROR broken/offline_rules/v1[0]: cites clause '9.9', which policy v1 does not contain
+ERROR broken/offline_rules/v1[2]: can never fire: rule[0] ('amount_gbp > 75')
+      already matches every case 'amount_gbp > 100 and receipt == 'no'' would, and
+      decides them 'deny' from clause 1.1 instead of 'approve' from clause 6.1
 ```
 
 The first is the dangerous one. `offline_verdict` swallows exceptions by design
 — a rule naming a field that does not exist does not crash, it simply never
 matches, and the replay comes out wrong while looking completely healthy.
+
+The third is the same failure from the other direction, and it passes every
+other check here: the rule parses, reads real fields and cites a real clause.
+Rules are tried in order and the first match decides the case, so a general
+restriction written *above* the exemption it was meant to carve out of makes
+that exemption unreachable — its outcome is never produced, its clause never
+cited, and every case it was written for is quietly decided by something else.
+
+`ptm.safe_eval.shadowed` proves it statically, one-directionally and soundly: it
+reports a shadow only where it can show one, so it never fires on a rule set
+somebody has thought about, and it will happily miss a rule made unreachable by
+two earlier rules between them. That is the right trade for a check that fails a
+build. The shipped fixture is a good test of it — expenses/v2 states the receipt
+threshold twice, `grade < 3` denying and `grade >= 3` approving, which is exactly
+the shape a cruder subset check would report as a shadow.
+
+It matters more than it used to. `propose_<domain>` has a **model** write these
+rules for a drafted policy, and the way that goes wrong is precisely the
+ordering mistake above — so `ptm.rules.validate` runs the same check on a
+generated set before it is ever written to disk.
 
 ## Layout
 
@@ -1103,17 +1271,19 @@ ptm/disparity.py                who carries more of the change than the rest of 
 ptm/preflight.py                what is wrong with the policy before it is replayed
 ptm/sweep.py                    what the threshold should be, not just which clause
 ptm/rules.py                    are the offline rules the policy they stand in for?
+ptm/gate.py                     the precedent regression suite, from a shell
+ptm/precedents.py               move the one output that cannot be recomputed
 ptm/proposal.py                 drafts the next version, then makes the gate check it
 ptm/cache.py                    do not pay twice for a prompt already answered
 ptm/cost.py                     what a replay costs, and did cost
 ptm/metered.py                  keeps the token counts LLMOperator only logs
 ptm/lint.py                     domain YAML vs the policies it claims to implement
 ptm/prune.py                    drops the rows that stopped earning their disk
-ptm/cli.py                      one definition of --help, for all nine entry points
+ptm/cli.py                      one definition of --help, for every entry point
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
 ruff.toml                       the style gate, and why each rule is on
-tests/                          831 tests; the engine's 689 need nothing but Python
+tests/                          995 tests; the engine's 849 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1161,7 +1331,17 @@ Built and run against `apache/airflow:3.1.0` with
   directives and nothing in CI could honour them, so three of them had gone
   stale and no build said so;
 - `airflow dags test replay_expenses` completes and persists verdicts, flips
-  and a run summary.
+  and a run summary;
+- the precedent gate runs as an ordinary CI step (`python -m ptm.gate`), which
+  is the point of it having an entry point at all: the regression suite this
+  project is *for* now fails a build the same way the lint does;
+- the precedent set is exported and imported back, because an export nothing
+  can read back is a backup nobody has tested. The re-import must be a no-op,
+  which is what its exit status asserts;
+- every `python -m ptm.*` entry point answers `--help` without doing any work,
+  and the list of them is checked against the modules that actually have a
+  `main` — two had fallen off it, and one of the two *seeded every domain* when
+  asked for help.
 
 ## Caveats
 

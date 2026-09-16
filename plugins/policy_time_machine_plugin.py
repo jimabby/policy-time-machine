@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 from pathlib import Path
 
 from airflow.plugins_manager import AirflowPlugin
@@ -96,6 +97,22 @@ async def require_user(request: Request):
 app = FastAPI(title="Policy Time Machine", dependencies=[Depends(require_user)])
 
 
+#: Anything that is not a plain filename character. A download filename is built
+#: from the domain and version in the path, and those are server data rather than
+#: user input - a domain is a file in include/domains/ and a version is a key of
+#: the policies block or a draft's filename stem. Which is why this is a
+#: correctness fix rather than a hole: a quote or a newline in either would
+#: produce a header that means something other than what it says, and a draft
+#: version is a filename stem, which is a wider input than the YAML ever was.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def filename(*parts: str) -> str:
+    """A Content-Disposition filename that cannot be anything but a filename."""
+    return "-".join(
+        _UNSAFE_IN_FILENAME.sub("_", part).strip("_") or "x" for part in parts)
+
+
 def found(fn, *args, **kwargs):
     """Turn a read model's LookupError into a 404 instead of an opaque 500."""
     try:
@@ -148,6 +165,13 @@ def cost_report(domain: str, version: str) -> dict:
 def stability(domain: str, version: str) -> dict:
     """The error bar on this policy's flip rate."""
     return found(report.stability, domain, version)
+
+
+@app.get("/api/power/{domain}/{version}")
+def power(domain: str, version: str,
+          target: float | None = Query(default=None, ge=0.0, le=1.0)) -> dict:
+    """How big a change this much history could have detected, before believing one."""
+    return found(report.power, domain, version, target)
 
 
 @app.get("/api/cross-check/{domain}/{version}")
@@ -257,7 +281,7 @@ def export_json(domain: str, version: str) -> JSONResponse:
     return JSONResponse(
         bundle,
         headers={"Content-Disposition":
-                 f'attachment; filename="ptm-{domain}-{version}.json"'},
+                 f'attachment; filename="{filename("ptm", domain, version)}.json"'},
     )
 
 
@@ -269,7 +293,7 @@ def export_csv(domain: str, version: str) -> PlainTextResponse:
         body,
         media_type="text/csv",
         headers={"Content-Disposition":
-                 f'attachment; filename="ptm-{domain}-{version}-flips.csv"'},
+                 f'attachment; filename="{filename("ptm", domain, version, "flips")}.csv"'},
     )
 
 

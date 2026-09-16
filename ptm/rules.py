@@ -39,7 +39,7 @@ from .config import DomainConfig, clauses_in, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
 from .lint import payload_fields
 from .models import Case, RuleSet, Verdict
-from .safe_eval import check_expression
+from .safe_eval import check_expression, shadowed
 
 SYNTHESIS_SYSTEM_PROMPT = (
     "You translate written policy into a small ordered list of mechanical "
@@ -154,6 +154,18 @@ def validate(rules: list[dict], domain: DomainConfig, version: str,
         clause = str(rule.get("clause") or "").strip()
         if clause and declared and clause not in declared:
             problems.append(f"{at}: cites clause {clause!r}, absent from policy {version}")
+    # Unreachable rules, last, because the check is about the list rather than
+    # about any one entry. A generated set is ordered by a model that was told
+    # order matters, and the way that goes wrong is a general restriction
+    # written above the exemption it was supposed to carve out of: the
+    # exemption then never fires, its clause is never cited, and the replay is
+    # confidently wrong about every case it was written for. Nothing else here
+    # can see it - the rule parses, reads real fields and cites a real clause.
+    for row in shadowed(rules):
+        problems.append(
+            f"rule[{row['rule_index']}]: can never fire - rule[{row['shadowed_by']}] "
+            f"({row['shadowed_by_expression']!r} -> {row['shadowed_by_outcome']}) already "
+            f"matches every case {row['expression']!r} would. Put the specific rule first.")
     return problems
 
 

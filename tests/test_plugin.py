@@ -390,3 +390,32 @@ class TestPluginRegistration:
         """A mismatch here serves a page whose every request 404s."""
         html = DASHBOARD.read_text(encoding="utf-8")
         assert 'fetch("/ptm" + path)' in html
+
+
+@needs_plugin
+class TestTheDownloadFilename:
+    """The domain and version reach the Content-Disposition header straight out
+    of the URL path. They are server data - a domain is a file in
+    include/domains/ and a version is a key of the policies block - so this was
+    never a hole. It is a correctness fix: a quote or a newline in either builds
+    a header that means something other than what it says, and a draft version
+    is a filename stem, which is a wider input than the YAML ever was.
+    """
+
+    def test_an_ordinary_name_is_unchanged(self):
+        assert load_plugin().filename("ptm", "expenses", "v2") == "ptm-expenses-v2"
+
+    def test_a_quote_cannot_end_the_header_value(self):
+        built = load_plugin().filename("ptm", "expenses", 'v2"; x="y')
+        assert '"' not in built and ";" not in built and chr(10) not in built
+
+    def test_nothing_usable_still_produces_a_filename(self):
+        assert load_plugin().filename("ptm", "expenses", "///") == "ptm-expenses-x"
+
+    def test_the_headers_are_built_through_it(self):
+        source = PLUGIN.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            if "Content-Disposition" in line or "attachment; filename" in line:
+                continue
+        assert source.count("attachment; filename") == 2
+        assert 'filename="{filename(' in source

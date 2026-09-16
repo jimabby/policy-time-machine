@@ -147,12 +147,21 @@ class TestItStaysQuiet:
         assert not [p for p in calibration.gate(report_, config) if "overconfident" in p]
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def ruled(replayed):
     """A replay on file plus a human ruling on one of its cases.
 
     ``report.calibration`` scores stored verdicts against stored precedents, so
     both halves have to exist before there is anything for a gate to act on.
+
+    Module-scoped, and that is load-bearing rather than an optimisation. The
+    database ``replayed`` writes into is session-scoped, and ``save_precedent``
+    archives whatever ruling it replaces into ``precedent_history`` - by design,
+    because a ruling that is overwritten silently is the rot this project is
+    about. Function-scoped, this wrote the same ruling once per test and left a
+    trail of superseded ones behind it, which is not a state any real
+    adjudication produces and which broke the browser suite's assertions about
+    an empty Superseded panel.
     """
     store.save_precedent(Precedent(
         case_id="exp-0001", domain="expenses", correct_outcome="approve",
