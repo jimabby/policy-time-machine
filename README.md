@@ -1114,6 +1114,29 @@ make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
 make discard V=v2-draft1                # or throw it away
 ```
 
+**On Windows, `make` is not there.** A default box has Python, Git and Docker and
+no `make` at all, which makes the task runner the one thing in this project a
+Windows reader cannot start it with. `demo.ps1` is the same tour in the shell
+that *is* there:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\demo.ps1
+```
+
+Sixteen steps in about nine seconds, ordered the way the argument above builds
+rather than alphabetically, each printing the question it answers before the
+output. It finds the virtualenv itself and sets the three environment variables,
+which is the other thing that goes wrong first: without `PTM_INCLUDE_DIR` the
+engine resolves `/opt/airflow/include`, a path that exists only inside the
+container, and says `no domain config 'expenses'` with an empty list of
+available ones. `-Setup` builds the virtualenv on a machine with none, `-Step`
+pauses between sections, `-Quick` drops the two slow ones.
+
+It also knows which steps are *supposed* to exit non-zero. `ptm.gate expenses v2`
+fails on the shipped fixture and that is the correct answer — v1 reverses the
+same two rulings, so the proposal introduces neither — and a script that treated
+that as a broken install would be teaching the wrong lesson on the first run.
+
 Every one of those is a `python -m ptm.*` entry point underneath, and every one
 of them answers `--help`. That is worth a sentence only because it did not: the
 modules parse their own arguments, and `--help` was read as the name of a
@@ -1282,6 +1305,7 @@ ptm/prune.py                    drops the rows that stopped earning their disk
 ptm/cli.py                      one definition of --help, for every entry point
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
+demo.ps1                        the Makefile's tour, for a box with no make
 ruff.toml                       the style gate, and why each rule is on
 tests/                          995 tests; the engine's 849 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
