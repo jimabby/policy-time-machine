@@ -36,7 +36,7 @@ p.note{color:var(--mute);font-size:12px;margin:8px 0 0}
 .howto{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 16px;margin:0 0 24px}
 .howto>summary{cursor:pointer;padding:14px 0;font-weight:600;list-style:none;display:flex;align-items:center;gap:8px}
 .howto>summary::-webkit-details-marker{display:none}
-.howto>summary::before{content:"B8";color:var(--accent);transition:transform .15s}
+.howto>summary::before{content:"\25B8";color:var(--accent);transition:transform .15s}
 .howto[open]>summary::before{transform:rotate(90deg)}
 .howto>summary:hover{color:var(--accent)}
 .howto ol{margin:0 0 14px;padding-left:22px}
@@ -119,6 +119,36 @@ body[data-view=plain] .detailonly{display:none}
 .whorow .cnt{color:var(--dim);font-variant-numeric:tabular-nums}
 .plainfoot{margin:30px 0 0}
 @media(max-width:720px){.verdict .big{font-size:18px}#plain .diagram{padding:13px}}
+
+/* Presentation layer: readable at a distance, with the evidence one click away. */
+a{color:var(--accent)}
+:focus-visible{outline:3px solid var(--warn);outline-offset:4px}
+[id]{scroll-margin-top:150px}
+.intro{padding:28px;border:1px solid #38537d;border-radius:20px;background:linear-gradient(120deg,#1c3154,#121a2d);margin-bottom:22px}
+.intro h2{font-size:clamp(28px,5vw,48px);line-height:1.12;letter-spacing:-.035em;text-transform:none;color:var(--fg);margin:8px 0 16px;max-width:800px}
+.eyebrow{color:var(--loose);text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:700}
+.intro .hero{font-size:17px;margin-bottom:20px}
+.tour-links{display:flex;flex-wrap:wrap;gap:10px}
+.tour-links a{padding:9px 13px;border:1px solid #45628d;border-radius:9px;text-decoration:none;background:#14233c}
+.tour-links a:hover{background:#233c60}
+.story{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px}
+.story-card{padding:22px;border:1px solid var(--line);border-radius:16px;background:var(--panel);min-width:0}
+.story-card h3{font-size:18px;margin:0 0 8px}
+.story-card p{color:var(--dim)}
+.story-number{font-size:44px;font-weight:750;letter-spacing:-.04em}
+.outcome-track{display:flex;height:22px;overflow:hidden;border-radius:8px;background:#26324b;margin:16px 0}
+.outcome-track span{height:100%}
+.story .legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--dim)}
+.story .legend span::before{content:"";display:inline-block;width:9px;height:9px;background:var(--key);border-radius:3px;margin-right:6px}
+.architecture{margin:24px 0;padding:22px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
+.architecture h2{text-transform:none;font-size:22px;color:var(--fg);margin:0 0 8px;letter-spacing:0}
+.flow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px;list-style:none;padding:0;margin:22px 0}
+.flow li{position:relative;border:1px solid #38537d;border-radius:12px;padding:18px;background:#182740}
+.flow li:not(:last-child)::after{content:"\2192";position:absolute;right:-21px;top:35%;color:var(--accent)}
+.flow b{display:block;color:var(--accent);margin-bottom:8px}
+.flow small{display:block;color:var(--dim);margin-top:8px}
+.architecture>p{color:var(--dim);max-width:90ch}
+@media(max-width:720px){.story{grid-template-columns:1fr}.intro{padding:22px}.flow{grid-template-columns:1fr}.flow li:not(:last-child)::after{content:"\2193";right:50%;top:auto;bottom:-25px}.seg{grid-template-columns:minmax(0,1fr)}main>div:not(.intro):not(.story):not(.tiles){overflow-x:auto}.dl{margin-left:0}}
 </style></head><body>
 <header>
   <span class=mark>&#9719;</span><h1>Policy Time Machine</h1>
@@ -138,6 +168,29 @@ body[data-view=plain] .detailonly{display:none}
   <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
 <main>
+  <section class=intro>
+    <span class=eyebrow data-t="story.eyebrow"></span>
+    <h2 data-t="story.title"></h2>
+    <p class=hero data-t="hero.main"></p>
+    <nav class=tour-links aria-label="Tour">
+      <a href="#story" data-t="story.link1"></a>
+      <a href="#clauses" onclick="setView('detail')" data-t="story.link2"></a>
+      <a href="#architecture" data-t="story.link3"></a>
+      <a href="#precedents" onclick="setView('detail')" data-t="story.link4"></a>
+    </nav>
+  </section>
+  <div class=story id=story aria-live=polite></div>
+  <section class=architecture id=architecture aria-labelledby=architecture-title>
+    <h2 id=architecture-title data-t="arch.title"></h2>
+    <p data-t="arch.lede"></p>
+    <ol class=flow>
+      <li><b data-t="arch.1"></b><span data-t="arch.1body"></span><small>Point-in-time data + policy versions</small></li>
+      <li><b data-t="arch.2"></b><span data-t="arch.2body"></span><small>Airflow &rarr; replay &rarr; diff</small></li>
+      <li><b data-t="arch.3"></b><span data-t="arch.3body"></span><small>HITL &rarr; precedent store</small></li>
+      <li><b data-t="arch.4"></b><span data-t="arch.4body"></span><small>Precedent gate &rarr; pass / fail</small></li>
+    </ol>
+    <p data-t="arch.loop"></p>
+  </section>
 <section id=plain>
   <div id=plainerror></div>
   <div class=verdict id=verdict></div>
@@ -287,6 +340,33 @@ const api = async path => {
 // carry markup, and nothing from the API is interpolated without esc() first.
 const I18N = {
 en: {
+  "story.eyebrow": "A rehearsal for your next rule change",
+  "story.title": "What if you could try tomorrow's rules on yesterday?",
+  "story.link1": "01 \u00b7 See the impact",
+  "story.link2": "02 \u00b7 Find the cause",
+  "story.link3": "03 \u00b7 Look under the hood",
+  "story.link4": "04 \u00b7 Meet the human decisions",
+  "story.changed": "How much of the past changes?",
+  "story.of": "{flips} of {cases} recorded decisions get a different answer.",
+  "story.same": "Same answer",
+  "story.different": "Different answer",
+  "story.why": "The plot twist: not every change is new.",
+  "story.split": "{policy} changes are attributed to the proposal. {old} are pre-existing differences between recorded decisions and the old policy.",
+  "story.unknown": "Replay the policy in force as well to separate proposal-driven changes from pre-existing differences.",
+  "story.empty": "No replay yet. Run a replay to reveal the impact of this version.",
+  "story.scope": "All replayed cases; the case-ID filter below only filters the decision table.",
+  "arch.title": "How the time machine works",
+  "arch.lede": "Follow a decision from the old rulebook to a lesson the next proposal must respect.",
+  "arch.1": "01 \u00b7 Remember",
+  "arch.1body": "Load old decisions with the facts known at the time.",
+  "arch.2": "02 \u00b7 Rewind",
+  "arch.2body": "Apply both rulebooks and explain where the answers differ.",
+  "arch.3": "03 \u00b7 Ask a person",
+  "arch.3body": "Route selected changes to reviewers. Keep their answers and reasons.",
+  "arch.4": "04 \u00b7 Check the next change",
+  "arch.4body": "Test a proposal against those rulings. Flag reversals before adoption.",
+  "arch.loop": "The loop: human rulings feed the next policy check. A separate proposal workflow can draft an amendment and request another replay; a person decides whether to adopt it. The dashboard reads the results from the shared database.",
+
   "app.title": "Policy Time Machine",
   "aria.domain": "Domain", "aria.version": "Policy version", "aria.lang": "Language",
   "aria.search": "Filter case IDs", "search.placeholder": "Filter case IDs",
@@ -296,7 +376,7 @@ en: {
   "status.loading": "Loading...", "status.unavailable": "Unavailable",
   "status.runs": "{n} run{s}", "status.flips": " flips", "status.shown": " shown",
   "version.draft": " (draft)", "plural.s": "s",
-  "hero.main": "Replay real decisions under a proposed rule, attribute every change to the clause that caused it, surface who it lands on, and retain human rulings as regression tests.",
+  "hero.main": "Change a rule. Replay the past. See who gets a different answer, what it costs, and which decisions need a human.",
   "draft.note": "<strong class=warn>{v} is a drafted amendment</strong>, written by the proposal DAG from the evidence below and approved by nobody. Everything on this page measures it exactly as it would measure a policy somebody wrote.",
 
   // ---- the how-to panel
@@ -664,6 +744,33 @@ en: {
   "fail.nodomains": "No policy domains are configured yet.",
 },
 zh: {
+  "story.eyebrow": "\u4e3a\u4e0b\u4e00\u6b21\u89c4\u5219\u53d8\u66f4\u9884\u6f14",
+  "story.title": "\u7528\u660e\u5929\u7684\u89c4\u5219\uff0c\u91cd\u770b\u6628\u5929\u7684\u51b3\u5b9a\u3002",
+  "story.link1": "01 \u00b7 \u770b\u5f71\u54cd",
+  "story.link2": "02 \u00b7 \u627e\u539f\u56e0",
+  "story.link3": "03 \u00b7 \u770b\u67b6\u6784",
+  "story.link4": "04 \u00b7 \u770b\u4eba\u5de5\u88c1\u51b3",
+  "story.changed": "\u8fc7\u53bb\u7684\u51b3\u5b9a\u4f1a\u6539\u53d8\u591a\u5c11\uff1f",
+  "story.of": "{cases} \u6761\u5386\u53f2\u51b3\u7b56\u4e2d\uff0c{flips} \u6761\u5f97\u5230\u4e0d\u540c\u7b54\u6848\u3002",
+  "story.same": "\u7b54\u6848\u76f8\u540c",
+  "story.different": "\u7b54\u6848\u4e0d\u540c",
+  "story.why": "\u8f6c\u6298\uff1a\u5e76\u975e\u6240\u6709\u53d8\u5316\u90fd\u6765\u81ea\u65b0\u89c4\u5219\u3002",
+  "story.split": "{policy} \u6761\u53d8\u5316\u5f52\u56e0\u4e8e\u63d0\u6848\uff1b{old} \u6761\u662f\u5386\u53f2\u51b3\u5b9a\u4e0e\u539f\u6709\u89c4\u5219\u4e4b\u95f4\u5df2\u5b58\u5728\u7684\u5dee\u5f02\u3002",
+  "story.unknown": "\u540c\u65f6\u91cd\u653e\u73b0\u884c\u653f\u7b56\uff0c\u624d\u80fd\u533a\u5206\u63d0\u6848\u9020\u6210\u7684\u53d8\u5316\u548c\u539f\u6709\u5dee\u5f02\u3002",
+  "story.empty": "\u5c1a\u65e0\u91cd\u653e\u7ed3\u679c\u3002\u8fd0\u884c\u91cd\u653e\u540e\u5373\u53ef\u67e5\u770b\u6b64\u7248\u672c\u7684\u5f71\u54cd\u3002",
+  "story.scope": "\u7edf\u8ba1\u5168\u90e8\u91cd\u653e\u6848\u4f8b\uff1b\u4e0b\u65b9\u7684\u6848\u4f8b\u7f16\u53f7\u7b5b\u9009\u4ec5\u5f71\u54cd\u51b3\u7b56\u8868\u3002",
+  "arch.title": "\u65f6\u5149\u673a\u5982\u4f55\u8fd0\u8f6c",
+  "arch.lede": "\u4ece\u65e7\u89c4\u5219\u51fa\u53d1\uff0c\u8ba9\u4e00\u6b21\u51b3\u5b9a\u6210\u4e3a\u4e0b\u4e00\u6b21\u63d0\u6848\u5fc5\u987b\u5c0a\u91cd\u7684\u7ecf\u9a8c\u3002",
+  "arch.1": "01 \u00b7 \u8bb0\u4f4f\u5386\u53f2",
+  "arch.1body": "\u52a0\u8f7d\u5386\u53f2\u51b3\u5b9a\u548c\u5f53\u65f6\u5df2\u77e5\u7684\u4e8b\u5b9e\u3002",
+  "arch.2": "02 \u00b7 \u91cd\u653e\u51b3\u7b56",
+  "arch.2body": "\u5e94\u7528\u65b0\u65e7\u4e24\u7248\u89c4\u5219\uff0c\u89e3\u91ca\u7b54\u6848\u4e3a\u4f55\u4e0d\u540c\u3002",
+  "arch.3": "03 \u00b7 \u8bf7\u4eba\u5224\u65ad",
+  "arch.3body": "\u5c06\u9009\u4e2d\u7684\u53d8\u5316\u4ea4\u7ed9\u5ba1\u6838\u4eba\uff0c\u4fdd\u7559\u7b54\u6848\u548c\u7406\u7531\u3002",
+  "arch.4": "04 \u00b7 \u68c0\u67e5\u4e0b\u4e00\u6b21\u53d8\u5316",
+  "arch.4body": "\u5bf9\u7167\u4eba\u5de5\u88c1\u51b3\u68c0\u67e5\u63d0\u6848\uff0c\u5728\u91c7\u7528\u524d\u6807\u51fa\u8fdd\u80cc\u88c1\u51b3\u4e4b\u5904\u3002",
+  "arch.loop": "\u5faa\u73af\uff1a\u4eba\u5de5\u88c1\u51b3\u8fdb\u5165\u4e0b\u4e00\u6b21\u653f\u7b56\u68c0\u67e5\u3002\u72ec\u7acb\u7684\u63d0\u6848\u6d41\u7a0b\u53ef\u8d77\u8349\u4fee\u8ba2\u5e76\u8bf7\u6c42\u518d\u6b21\u91cd\u653e\uff1b\u662f\u5426\u91c7\u7528\u7531\u4eba\u51b3\u5b9a\u3002\u4eea\u8868\u677f\u4ece\u5171\u4eab\u6570\u636e\u5e93\u8bfb\u53d6\u7ed3\u679c\u3002",
+
   "app.title": "政策时光机",
   "aria.domain": "领域", "aria.version": "政策版本", "aria.lang": "语言",
   "aria.search": "按案例编号筛选", "search.placeholder": "按案例编号筛选",
@@ -1142,7 +1249,7 @@ function remember(domain, version) {
   query.set("version", version);
   history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`);
 }
-const PANELS = ["#tiles","#power","#preflight","#clauses","#segments","#disparity","#sweep",
+const PANELS = ["#tiles","#story","#power","#preflight","#clauses","#segments","#disparity","#sweep",
                 "#swbanded","#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
                 "#calibration","#history","#superseded","#drafts",
@@ -1150,6 +1257,8 @@ const PANELS = ["#tiles","#power","#preflight","#clauses","#segments","#disparit
                 "#gatecard"];
 
 function fail(message) {
+  LAST = null;
+  $("#draftnote").hidden = true;
   $("#tiles").innerHTML = `<div class=error>${esc(message)}</div>`;
   // The plain view is the default, so an error that only reached the tiles was
   // invisible to most of the people it was written for.
@@ -1183,6 +1292,21 @@ function renderPower(result) {
     lo: pct(result.detectable_rate_lo),
     hi: pct(result.detectable_rate_hi),
   });
+}
+
+function renderStory(summary) {
+  const n = Number(summary.cases), changed = Number(summary.flips);
+  if (!n) { $("#story").innerHTML = `<p class=empty>${t("story.empty")}</p>`; return; }
+  const rate = Math.max(0, Math.min(100, changed / n * 100));
+  $("#story").innerHTML = `<article class=story-card>
+    <h3>${t("story.changed")}</h3><div class=story-number>${pct(changed / n)}</div>
+    <p>${t("story.of", {flips:num(changed), cases:num(n)})}</p>
+    <div class=outcome-track aria-hidden=true><span style="width:${100-rate}%;background:var(--accent)"></span><span style="width:${rate}%;background:var(--warn)"></span></div>
+    <div class=legend><span style="--key:var(--accent)">${t("story.same")}: ${num(n-changed)}</span><span style="--key:var(--warn)">${t("story.different")}: ${num(changed)}</span></div>
+    <p class=note>${t("story.scope")}</p></article>
+    <article class=story-card><h3>${t("story.why")}</h3>
+    <p>${summary.baseline_versions.length ? t("story.split", {policy:num(summary.policy_driven_flips), old:num(summary.deviation_flips)}) : t("story.unknown")}</p>
+    <a href="#clauses" onclick="setView('detail')">${t("story.link2")} &rarr;</a></article>`;
 }
 
 // ---------------------------------------------------------------- tiles
@@ -2253,7 +2377,9 @@ function renderPlain(data) {
 }
 
 // --------------------------------------------------------------- boot
+let renderSequence = 0;
 async function render() {
+  const sequence = ++renderSequence;
   const domain = $("#domain").value, version = $("#version").value;
   // Before the request, not after: the address bar should describe what the
   // page is showing even when the replay behind it fails to load.
@@ -2291,9 +2417,11 @@ async function render() {
         api(`/api/power/${seg(domain)}/${seg(version)}`),
       ]);
   } catch (e) {
+    if (sequence !== renderSequence) return;
     fail(t("fail.load"));
     return;
   }
+  if (sequence !== renderSequence) return;
   LAST = {summary, flipRows, version};
 
   applyFilter();
@@ -2309,6 +2437,7 @@ async function render() {
   renderPlain({summary, gate, version, segmentRows, clauseRows, declared,
                stability: stabilityDetail, calibration: calibrationDetail,
                cross: crossDetail, power: powerDetail});
+  renderStory(summary);
   renderTiles(summary, costs, gate, calibrationDetail);
   renderPower(powerDetail);
   renderPreflight(preflightDetail);

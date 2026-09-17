@@ -269,6 +269,40 @@ def visit(browser, server):
 
 
 @needs_browser
+class TestPresentationSummary:
+    def test_tour_links_reveal_the_detail_evidence(self, page):
+        page.click("#viewplain")
+        page.click('.tour-links a[href="#clauses"]')
+        assert page.is_visible("#detail")
+        assert page.is_visible("#clauses")
+        page.click("#viewplain")
+        page.click('.tour-links a[href="#precedents"]')
+        assert page.is_visible("#detail")
+        assert page.is_visible("#precedents")
+        assert not page.errors
+
+    def test_summary_matches_the_replay_and_translates(self, page):
+        assert "147" in page.text("#story")
+        assert "600" in page.text("#story")
+        assert "109" in page.text("#story")
+        assert "38" in page.text("#story")
+        assert page.locator("#architecture .flow li").count() == 4
+        page.select_option("#lang", "zh")
+        page.wait_for_function("document.querySelector('#story').textContent.includes('答案相同')")
+        assert "时光机如何运转" in page.text("#architecture")
+        assert not page.errors
+
+    def test_empty_and_failed_replays_do_not_keep_old_impact(self, page):
+        page.evaluate("renderStory({cases: 0, flips: 0})")
+        assert "no replay yet" in page.text("#story")
+        assert page.locator(".outcome-track").count() == 0
+        page.evaluate("fail('Unavailable')")
+        assert page.text("#story") == ""
+        assert page.evaluate("LAST === null")
+        assert not page.errors
+
+
+@needs_browser
 class TestTheSelectionIsAddressable:
     """Which replay you are looking at is the one thing about this page worth
     sending to somebody else, and the one thing a refresh used to throw away.

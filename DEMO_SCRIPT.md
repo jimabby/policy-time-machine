@@ -1,231 +1,128 @@
-# Demo video — shot-by-shot script (3:00)
+# A rule walks into a time machine
 
-Scaffolding for recording, not part of the project. Delete it if you would
-rather it were not in the repo.
+A three-minute demo for people who care about decisions, not DAG syntax.
+The audience's question throughout: **“Would you ship this rule?”**
 
-**The whole video in one sentence, so you never lose the thread:** *a rule
-change is accused of a hundred and forty-seven crimes, and this thing works out
-which ones it actually committed.*
+## Set the stage
 
-Everything below is in service of that. If a beat does not move that story
-forward, it is the beat to cut.
+Start Docker, then run `docker compose up --build -d`. Once Airflow is ready,
+open [the dashboard](http://localhost:8080/ptm/?domain=expenses&version=v2) and
+[Airflow](http://localhost:8080). The included demo permits access without login.
 
----
+Prepare results before presenting. Run `python demo.py --setup --step` the first
+time, then `python demo.py --step` for rehearsals. It writes offline results to
+`include/ptm.db`; the compose setup mounts that directory for the dashboard too.
 
-## Before you hit record
-
-```bash
-make up                      # Airflow at localhost:8080 (no login), seeds on boot
-```
-
-Three things open, ready to switch between:
-
-- **A** — a terminal in the repo, font big enough to read at 720p. Bigger than
-  you think — assume a laptop, in a browser tab, at half size.
-- **B** — the Airflow UI (no login needed), on the DAGs list.
-- **C** — the Diff Explorer at `localhost:8080/ptm/`, expenses / v2 selected and
-  **already loaded**. It fetches on select; nobody needs to watch a spinner.
-  Leave it on the **Plain summary** it opens with — switching to **Full detail**
-  on camera is a beat, not an accident.
-
-Measured runtimes: `pit_check` 0.4s, the sweep 0.6s, `selftest` 3.0s. Every
-command here finishes while you are still talking, which is the only reason
-three minutes is enough. Nothing needs an API key — `PTM_OFFLINE=1` is the
-default and the deterministic judge stands in.
-
----
-
-## 0:00–0:20 — Cold open: nobody knows
-
-*Screen A. Nothing running. Just you.*
-
-> "Every organisation has rules that humans apply to messy cases. Refunds,
-> claims, expenses, moderation. Somebody proposes changing one, and the honest
-> answer to *what will this actually do* is: nobody knows."
-
-Beat.
-
-> "So we argue from anecdote, ship it, and find out in three months."
-
-Beat. Then land it:
-
-> "This makes that question computable. Change a rule, and Airflow replays every
-> real decision you made over two years as it would have gone under the new one."
-
-**Do not** read the README aloud. You have twenty seconds and one job: make them
-want the next shot.
-
-## 0:20–0:50 — Two years, twenty seconds
-
-*Screen A, then cut to B.*
+To show Airflow doing the replay itself, run this beforehand and wait for completion:
 
 ```bash
-make demo        # backfill create: 24 monthly runs, two years of history
+docker compose exec airflow airflow backfill create --dag-id replay_expenses --from-date 2024-09-01 --to-date 2026-09-01 --run-backwards
 ```
 
-Cut to **B** while it fans out. Point at the runs filling in — this is the shot
-that looks like something is happening, so let it breathe for two seconds.
+Keep expenses / v2 selected in Plain summary, a terminal ready, and browser zoom comfortable for
+the back row. Verify the counts before recording: persisted rulings or modified
+fixtures can change them. Narrate what the screen actually shows.
 
-> "That's one `backfill create`. Twenty-four monthly runs, each replaying its
-> own slice of history. Backfill isn't the scheduler here — it's the simulation
-> engine."
+**Say once:** “This is synthetic demo data. The offline judge uses deterministic
+rules, and the local self-test simulates the reviewers. In a live workflow,
+people answer the review requests.” No model call or API key is needed.
 
-**Escape hatch.** If the backfill is slow to paint, cut back to **A** and run
-`python -m ptm.selftest` instead: the whole loop in three seconds, no Airflow.
-Say *"same code the DAGs call, driven by a plain loop"* — true, and a much safer
-shot than a grid that has not finished rendering.
+## 0:00–0:25 · The bet
 
-Land on the headline:
+**Show:** the dashboard's opening question and impact chart.
 
-```
-147 outcomes change (24.5%) · 135 more generous · net GBP 12,014
-```
+> “We're thinking about changing our expense rules. Before we announce anything:
+> how many old decisions do you think would get a different answer? Ten? Fifty?
+> Half of them?”
 
-> "A hundred and forty-seven decisions come out differently. Twelve thousand
-> pounds. Now — what do you do with that number?"
+Pause for a guess. Then point to the chart.
 
-That question is the hinge of the whole video. Ask it, then cut.
+> “In this demo, 147 out of 600. Almost one in four. That small rule change just
+> became a much more interesting conversation.”
 
-## 0:50–1:25 — The reveal, and the alibi
+## 0:25–0:55 · The plot twist
 
-*Screen C. This is the heart of the demo. If you nail one beat, nail this one.*
+**Click:** **Find the cause**. Point to clause 1.1 and the deviation row.
 
-Start on the plain summary, at the headline.
+> “Which sentence did it? This receipt clause accounts for 48 changes. But
+> there's a twist: 38 of the 147 differences also disagree with the old rulebook.
+> The proposal didn't create those differences.”
 
-> "This is what the person who owns the rule sees. One sentence: a hundred and
-> forty-seven of the last six hundred decisions change."
+> “We're separating the effect of a new rule from the mess already there.”
 
-> "And straight underneath — a hundred and nine of those are the proposal's
-> doing. The other thirty-eight were *already* wrong under the rule they have
-> today."
+Say “different answer”; explain once that the tables call these “flips”.
 
-Let that sit for a second. It is the most interesting sentence in the video.
+## 0:55–1:20 · No spoilers from the future
 
-Point at the three stacked bars under **What changes**, then hit **Full detail**.
-
-> "Everything behind that answer is one click away. None of it is recomputed —
-> same numbers, more of them."
-
-Scroll to **What drives the change**.
-
-> "A hundred and forty-seven changed isn't actionable. *Which sentence do I
-> edit* is."
-
-Point at `clause 1.1 relaxed — 48 flips`.
-
-> "That clause did the damage by **ceasing to apply**. It cites nothing in the
-> new policy — so if you only read the new verdict, most of your changes have no
-> explanation at all. That's why the replay judges the old policy too."
-
-Then point at `(reviewer deviated from policy) — 38 flips`.
-
-> "And these thirty-eight aren't the proposal's fault. Both policies agree on
-> them; the *recorded* outcome was already wrong. Blame those on v2 and you have
-> overstated it by twenty-six per cent."
-
-> "Every diff tool on earth would have charged v2 for all one hundred and
-> forty-seven."
-
-If you cut one thing from this video, do not cut this beat. It is the one thing
-here that nothing else does.
-
-## 1:25–1:45 — No hindsight allowed
-
-*Screen A.*
+**Show:** the terminal. With the project's virtual environment active, run:
 
 ```bash
 python -m ptm.pit_check
 ```
 
-```
-point-in-time replay : 147 flips
-naive replay         : wrong on 39 / 600 cases
-```
+> “Imagine someone was promoted last year. Should today's seniority change what
+> they were entitled to two years ago? This replay uses what was known on the
+> day. Using today's facts gets 39 of these 600 cases wrong.”
 
-> "Every case is replayed with the facts known **on the day it was decided** —
-> not today's. Skip that, and thirty-nine of six hundred come out wrong."
+Let the result sit for a beat. These numbers apply to the shipped expenses fixture.
 
-> "You can't ask what a rule would have done using facts it couldn't have had.
-> That's what data intervals buy you, and it's the bug you'd never find in
-> production, because the wrong answer looks exactly like the right one."
+## 1:20–1:50 · Open the machine
 
-Short, sharp, move on. This beat is a punch, not a paragraph.
+**Click:** **Look under the hood** on the dashboard.
 
-## 1:45–2:10 — The jury, and the precedent it sets
+Trace the four boxes: remember, rewind, ask a person, check again.
 
-*Screen B, then C.*
+> “Bring back the old facts. Try both rulebooks. Ask a person about selected
+> changes. Save their answer so the next proposal has to face it too.
+> Airflow coordinates those steps.”
 
-Open `adjudicate_expenses`.
+For a technical audience, briefly show the monthly runs in Airflow.
 
-> "The flips asset wakes this one. Eight of the hundred and forty-seven go to a
-> human — HITL, deferred in the triggerer, holding no worker slot. And it asks
-> for the *correct outcome*, not a yes or no."
+## 1:50–2:20 · The person gets a say
 
-Show the HITL task waiting if you have one; the DAG graph if you don't.
+**Click:** **Meet the human decisions**. Point to a ruling and its reason.
 
-> "Those rulings become precedent. The precedents asset wakes the gate, which
-> re-judges every one of them against any future policy — and **fails** on a
-> reversal."
+> “We don't ask someone to read 600 cases. The demo selects eight. Each answer
+> becomes an example future rules are checked against. If a proposal reverses
+> one, the check fails and somebody has to resolve it.”
 
-Cut to **C**, the Gate tile.
+Point to the gate's baseline comparison if available.
 
-> "So the first run gives you an estimate. Every run after it gives you a
-> regression suite for organisational judgment."
+> “And we still ask whether the old policy already made the same reversal.
+> A red result needs an explanation, not a convenient scapegoat.”
 
-> "Your rules now have tests. Written by the people who actually make the calls."
+If showing an actual Airflow review request, identify it as awaiting a real person;
+do not present simulated rulings as live reviewer activity.
 
-## 2:10–2:35 — Stop arguing, draw the curve
+## 2:20–2:45 · Let the room choose
 
-*Screen A.*
+**Switch to Full detail. Show:** **Where should the threshold be?** Select the expenses receipt threshold
+(clause 1.1, `amount_gbp`), enter `25,50,75,100,150`, and click **Sweep**.
 
-```bash
-python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
-```
+> “What would you choose: 50, 100, or 150 pounds? We can compare the consequences
+> before we pick. These results use the offline rules; they show trade-offs,
+> not a recommendation.”
 
-> "Attribution tells you *which* clause. This tells you what the number should
-> be — the entire replay, re-run at every setting."
+Ask for one vote, then point to that setting's result. Keep the caveat visible.
 
-Let the table land, then:
+## 2:45–3:00 · Pay off the opening question
 
-> "The threshold stops being an argument in a meeting and becomes a curve."
+**Show:** the impact summary again.
 
-Now leave the caveat line at the bottom on screen for a beat, and say so out
-loud:
+> “Would you ship this rule? Now we can discuss who it affects, what it costs,
+> and which human decisions it must respect. Try tomorrow's rules on yesterday's
+> decisions—before tomorrow becomes a surprise.”
 
-> "And it tells you not to trust it too far — these came from the offline rules,
-> not a real judge."
+## Keep the show moving
 
-Judges notice a project that undercuts its own output, and almost nothing else
-you could do with that second buys as much credibility.
-
-## 2:35–2:55 — The model takes a swing
-
-*Screen A.*
-
-```bash
-make propose
-```
-
-> "Same typed operator, pointed the other way: `output_type=PolicyPatch` has a
-> model write the next version of the policy."
-
-Beat — let them worry about that for a moment. Then:
-
-> "Which is only safe because it writes against an oracle it can't influence.
-> The draft goes straight through the precedent gate. A patch that argues
-> beautifully and breaks a human ruling fails exactly as loudly as one that
-> argues badly."
-
-Point at the last line: `(not written; re-run with --write to draft v2-draft1)`.
-
-> "Proposing and adopting are separate acts. Adopting is a person's."
-
-## 2:55–3:00 — Close
-
-> "Airflow 3.1, Common AI, HITL, assets, dynamic task mapping, a UI plugin. Runs
-> offline, no API key. Repo's in the description."
-
-Stop talking. Do not add a summary — you just gave them three minutes of one.
+- Rehearse with `python demo.py --step`; Enter is your scene change.
+- If the site is unavailable, show the offline tour and explain that it exercises
+  the engine, not the Airflow UI. A fresh `--setup` needs internet for dependencies.
+- If short on time, cut the terminal check and threshold vote. Keep the impact,
+  attribution twist, and human decision.
+- If asked about AI drafting, explain that proposals can be drafted and checked
+  against rulings. Passing that check is not approval; adoption is a human action.
+- End on the audience's decision, not a list of libraries.
 
 ---
 

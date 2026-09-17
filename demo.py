@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         completed = subprocess.run([str(python), "-m", *arguments],
                                    cwd=REPO, env=environment)
         elapsed = time.monotonic() - started
-        ok = completed.returncode == 0 or expect_nonzero
+        ok = completed.returncode == 0 or (expect_nonzero and completed.returncode == 1)
         results.append((title, completed.returncode, elapsed, ok))
 
         if not ok:

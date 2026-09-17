@@ -1,13 +1,42 @@
 # Policy Time Machine
 
-**Change a rule today. Airflow replays every real decision your organisation
-made over the last two years as it would have gone under the new rule — using
-the data as it stood at the time. Humans adjudicate only the cases where the
-old and new answers disagree. Those adjudications become a permanent
-regression suite that every future rule change must pass.**
+### Try tomorrow's rules on yesterday's decisions.
 
-Built for **Beyond the DAG**. Airflow 3.1, the Common AI provider, HITL
-operators, assets, dynamic task mapping, and a UI plugin.
+**Would you ship a new expense rule without knowing who gets a different answer?**
+Take it for a spin first: rewind the past, compare the answers, and ask people
+to settle selected cases. Their rulings become checks for the next proposal.
+
+## The 30-second story
+
+| In the included demo | What it means |
+|---|---|
+| 600 historical decisions | Two years of synthetic expense cases get another look. |
+| 147 different answers | Almost one in four recorded decisions would change. |
+| 109 changes attributed to the proposal | The other 38 differ from the old rulebook too. |
+| 8 simulated human rulings | Selected cases become checks future proposals must face. |
+
+**The twist:** a changed answer does not automatically mean the new rule caused it.
+The replay checks the old rulebook too. These are fixture results, not evidence
+from a live organisation. The offline demo uses deterministic rules instead of
+a live AI judge, and the local self-test simulates reviewer responses.
+
+## Take it for a spin
+
+```bash
+python demo.py --setup --step   # first run: install dependencies, pause between scenes
+python demo.py --step           # next time: press Enter to move the story along
+```
+
+Use `python3` on macOS/Linux if needed. The tour writes demo results to
+`include/ptm.db` and exports JSON files in the project directory. No API key needed.
+
+For the website and Airflow workflows, start Docker and run
+`docker compose up --build -d`. Once ready, open the
+[Policy Diff Explorer](http://localhost:8080/ptm/). Start with the impact chart,
+follow the cause of a change, then look at the human rulings.
+
+**Choose your route:** [Three-minute demo](DEMO_SCRIPT.md) ·
+[Architecture](#architecture) · [Technical background](docs/DESIGN.md)
 
 ![The Policy Diff Explorer: a plain-language summary of what a rule change does, then the evidence behind it](docs/explorer.gif)
 
@@ -195,45 +224,36 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    H["Historical cases + facts known at the time"] --> R
+    P["Current + proposed policy"] --> R
+    subgraph Airflow["Airflow orchestration"]
+        R["Replay: monthly backfill / judge each case / compare answers"]
+        R -->|"flips asset"| A["Adjudicate: selected changes / human review"]
+        A -->|"precedents asset"| G["Gate: check proposals against human rulings"]
+        S["Stability: repeat judgments / optional second judge"]
+        Q["Propose: draft amendment / re-run gate"] --> G
+        Q -. "optional full replay" .-> R
+    end
+    R --> DB[("Shared database: results, cache, rulings")]
+    A --> DB
+    DB --> G
+    DB --> S
+    DB --> Q
+    DB --> API["FastAPI plugin / Diff Explorer charts and evidence"]
+    Q --> D["Draft policy files"]
+    D --> Human["A person chooses whether to adopt"]
+    T["Weekly retention DAG"] -->|"prunes derived data; preserves rulings"| DB
+```
+
+Bring the old facts, try both rulebooks, ask a person about selected changes,
+and remember their answers for next time. The website reads the stored evidence;
+adopting a policy is a separate human action.
+
 Five DAGs per domain, generated from `include/domains/*.yaml`, plus one
-`ptm_retention` for the database they share:
+`ptm_retention` for the database they share.
 
-```
-                    ┌─────────────────────┐
-   backfill ───────▶│  replay_<domain>    │  @monthly × 24 runs
-                    │  read the policy    │  free, offline, before a penny is spent
-                    │  point-in-time load │
-                    │  cache split        │  skip what this prompt already answered
-                    │  → map judge/case   │  LLMOperator, response_model=Verdict
-                    │  → map judge/case   │  again, under the in-force policy
-                    │  → diff + attribute │  clause, segment and cost breakdowns
-                    │  → disparity        │  who carries more of it than the rest
-                    └──────────┬──────────┘
-                               │ Asset: ptm://<domain>/flips
-                    ┌──────────▼──────────┐
-                    │ adjudicate_<domain> │  selects ~8 contested flips
-                    │ HITLOperator (map)  │  ← a human answers in the Airflow UI
-                    │ → precedents        │
-                    │ target=stale        │  ← or re-asks rulings whose clause
-                    │                     │    has since been rewritten
-                    └──────────┬──────────┘
-                               │ Asset: ptm://<domain>/precedents
-                    ┌──────────▼──────────┐
-                    │ precedent_gate_<d>  │  re-judges every precedent
-                    │ FAILS on reversal   │  ← the regression suite
-                    │ warns on conflicts  │  ← rulings that contradict each other
-                    │ scores the judge    │  ← accuracy, against the humans
-                    └─────────────────────┘
-
-   manual  ────────▶ judge_stability_<domain>   the error bar on all of the above
-                                               (+ a second judge, on request)
-
-   manual  ────────▶ propose_<domain>           reads every number above, drafts a
-                                                patch, re-runs the gate on it
-
-   @weekly ────────▶ ptm_retention              one for the whole database,
-                                                not one per domain
-```
 
 `select_for_review` is deliberately stingy: a human sees a flip only if the
 judge was unsure, the money is large, or the change makes the organisation more
