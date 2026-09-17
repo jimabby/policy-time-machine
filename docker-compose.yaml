@@ -65,6 +65,12 @@ services:
       - ./plugins:/opt/airflow/plugins
       - ./include:/opt/airflow/include
       - ./ptm:/opt/airflow/ptm
+      # The DAG *builders*, one module per DAG. Mounted next to the engine and
+      # imported off PYTHONPATH rather than living under dags/, because the
+      # dags folder is only reliably on sys.path when Airflow itself put it
+      # there - which is not true of a DagBag pointed straight at a directory,
+      # as the DAG-parse tests do. /opt/airflow is on PYTHONPATH for both.
+      - ./ptm_dags:/opt/airflow/ptm_dags
       - airflow-home:/opt/airflow/logs
     command: >
       bash -c "python -m ptm.seed && exec airflow standalone"

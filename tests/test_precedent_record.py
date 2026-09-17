@@ -35,7 +35,7 @@ class TestTheReasonIsKept:
         import pathlib
 
         source = (pathlib.Path(__file__).resolve().parents[1]
-                  / "dags" / "policy_time_machine.py").read_text(encoding="utf-8")
+                  / "ptm_dags" / "adjudicate.py").read_text(encoding="utf-8")
         review = source[source.index("HITLOperator.partial("):]
         review = review[:review.index(".expand(")]
         assert '"note"' in review, \

@@ -62,7 +62,7 @@ class TestMergeSurvivesIt:
     """``merge`` is reached with an empty fan-out and has to produce the full set."""
 
     def merged(self, items: list[dict], misses: list[dict], fresh) -> dict:
-        """What the task body does, without Airflow: see dags/policy_time_machine.py."""
+        """What the task body does, without Airflow: see ptm_dags/common.py."""
         fresh = list(fresh or [])
         assert len(fresh) == len(misses), "a partial pass must refuse, not merge"
         cached = cache.lookup([i["cache_key"] for i in items])
@@ -94,7 +94,7 @@ class TestTheTriggerRuleIsDeclared:
         import pathlib
 
         source = (pathlib.Path(__file__).resolve().parents[1]
-                  / "dags" / "policy_time_machine.py").read_text(encoding="utf-8")
+                  / "ptm_dags" / "common.py").read_text(encoding="utf-8")
         decorated = source[:source.index("def merge(")]
         assert decorated.rstrip().endswith('@task(trigger_rule="none_failed")'), (
             "merge must not run under all_success: an empty fan-out skips the judge, "

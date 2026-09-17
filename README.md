@@ -1281,7 +1281,7 @@ pass that makes attribution possible.
 
 ## Adding a domain
 
-Nothing in `dags/` or `ptm/` knows what an expense is. To run this on
+Nothing in `dags/`, `ptm_dags/` or `ptm/` knows what an expense is. To run this on
 insurance claims, moderation decisions, loan applications or admissions:
 
 1. Write the policy versions as markdown in `include/policies/<domain>/`, with
@@ -1342,7 +1342,14 @@ generated set before it is ever written to disk.
 ## Layout
 
 ```
-dags/policy_time_machine.py     the five-DAG factory
+dags/policy_time_machine.py     the file Airflow parses: an index and a loop
+ptm_dags/replay.py              what would this rule change actually do?
+ptm_dags/adjudicate.py          which changes does a person have to rule on?
+ptm_dags/precedent_gate.py      does this policy overturn a ruling somebody made?
+ptm_dags/judge_stability.py     how much of that was the judge's noise?
+ptm_dags/propose.py             what should the next version of the policy say?
+ptm_dags/retention.py           what has stopped earning its disk?
+ptm_dags/common.py              the cost ledger, the cache merge, the case payload
 plugins/                        FastAPI plugin + Diff Explorer dashboard
 ptm/config.py                   domain YAML loading, and drafts merged in from disk
 ptm/store.py                    SQLite, incl. the point-in-time case query

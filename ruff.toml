@@ -41,4 +41,4 @@ ignore = [
 "tests/*" = ["B011", "F811"]
 
 [lint.isort]
-known-first-party = ["ptm"]
+known-first-party = ["ptm", "ptm_dags"]

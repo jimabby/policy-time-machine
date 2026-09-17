@@ -17,7 +17,15 @@ from ptm import pit_check, proposal, safe_eval, seed, store
 from ptm.models import Flip, Verdict
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-DAG_FILE = REPO / "dags" / "policy_time_machine.py"
+#: The DAG layer, which is a package now rather than a file. These checks are
+#: about what every DAG declares, so they read all of it - a scan of the entry
+#: point alone would pass while the thing it forbids sat in a builder.
+DAG_PKG = REPO / "ptm_dags"
+DAG_SOURCES = [REPO / "dags" / "policy_time_machine.py", *sorted(DAG_PKG.glob("*.py"))]
+
+
+def dag_layer() -> str:
+    return "\n".join(path.read_text(encoding="utf-8") for path in DAG_SOURCES)
 
 
 class TestTheEvaluatorKeepsItsPromise:
@@ -185,7 +193,7 @@ class TestTheDagsThatCouldRunTwiceAtOnce:
     no cap at all - including the one an asset re-fires on every adjudication."""
 
     def test_every_dag_declares_max_active_runs(self):
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = dag_layer()
         blocks = source.split("@dag(")[1:]
         missing = [block[:block.index(")")].split("dag_id=")[1].splitlines()[0]
                    for block in blocks if "max_active_runs" not in block[:block.index("def ")]]
@@ -199,7 +207,7 @@ class TestTheReviewerIsNamedAndTheClockIsNot:
         """It read ``user_id``; HITLOperator returns ``responded_by_user``, a
         HITLUser of id and name. Every precedent recorded by a real run was
         therefore attributed to 'unknown'."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = (DAG_PKG / "adjudicate.py").read_text(encoding="utf-8")
         assert 'resp.get("user_id")' not in source
         assert '"responded_by_user"' in source
 
@@ -207,7 +215,7 @@ class TestTheReviewerIsNamedAndTheClockIsNot:
         """Airflow answers an expired HITL task with ``defaults``, which here is
         the most generous outcome. Writing that into the one durable artefact
         because nobody looked would be the worst failure this pipeline has."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = (DAG_PKG / "adjudicate.py").read_text(encoding="utf-8")
         record = source[source.index("def record(flips: list[dict], responses"):]
         record = record[:record.index("store.mark_reviewed")]
         assert '"timedout"' in record
@@ -215,7 +223,7 @@ class TestTheReviewerIsNamedAndTheClockIsNot:
         assert record.index("expired.append") < record.index("store.save_precedent")
 
     def test_the_queue_carries_its_rails(self):
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = (DAG_PKG / "adjudicate.py").read_text(encoding="utf-8")
         review = source[source.index("HITLOperator.partial("):]
         review = review[:review.index(".expand(")]
         for rail in ("assigned_users=", "response_timeout=", "notifiers="):

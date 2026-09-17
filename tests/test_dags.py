@@ -14,7 +14,28 @@ import signal
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+#: The file Airflow parses. It is now an index and a registration loop; the DAGs
+#: themselves are built one module per DAG in ``ptm_dags/``.
 DAG_FILE = REPO / "dags" / "policy_time_machine.py"
+DAG_PKG = REPO / "ptm_dags"
+#: Every module the DAG layer is spread across. Read as a list rather than as
+#: one path, because the checks below are about the layer and a check that
+#: scanned only the entry point would pass while the thing it forbids sat in a
+#: builder - which is exactly what splitting the file could have cost.
+DAG_SOURCES = [DAG_FILE, *sorted(DAG_PKG.glob("*.py"))]
+#: The five per-domain builders. ``common.py`` is helpers and ``__init__.py`` is
+#: a docstring, so neither is one of these.
+BUILDERS = ("replay", "adjudicate", "precedent_gate", "judge_stability", "propose")
+
+
+def layer() -> str:
+    """Every line of the DAG layer, for a check that is about all of it."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in DAG_SOURCES)
+
+
+def builder(name: str) -> str:
+    """One builder module's source, for a check that is about one DAG."""
+    return (DAG_PKG / f"{name}.py").read_text(encoding="utf-8")
 
 #: Why Airflow could not be imported, if it could not. Kept rather than
 #: discarded: a bare "not installed" skip is what let the CI job whose entire
@@ -87,25 +108,44 @@ needs_dagbag = pytest.mark.skipif(not can_parse, reason=DAGBAG_SKIP_REASON)
 class TestStatic:
     """Runs with or without Airflow installed."""
 
-    def test_the_module_compiles(self):
+    def test_every_module_compiles(self):
         import py_compile
 
-        py_compile.compile(str(DAG_FILE), doraise=True)
+        for path in DAG_SOURCES:
+            py_compile.compile(str(path), doraise=True)
+
+    def test_each_builder_module_builds_exactly_one_dag(self):
+        """The point of the split. A module that grows a second DAG is a module
+        whose name has stopped describing it, and the next reader looking for
+        ``propose_<domain>`` will not find it where the package says it is."""
+        for name in BUILDERS:
+            source = builder(name)
+            assert source.count("@dag(") == 1, f"{name}.py builds more than one DAG"
+            assert f"dag_id=f\"{name}_{{domain_name}}\"" in source, \
+                f"{name}.py does not build the DAG it is named after"
+
+    def test_the_entry_point_registers_every_builder(self):
+        """A builder nobody calls is a DAG that silently stopped existing."""
+        entry = DAG_FILE.read_text(encoding="utf-8")
+        for name in BUILDERS:
+            assert f"{name}.build(ctx)" in entry, f"{name} is never registered"
 
     def test_no_domain_knowledge_leaks_into_the_dag_layer(self):
         """The engine's central claim: swapping the YAML swaps the application.
 
         A domain word hard-coded here would mean the pipeline only looks generic.
         """
-        source = DAG_FILE.read_text(encoding="utf-8").lower()
-        for word in ("expense", "refund", "receipt", "gbp", "grade", "tier", "claim"):
-            assert word not in source, f"{word!r} is domain knowledge, it belongs in the YAML"
+        for path in DAG_SOURCES:
+            source = path.read_text(encoding="utf-8").lower()
+            for word in ("expense", "refund", "receipt", "gbp", "grade", "tier", "claim"):
+                assert word not in source, \
+                    f"{word!r} in {path.name} is domain knowledge, it belongs in the YAML"
 
     def test_prompts_are_not_carried_in_the_case_payload(self):
         """Every prompt embeds the whole policy text. Putting one in the dict that
         fans out to each judge task duplicates the policy per case, through XCom,
         for a value the offline judge never reads."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = layer()
         assert '"prompt": build_prompt' not in source
         assert '"prompt_chars"' in source
 
@@ -114,14 +154,14 @@ class TestStatic:
         others - but a short response list zipped positionally against the full
         flip list would file one reviewer's ruling against somebody else's
         case. Precedent cannot be recomputed, so it has to refuse."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("adjudicate")
         assert "if len(responses) != len(flips):" in source
         assert "attribute a ruling to the wrong case" in source
 
     def test_the_gate_loads_precedent_cases_by_id(self):
         """Loading everything and filtering is subject to the default limit, so
         past that many cases the gate would check a subset and still pass."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("precedent_gate")
         assert "case_ids=ids" in source
         assert "if c.case_id in ids" not in source, "the filtered load is the truncating one"
 
@@ -129,13 +169,16 @@ class TestStatic:
         """Judging the same prompt repeatedly *is* the stability measurement. A
         cached answer would be served to every repeat and report a judge that
         never contradicts itself - not a wrong number, a reassuring one."""
-        source = DAG_FILE.read_text(encoding="utf-8")
-        stability_dag = source.split("def judge_stability():", 1)[1]
-        everything_else = source.split("def judge_stability():", 1)[0]
+        stability_dag = builder("judge_stability")
         assert "cacheable=False" in stability_dag
         assert "cache_key" not in stability_dag
-        assert "cacheable=False" not in everything_else.split("def _ledger", 1)[1], \
-            "only the stability fan-out opts out; the others must all be cached"
+        # common.py is excluded on purpose: it *defines* the flag, and its
+        # docstring names it. The claim is about the five DAGs that use it.
+        for name in BUILDERS:
+            if name == "judge_stability":
+                continue
+            assert "cacheable=False" not in builder(name), \
+                f"only the stability fan-out opts out of the cache; {name} must not"
 
     def test_nothing_tries_to_map_over_one_key_of_a_multiple_output_task(self):
         """Airflow refuses it - *cannot map over XCom with custom key* - and it
@@ -144,14 +187,13 @@ class TestStatic:
         only an Airflow-installed environment catches it, which is a slow place
         to find out. A task whose output is expanded over returns a plain list.
         """
-        source = DAG_FILE.read_text(encoding="utf-8")
-        assert "multiple_outputs" not in source
+        assert "multiple_outputs" not in layer()
 
     def test_the_reviewer_is_asked_for_a_reason(self):
         """`record` reads params_input['note'] and the drafter renders it. If
         the operator does not declare the parameter, every precedent on file
         carries an empty note and nobody notices."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("adjudicate")
         review = source[source.index("HITLOperator.partial("):]
         review = review[:review.index(".expand(")]
         assert "params=" in review and '"note"' in review
@@ -159,16 +201,39 @@ class TestStatic:
     def test_the_precedent_records_what_it_was_a_ruling_about(self):
         """A ruling with no policy version attached cannot be re-read later -
         see ptm.diff.stale_precedents."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("adjudicate")
         record = source[source.index("store.save_precedent("):]
         record = record[:record.index("saved.append")]
         for field in ("policy_version=", "judged_outcome=", "judged_clause="):
             assert field in record
 
+    def test_nothing_imports_an_llm_only_name_unconditionally(self):
+        """``LLMOperator`` and ``UsageLimits`` do not exist offline.
+
+        While this was one module they were defined behind ``if not OFFLINE``
+        and every use of them sat behind the same test, so their absence cost
+        nothing. Splitting the file turned those uses into imports, and an
+        import of a name that does not exist is not a quiet absence - it is an
+        ImportError at parse time that takes every DAG in the package with it.
+        Offline is the default, so this would have been the first thing anybody
+        running the demo saw.
+        """
+        for name in BUILDERS:
+            source = builder(name)
+            for llm_only in ("LLMOperator", "UsageLimits"):
+                if llm_only not in source:
+                    continue
+                imported = [line for line in source.splitlines()
+                            if line.startswith("    from ptm_dags.common import")
+                            and llm_only in line]
+                assert imported, (
+                    f"{name}.py uses {llm_only} but does not import it under "
+                    f"`if not OFFLINE:` - an unindented import of it fails offline")
+
     def test_the_proposer_can_be_run_without_it_writing_anything(self):
         """Proposing and adopting are separate acts, and the directory it writes
         into is the one a person is accountable for."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("propose")
         assert '"publish": Param(' in source
         assert 'ctx["params"].get("publish")' in source
 
@@ -209,7 +274,7 @@ class TestStatic:
         was passed on every run, so a month holding more cases than the cap
         replayed its oldest 250 and reported a rate for a window it had only
         partly seen."""
-        source = DAG_FILE.read_text(encoding="utf-8")
+        source = builder("replay")
         prepare = source[source.index("def prepare("):source.index("def prompts(")]
         assert "if manual else None" in prepare, \
             "the cap has to be conditional on the run being a manual one"
@@ -225,11 +290,15 @@ class TestStatic:
         the per-domain loop, and a future refactor that folds it back into
         build() should have to notice.
         """
-        source = DAG_FILE.read_text(encoding="utf-8")
-        assert "def build_retention()" in source
-        build_body = source[source.index("def build(domain_name"):
-                            source.index("def build_retention()")]
-        assert "ptm_retention" not in build_body,             "retention belongs outside the per-domain loop"
+        entry = DAG_FILE.read_text(encoding="utf-8")
+        per_domain = entry[entry.index("def build(domain_name"):entry.index("for _name in")]
+        assert "retention" not in per_domain, \
+            "retention belongs outside the per-domain loop"
+        registration = entry[entry.index("for _name in"):]
+        assert "retention.build()" in registration
+        # Its builder takes no domain, which is the version of this claim that
+        # a refactor cannot talk its way around.
+        assert "def build() -> None:" in (DAG_PKG / "retention.py").read_text(encoding="utf-8")
 
 
 @needs_dagbag
