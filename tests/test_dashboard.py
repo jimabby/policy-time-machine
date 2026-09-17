@@ -214,10 +214,16 @@ def browser():
 
 @pytest.fixture
 def page(browser, server):
-    """A loaded dashboard, with every console error collected.
+    """A loaded dashboard, switched to the detail view, console errors collected.
 
     Errors are asserted on in one place rather than per test, because a page
     that throws halfway through rendering still leaves most assertions passing.
+
+    The page opens on the plain summary, which is what somebody deciding
+    whether to ship a rule change should meet first. Almost everything below is
+    about the detail view behind it, so the switch happens here rather than in
+    thirty tests - and ``TestThePlainSummary`` is the one class that switches
+    back, including to prove the plain view is what an untouched visit lands on.
     """
     context = browser.new_context(viewport={"width": 1400, "height": 1000})
     raw = context.new_page()
@@ -226,6 +232,7 @@ def page(browser, server):
     raw.on("console",
            lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
     raw.goto(server, wait_until="networkidle")
+    raw.click("#viewdetail")
     raw.wait_for_selector("#tiles .tile", timeout=15_000)
     yield Dashboard(raw, errors)
     context.close()
@@ -252,6 +259,7 @@ def visit(browser, server):
                lambda m: errors.append(f"console.{m.type}: {m.text}")
                if m.type == "error" else None)
         raw.goto(server + suffix, wait_until="domcontentloaded")
+        raw.click("#viewdetail")
         raw.wait_for_selector("#tiles .tile", timeout=15_000)
         return Dashboard(raw, errors), context
 
@@ -646,6 +654,128 @@ class TestTheSweep:
         page.wait_for_function(
             "() => document.querySelector('#sweep').innerText.includes('could not be run')",
             timeout=20_000)
+
+
+@needs_browser
+class TestThePlainSummary:
+    """The view a visit lands on, for the person the decision belongs to.
+
+    Everything it shows is rendered from the objects the detail panels render
+    from, so what is worth asserting here is not the arithmetic - that is
+    covered against the read models directly - but that the summary says the
+    things somebody could otherwise get wrong: which way the change goes, how
+    much of it this proposal caused, whose cases move, and whether a
+    measurement was taken at all.
+    """
+
+    @pytest.fixture
+    def plain(self, page):
+        page.click("#viewplain")
+        page.wait_for_selector("#verdict .big", timeout=15_000)
+        return page
+
+    def test_it_is_what_an_untouched_visit_lands_on(self, browser, server):
+        """The detail view is a click away; it must not be the doorstep."""
+        context = browser.new_context(viewport={"width": 1400, "height": 1000})
+        raw = context.new_page()
+        raw.goto(server, wait_until="networkidle")
+        raw.wait_for_selector("#verdict .big", timeout=15_000)
+        assert raw.is_visible("#plain")
+        assert not raw.is_visible("#detail")
+        context.close()
+
+    def test_the_headline_is_one_sentence_with_both_numbers_in_it(self, plain):
+        text = plain.text("#verdict")
+        assert "147" in text and "600" in text and "v2" in text
+        assert "135 more generous" in text and "12 stricter" in text
+
+    def test_the_headline_separates_what_this_proposal_caused(self, plain):
+        """The number most often quoted wrong. In the detail view it is a tile
+        somebody has to know to read; here it has to be unavoidable."""
+        assert "109 of those are this proposal's doing" in plain.text("#verdict")
+
+    def test_the_gate_result_is_on_the_headline(self, plain):
+        assert "overturns 1 ruling a person already made" in plain.text("#verdict")
+
+    def test_how_it_works_is_a_diagram_rather_than_a_paragraph(self, plain):
+        """Five steps, drawn. The prose version of this is still in the how-to
+        panel; what a reader meets first is the picture."""
+        assert plain.locator("#howdiagram svg").count() == 1
+        text = plain.text("#howdiagram")
+        for step in ("past decisions", "decide again", "compare",
+                     "a person rules", "kept as tests"):
+            assert step in text, step
+
+    def test_the_flow_splits_the_change_three_ways(self, plain):
+        text = plain.text("#flowdiagram")
+        assert "453 same answer" in text and "147 different answer" in text
+        assert "135 more generous" in text and "12 stricter" in text
+        assert "109 caused by this change" in text
+        assert "38 already at odds" in text
+
+    def test_every_bar_segment_that_exists_is_drawn(self, plain):
+        """A slice floored out of existence is a picture saying a category is
+        empty while the legend beside it says it is not."""
+        widths = plain.page.eval_on_selector_all(
+            "#flowdiagram svg.flowbar rect", "els => els.map(e => +e.getAttribute('width'))")
+        assert widths, "no bars were drawn"
+        assert min(widths) > 0
+        # Six segments across three bars, and each bar fills its own viewBox.
+        assert len(widths) == 6
+        for start in (0, 2, 4):
+            assert abs(sum(widths[start:start + 2]) - 1000) < 1
+
+    def test_who_it_affects_keeps_the_denominator(self, plain):
+        """"52.6%" is one case in two as readily as sixty-one in a hundred."""
+        text = plain.text("#whodiagram")
+        assert "by category" in text and "by grade" in text
+        assert "61 of 116" in text
+
+    def test_the_clause_bar_names_the_sentence_to_edit(self, plain):
+        text = plain.text("#whydiagram")
+        assert "clause 1.1 relaxed" in text
+        assert "not caused by this change" in text, "the deviation bucket is marked"
+
+    def test_the_trust_cards_say_what_was_never_measured(self, plain):
+        """"Not checked yet" and "fine" are different statements, and a summary
+        that renders the first as the second is the one way this page could
+        actively mislead somebody."""
+        text = plain.text("#trustcards")
+        assert plain.locator("#trustcards .card").count() == 4
+        assert "not checked yet" in text
+        assert "1 of 2 cases" in text, "calibration was measured, so it is reported"
+
+    def test_the_gate_checklist_separates_who_caused_the_reversal(self, plain):
+        text = plain.text("#gatecard")
+        assert "overturns 1 of them" in text
+        assert "none of those are this proposal's doing" in text
+        assert "rule in force today already overturns" in text
+
+    def test_the_switch_shows_one_view_at_a_time(self, plain):
+        assert plain.page.is_visible("#plain")
+        assert not plain.page.is_visible("#detail")
+        plain.click("#viewdetail")
+        assert plain.page.is_visible("#detail")
+        assert not plain.page.is_visible("#plain")
+
+    def test_see_all_the_numbers_goes_to_the_detail_view(self, plain):
+        plain.click("#godetail")
+        assert plain.page.is_visible("#detail")
+
+    def test_it_renders_without_a_console_error(self, plain):
+        assert plain.errors == []
+
+    def test_it_speaks_the_other_language_too(self, plain):
+        plain.select_option("#lang", "zh")
+        plain.wait_for_function(
+            "() => document.querySelector('#verdict').innerText.includes('决策')",
+            timeout=15_000)
+        for panel, chinese in (("#howdiagram", "既往决策"),
+                               ("#flowdiagram", "结果相同"),
+                               ("#trustcards", "尚未检查"),
+                               ("#gatecard", "人工裁定")):
+            assert chinese in plain.page.inner_text(panel), panel
+        assert plain.errors == []
 
 
 @needs_browser

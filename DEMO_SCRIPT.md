@@ -14,7 +14,9 @@ Have three things open and ready to switch between:
 - **A** — a terminal in the repo, font large enough to read at 720p
 - **B** — the Airflow UI (no login needed), on the DAGs list
 - **C** — the Diff Explorer at `localhost:8080/ptm/`, expenses / v2 selected and
-  already loaded (it fetches on select; do not let the judges watch it load)
+  already loaded (it fetches on select; do not let the judges watch it load).
+  Leave it on the **Plain summary** it opens with — the beat below switches to
+  **Full detail** on camera, and that switch is part of the point.
 
 Measured runtimes: `pit_check` 0.4s, the sweep 0.6s, `selftest` 3.0s. Everything
 you type finishes while you are still talking. Nothing here needs an API key —
@@ -62,7 +64,20 @@ Land on the headline:
 
 ## 0:50–1:25 — Why it is more than a diff (screen C, Diff Explorer)
 
-This is the heart of the demo. Scroll to **What drives the change**.
+This is the heart of the demo. Start on the plain summary, at the headline.
+
+> "This is what the person who owns the rule sees. One sentence: a hundred and
+> forty-seven of the last six hundred decisions change. And straight underneath
+> — a hundred and nine of those are the proposal's doing. The other thirty-eight
+> were already wrong under the rule they have today."
+
+Point at the three stacked bars under **What changes**, then hit **Full
+detail**.
+
+> "Everything behind that answer is one click away, and none of it is
+> recomputed — same numbers, more of them."
+
+Scroll to **What drives the change**.
 
 > "A hundred and forty-seven changed isn't actionable. *Which sentence do I
 > edit* is."

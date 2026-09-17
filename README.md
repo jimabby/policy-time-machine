@@ -95,7 +95,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | **Common AI provider** | `LLMOperator` with `output_type=Verdict`, so every verdict is typed, not parsed out of prose. `usage_limits` caps spend per task. The vendor lives in a connection — switching models never touches DAG code. |
 | **HITL operators** | `HITLOperator` deferred in the triggerer, holding no worker slot, asking a human for the *correct outcome* — not a yes/no. Addressed to named reviewers, with a notifier and a response timeout; a review the clock answers is refused rather than written into precedent. |
 | **Assets** | `ptm://<domain>/flips` wakes adjudication; `ptm://<domain>/precedents` wakes the regression gate. Nothing is polled. |
-| **Plugin (FastAPI + external view)** | The Policy Diff Explorer, a tab inside the Airflow UI. |
+| **Plugin (FastAPI + external view)** | The Policy Diff Explorer, a tab inside the Airflow UI: a plain summary for the person whose rule it is, the full evidence one click behind it. |
 | **Dynamic DAG generation** | Drop a YAML in `include/domains/` and five new DAGs appear. The DAG code contains zero domain knowledge — [a test asserts it](tests/test_dags.py). `ptm_retention` is the one DAG built outside that loop, because the tables it prunes are shared by every domain. |
 | **Structured generation** | The same `LLMOperator`, pointed the other way: `output_type=PolicyPatch` has a model *write* the next version of the policy, which the precedent gate then re-judges. Typed output is what makes that checkable rather than a wall of prose. |
 | **`model_id` per run** | The second judge. One connection, the model overridden at trigger time, so cross-checking a replay against a different vendor is a `--conf` flag rather than a DAG edit. |
@@ -1051,10 +1051,63 @@ appends a bearer token to every request before routing, and the plugin resolves
 it exactly as it resolves a real session — see **The routes are not public**
 below.
 
-The Explorer opens with **How to read this page** at the top: what each panel
+### Two views, one replay
+
+The Explorer opens on a **plain summary**, and the twenty-odd panels that were
+the whole page are behind a **Full detail** toggle next to it.
+
+The reason is who opens this. The person deciding whether to ship a rule change
+is usually the person who owns the rule — a finance lead, a claims manager, a
+policy owner — and almost nothing on the detail page is addressed to them. A
+denominator, a confidence band and a clause attribution table are how the
+answer is *defended*; they are not the answer. Leading with them meant the
+first thing that reader had to do was work out which panel was the headline,
+and the most common outcome of that is quoting the flip count on its own —
+which is the one number on the page that overstates what the proposal did.
+
+So the summary says it in sentences and pictures, in the order somebody decides
+in:
+
+- **The headline.** One sentence — how many of the last *N* decisions change,
+  which way, and what it costs — then, immediately under it, how many of those
+  changes this proposal actually caused. That separation is a tile in the
+  detail view that a reader has to know to look for; here it is unavoidable.
+- **How this works**, as five boxes and four arrows rather than a paragraph.
+  The sequence *is* the explanation, and a picture of it survives being glanced
+  at.
+- **What changes**, as three stacked bars: same versus different, then that
+  difference by direction, then the same difference by what caused it. The
+  connector between the first and second says "the next picture is this slice
+  of the last one", which is the only thing a reader has to carry between them.
+- **Who it affects**, one row per group, denominator in every row. A rate
+  without one is how this panel gets misread: *40% of contractors* is one case
+  in two as readily as two hundred in five hundred.
+- **Which sentences cause it**, as a single bar. The widest band is the
+  sentence to edit first.
+- **Can you trust these numbers?** — four cards, one per question the detail
+  view answers in a panel: does the answer repeat, does it agree with people,
+  does a second judge agree, is there enough history. Each says *not checked
+  yet* where the DAG behind it has not run, which is a different statement from
+  "fine" and is the one way a summary like this could actively mislead
+  somebody.
+- **Does it overturn a decision someone already made?** — the gate as a
+  checklist, keeping the distinction that has to survive being skimmed: a
+  ruling this proposal overturns is something to fix, and a ruling the rule
+  already in force overturns is not.
+
+Nothing in the summary is computed separately. Both views render from the same
+objects out of the same `render()`, so they cannot drift apart, and where they
+could disagree the detail view is authoritative — the summary rounds nothing
+the detail view does not round and states no measurement that was never taken.
+`tests/test_dashboard.py::TestThePlainSummary` asserts that in a browser,
+including that "not checked yet" survives.
+
+The detail view still opens with **How to read this page**: what each panel
 answers, in the order the panels answer it, and which DAG to trigger when one
 of them is empty. It is a `<details>`, so it costs one line once somebody knows
-the page.
+the page. Which view you were last in is remembered, because somebody who wants
+the detail wants it every time and somebody who wants the summary has never
+heard of a dial sweep.
 
 A **language switcher** in the header renders the whole page in English or
 Chinese (中文). Every string lives in one table at the top of

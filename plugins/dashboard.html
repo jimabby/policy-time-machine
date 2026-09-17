@@ -69,12 +69,66 @@ button:hover{border-color:var(--accent)}
 .spark>i{display:block;flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-height:2px}
 .spark>i.cur{background:var(--warn)}
 @media(max-width:720px){main{padding:20px 14px}header{padding:14px}.status{margin-left:0}}
+/* ------------------------------------------------------------ plain view
+   Two views over the same data. The plain one is the default because most
+   people who open this page are deciding whether to ship a rule, not auditing
+   how it was measured - and every panel below the fold is the audit. It says
+   the same things in sentences and pictures; nothing here is a summary the
+   detail view cannot account for. */
+.viewtabs{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.viewtabs button{border:0;border-radius:0;background:transparent;color:var(--dim);padding:7px 12px}
+.viewtabs button[aria-pressed=true]{background:var(--accent);color:#08101f;font-weight:600}
+body[data-view=plain] .detailonly{display:none}
+#plain h2{font-size:17px;text-transform:none;letter-spacing:0;color:var(--fg);font-weight:600;margin:34px 0 12px}
+#plain .diagram{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.verdict{background:linear-gradient(145deg,#17223a,#11192c);border:1px solid var(--line);border-radius:14px;padding:22px 24px;box-shadow:0 10px 24px #0000001c}
+.verdict .big{font-size:22px;line-height:1.35;margin:0 0 10px;font-weight:500}
+.verdict p{margin:0 0 8px;color:var(--dim);max-width:70ch}
+.verdict .chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:99px;padding:5px 12px;font-size:13px;margin-top:6px}
+.dot{width:9px;height:9px;border-radius:99px;display:inline-block;flex:none}
+.dot.ok{background:var(--loose)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--tight)}
+.dot.off{background:var(--mute)}
+/* A stacked bar is the whole point of these: no axis, no numbers inside it,
+   just the shape of the split. The numbers live in the legend under it, where
+   a narrow screen can wrap them instead of clipping them. */
+.flowcap{color:var(--dim);font-size:13px;margin:0 0 8px}
+.flowbar{display:block;width:100%;height:38px;border-radius:8px;overflow:hidden}
+.funnel{display:block;width:100%;height:26px;opacity:.5}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:9px 0 22px;font-size:13px;color:var(--dim)}
+.legend b{color:var(--fg);font-weight:600}
+.legend i{width:11px;height:11px;border-radius:3px;display:inline-block;margin-right:7px;vertical-align:-1px}
+.howsvg{display:block;width:100%;min-width:640px;height:auto}
+.howscroll{overflow-x:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:10px;padding:13px 15px;background:#0e1526}
+.card h4{margin:0 0 7px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.card p{margin:0;color:var(--dim);font-size:13px;line-height:1.5}
+.checklist{list-style:none;margin:0;padding:0}
+.checklist li{display:flex;gap:10px;align-items:flex-start;margin:0 0 10px;color:var(--dim);max-width:70ch}
+.checklist li:last-child{margin-bottom:0}
+.checklist .mk{font-weight:700;flex:none;width:1.1em;text-align:center}
+.whorow{display:grid;grid-template-columns:minmax(90px,1fr) 2fr auto;gap:10px;align-items:center;margin:0 0 8px;font-size:13px}
+.whorow .bar{height:10px}
+/* A long segment value used to run under its own bar. Truncated with the full
+   text on hover, because the row is a comparison of lengths and a value that
+   wraps to two lines breaks the alignment that comparison rests on. */
+.whorow>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The detail view shouts its group headings; here the heading contains a field
+   name out of the domain's YAML, and upper-casing data reads as a label. */
+#plain .group h3{text-transform:none;letter-spacing:0;font-size:12px}
+.whorow .cnt{color:var(--dim);font-variant-numeric:tabular-nums}
+.plainfoot{margin:30px 0 0}
+@media(max-width:720px){.verdict .big{font-size:18px}#plain .diagram{padding:13px}}
 </style></head><body>
 <header>
   <span class=mark>&#9719;</span><h1>Policy Time Machine</h1>
   <select id=domain aria-label="Domain"></select>
   <select id=version aria-label="Policy version"></select>
-  <input id=search type=search placeholder="Filter case IDs" aria-label="Filter case IDs">
+  <span class=viewtabs role=group aria-label="View">
+    <button id=viewplain type=button aria-pressed=true data-t="view.plain">Plain summary</button>
+    <button id=viewdetail type=button aria-pressed=false data-t="view.detail">Full detail</button>
+  </span>
+  <input id=search class=detailonly type=search placeholder="Filter case IDs" aria-label="Filter case IDs">
   <select id=lang aria-label="Language">
     <option value=en>English</option>
     <option value=zh>中文</option>
@@ -84,6 +138,32 @@ button:hover{border-color:var(--accent)}
   <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
 <main>
+<section id=plain>
+  <div id=plainerror></div>
+  <div class=verdict id=verdict></div>
+
+  <h2 data-t="p.how">How this works</h2>
+  <div class="diagram howscroll" id=howdiagram></div>
+
+  <h2 data-t="p.flow">What changes</h2>
+  <div class=diagram id=flowdiagram></div>
+
+  <h2 data-t="p.who">Who it affects</h2>
+  <div class=diagram id=whodiagram></div>
+
+  <h2 data-t="p.why">Which sentences cause it</h2>
+  <div class=diagram id=whydiagram></div>
+
+  <h2 data-t="p.trust">Can you trust these numbers?</h2>
+  <div class=diagram id=trustcards></div>
+
+  <h2 data-t="p.gate">Does it overturn a decision someone already made?</h2>
+  <div class=diagram id=gatecard></div>
+
+  <p class=plainfoot><button id=godetail type=button data-t="p.godetail">See all the numbers</button></p>
+</section>
+
+<div id=detail hidden>
   <p class=hero data-t="hero.main">Replay real decisions under a proposed rule, attribute every change to the clause
   that caused it, surface who it lands on, and retain human rulings as regression tests.</p>
   <p class=hero id=draftnote hidden></p>
@@ -174,6 +254,7 @@ button:hover{border-color:var(--accent)}
 
   <h2 data-t="h.drafts">Drafted amendments <span class=note data-t="h.drafts.note">written by the proposal DAG, checked by the gate, approved by nobody</span></h2>
   <div id=drafts></div>
+</div>
 </main>
 <script>
 "use strict";
@@ -463,6 +544,80 @@ en: {
   "caveat.history": "two versions are only comparable over the same cases. A version replayed on one month and one replayed on two years differ by sample before they differ by policy, which is what the band is for - and a version with no verdicts on file reverses no precedent because nothing has asked it, not because it agrees.",
   "caveat.draft_verify": "checked against the precedent set only. A draft that reverses no ruling has passed the regression suite, not been measured - replay it to find out what it does to the other cases.",
 
+  // ---- the plain summary
+  //
+  // Every string here says the same thing as a panel in the detail view, in
+  // words somebody who has never seen this project can act on. Where the two
+  // disagree the detail view is right, so nothing below rounds, drops a
+  // denominator, or states a measurement that was never taken - "not checked
+  // yet" is a sentence this vocabulary needs more often than any other.
+  "view.plain": "Plain summary", "view.detail": "Full detail", "aria.view": "View",
+  "p.how": "How this works",
+  "p.flow": "What changes",
+  "p.who": "Who it affects",
+  "p.why": "Which sentences cause it",
+  "p.trust": "Can you trust these numbers?",
+  "p.gate": "Does it overturn a decision someone already made?",
+  "p.godetail": "See all the numbers",
+
+  "p.headline": "<strong>{flips}</strong> of the last <strong>{cases}</strong> decisions would come out differently under <strong>{v}</strong>.",
+  "p.headline.none": "None of the last <strong>{cases}</strong> decisions would come out differently under <strong>{v}</strong>.",
+  "p.headline.sub": "<strong class=loose>{loose} more generous</strong>, <strong class=tight>{tight} stricter</strong>. That is {money} over this period.",
+  "p.headline.cause": "{n} of those are this proposal's doing. The other {m} are cases the rule already in force disagreed with too, so they are not what this change did.",
+  "p.headline.nocause": "Every one of them is this proposal's doing.",
+  "p.headline.draft": "This version was drafted by software. Nobody has approved it.",
+  "p.headline.nothing": "Nothing has been replayed for {v} yet, so there is nothing to report. Run the replay in Airflow, then reload this page.",
+
+  "p.step1.t": "Past decisions", "p.step1.s": "Real cases your organisation already decided.",
+  "p.step2.t": "Decide again", "p.step2.s": "Each one re-decided under the proposed rule, using only what was known at the time.",
+  "p.step3.t": "Compare", "p.step3.s": "Old answer against new answer, one case at a time.",
+  "p.step4.t": "A person rules", "p.step4.s": "Only the cases where the two answers disagree go to a human.",
+  "p.step5.t": "Kept as tests", "p.step5.s": "Those rulings become permanent checks every later rule change must pass.",
+
+  "p.flow.cap1": "{n} past decisions, re-decided under {v}",
+  "p.flow.cap2": "The {n} that change, by direction",
+  "p.flow.cap3": "The same {n}, by what caused them",
+  "p.flow.same": "Same answer", "p.flow.changed": "Different answer",
+  "p.flow.loose": "More generous", "p.flow.tight": "Stricter",
+  "p.flow.policy": "Caused by this change", "p.flow.pre": "Already at odds with today's rule",
+  "p.flow.none": "Nothing has been replayed yet, so there is nothing to split up.",
+  "p.legend": "<b>{n}</b> {label} ({pct})",
+
+  "p.who.none": "No breakdown has been recorded yet.",
+  "p.who.by": "By {field}",
+  "p.who.rate": "{flips} of {cases}",
+  "p.who.note": "A group that moves more than the others is a question to answer before shipping, not a verdict. Groups differ in what they contain.",
+
+  "p.why.none": "No change has been traced to a sentence yet.",
+  "p.why.item": "{clause}",
+  "p.why.notpolicy": "not caused by this change",
+  "p.why.other": "Everything else",
+  "p.why.note": "Edit the sentence with the widest band first: it is doing most of the work.",
+
+  "p.trust.repeat": "Does the answer repeat?",
+  "p.trust.repeat.yes": "Yes. Every case that was judged more than once came back the same.",
+  "p.trust.repeat.no": "Not always. {pct} of re-judged cases came back differently, so treat small differences here with care.",
+  "p.trust.people": "Does it agree with people?",
+  "p.trust.people.yes": "It reached the same answer as the person who ruled in {a} of {b} cases.",
+  "p.trust.second": "Does a second opinion agree?",
+  "p.trust.second.yes": "A second, independent judge agreed on {rate} of the cases both looked at.",
+  "p.trust.size": "Is there enough history?",
+  "p.trust.size.yes": "On {n} past decisions, a difference smaller than {mde} cannot be told apart from chance.",
+  "p.trust.notyet": "Not checked yet.",
+
+  "p.gate.none": "Nobody has ruled on a case yet, so there is nothing to check against. Rulings start the first time a person reviews a disagreement.",
+  "p.gate.have": "{n} past ruling{s} by a person on file.",
+  "p.gate.clean": "This version overturns none of them.",
+  "p.gate.broken": "This version overturns {n} of them.",
+  "p.gate.introduced": "{n} of those are this proposal's doing - that is what to fix.",
+  "p.gate.noneintroduced": "None of those are this proposal's doing.",
+  "p.gate.inforce": "The rule in force today already overturns {n} of them, so this change is not what did it.",
+  "p.gate.stale": "{n} of them rest on wording that has since changed, which may need re-deciding rather than a policy edit.",
+  "p.gate.unchecked": "{n} could not be checked against this version.",
+  "p.chip.clean": "Overturns no ruling anyone has made",
+  "p.chip.broken": "Overturns {n} ruling{s} a person already made",
+  "p.chip.none": "No past rulings to check against yet",
+
   // ---- failures
   "fail.load": "Could not load this replay. Please refresh or check the Airflow logs.",
   "fail.boot": "Could not load Policy Time Machine data. Start the Airflow demo, then refresh.",
@@ -718,6 +873,74 @@ zh: {
   "caveat.history": "两个版本只有在相同的案例集上才具可比性。在一个月上重放的版本与在两年上重放的版本，先差在样本量，再差在政策 —— 这正是置信区间的用途；而没有在册评判结论的版本之所以没有推翻任何判例，是因为没有人问过它，而不是因为它赞同。",
   "caveat.draft_verify": "仅对照判例集检查过。一份没有推翻任何裁定的草案，只是通过了回归测试，而不是已经被衡量过 —— 请重放它，才知道它对其余案例做了什么。",
 
+  // ---- the plain summary
+  "view.plain": "简明摘要", "view.detail": "完整详情", "aria.view": "视图",
+  "p.how": "运作方式",
+  "p.flow": "改变了什么",
+  "p.who": "影响到谁",
+  "p.why": "是哪些条文造成的",
+  "p.trust": "这些数字可信吗？",
+  "p.gate": "它会推翻已有的人工裁定吗？",
+  "p.godetail": "查看全部数字",
+
+  "p.headline": "最近 <strong>{cases}</strong> 项决策中，有 <strong>{flips}</strong> 项在 <strong>{v}</strong> 下会得出不同结果。",
+  "p.headline.none": "最近 <strong>{cases}</strong> 项决策在 <strong>{v}</strong> 下结果都不会改变。",
+  "p.headline.sub": "其中 <strong class=loose>{loose} 项更宽松</strong>，<strong class=tight>{tight} 项更严格</strong>。这段期间合计 {money}。",
+  "p.headline.cause": "其中 {n} 项由本提案造成。另外 {m} 项在当前生效的规则下同样存在分歧，因此不是这次改动造成的。",
+  "p.headline.nocause": "全部都由本提案造成。",
+  "p.headline.draft": "此版本由软件草拟，尚未经任何人批准。",
+  "p.headline.nothing": "尚未对 {v} 做过重放，因此没有结果可报告。请先在 Airflow 中运行重放，然后刷新本页。",
+
+  "p.step1.t": "既往决策", "p.step1.s": "贵机构已经做出的真实案例决定。",
+  "p.step2.t": "重新判定", "p.step2.s": "在拟议规则下逐一重判，只使用当时已知的信息。",
+  "p.step3.t": "逐案比对", "p.step3.s": "把旧答案与新答案一个案例一个案例地对照。",
+  "p.step4.t": "交由人裁定", "p.step4.s": "只有两个答案不一致的案例才交给人来判断。",
+  "p.step5.t": "留作回归测试", "p.step5.s": "这些裁定成为永久检查项，此后每一次规则改动都必须通过。",
+
+  "p.flow.cap1": "{n} 项既往决策，在 {v} 下重新判定",
+  "p.flow.cap2": "其中改变的 {n} 项，按方向划分",
+  "p.flow.cap3": "同样这 {n} 项，按成因划分",
+  "p.flow.same": "结果相同", "p.flow.changed": "结果不同",
+  "p.flow.loose": "更宽松", "p.flow.tight": "更严格",
+  "p.flow.policy": "由本次改动造成", "p.flow.pre": "与现行规则本就不一致",
+  "p.flow.none": "尚未做过重放，没有可拆分的结果。",
+  "p.legend": "<b>{n}</b> {label}（{pct}）",
+
+  "p.who.none": "尚未记录分组结果。",
+  "p.who.by": "按{field}",
+  "p.who.rate": "{cases} 项中有 {flips} 项",
+  "p.who.note": "某一组变化明显多于其他组，是上线前需要给出解释的问题，而不是结论 —— 各组本身包含的案例就不相同。",
+
+  "p.why.none": "尚未把任何变化归因到具体条文。",
+  "p.why.item": "{clause}",
+  "p.why.notpolicy": "不是本次改动造成的",
+  "p.why.other": "其余全部",
+  "p.why.note": "先改色条最长的那一句：大部分变化都是它带来的。",
+
+  "p.trust.repeat": "同一案例重判，答案会一致吗？",
+  "p.trust.repeat.yes": "会。所有被重复判定的案例，每次结果都相同。",
+  "p.trust.repeat.no": "并非总是如此。重判案例中有 {pct} 得出了不同结果，因此对细小差异要谨慎看待。",
+  "p.trust.people": "它和人的判断一致吗？",
+  "p.trust.people.yes": "在 {b} 个由人裁定过的案例中，它有 {a} 个得出了相同答案。",
+  "p.trust.second": "换一个评判者，结论一样吗？",
+  "p.trust.second.yes": "第二个独立评判者在双方都看过的案例中有 {rate} 与之一致。",
+  "p.trust.size": "历史数据够多吗？",
+  "p.trust.size.yes": "在 {n} 项既往决策上，小于 {mde} 的差异无法与随机波动区分开。",
+  "p.trust.notyet": "尚未检查。",
+
+  "p.gate.none": "还没有人裁定过任何案例，因此没有可比对的依据。等到有人首次复核分歧时，裁定才会开始积累。",
+  "p.gate.have": "在册的人工裁定共 {n} 条。",
+  "p.chip.clean": "没有推翻任何人工裁定",
+  "p.chip.broken": "推翻了 {n} 条人工裁定",
+  "p.chip.none": "尚无可比对的人工裁定",
+  "p.gate.clean": "本版本没有推翻其中任何一条。",
+  "p.gate.broken": "本版本推翻了其中 {n} 条。",
+  "p.gate.introduced": "其中 {n} 条由本提案造成 —— 这才是需要修改的部分。",
+  "p.gate.noneintroduced": "其中没有一条是本提案造成的。",
+  "p.gate.inforce": "其中 {n} 条在当前生效的规则下就已被推翻，因此不是这次改动造成的。",
+  "p.gate.stale": "有 {n} 条裁定所针对的文字此后已经改动，可能需要重新裁定，而不是修改政策。",
+  "p.gate.unchecked": "有 {n} 条裁定无法针对本版本进行检查。",
+
   // ---- failures
   "fail.load": "无法加载此次重放。请刷新页面或查看 Airflow 日志。",
   "fail.boot": "无法加载政策时光机的数据。请先启动 Airflow 演示环境，然后刷新。",
@@ -794,7 +1017,8 @@ function applyStatic() {
                             ["#lang", "aria.lang"], ["#search", "aria.search"],
                             ["#swdial", "aria.swdial"], ["#swvalues", "aria.swvalues"],
                             ["#swdial2", "aria.swdial2"], ["#swvalues2", "aria.swvalues2"],
-                            ["#cmpleft", "aria.cmpleft"], ["#cmpright", "aria.cmpright"]]) {
+                            ["#cmpleft", "aria.cmpleft"], ["#cmpright", "aria.cmpright"],
+                            [".viewtabs", "aria.view"]]) {
     const el = $(sel);
     if (el) el.setAttribute("aria-label", t(key));
   }
@@ -802,6 +1026,7 @@ function applyStatic() {
   $("#howtosteps").innerHTML = ["step1", "step2", "step3", "step4",
                                 "step5", "step6", "step7", "step8"]
     .map(s => `<li>${t("howto." + s)}</li>`).join("");
+  renderHow();
 }
 
 let DOMAINS = [];
@@ -848,10 +1073,15 @@ function remember(domain, version) {
 const PANELS = ["#tiles","#power","#preflight","#clauses","#segments","#disparity","#sweep",
                 "#swbanded","#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
-                "#calibration","#history","#superseded","#drafts"];
+                "#calibration","#history","#superseded","#drafts",
+                "#verdict","#flowdiagram","#whodiagram","#whydiagram","#trustcards",
+                "#gatecard"];
 
 function fail(message) {
   $("#tiles").innerHTML = `<div class=error>${esc(message)}</div>`;
+  // The plain view is the default, so an error that only reached the tiles was
+  // invisible to most of the people it was written for.
+  $("#plainerror").innerHTML = `<div class=error>${esc(message)}</div>`;
   PANELS.slice(1).forEach(id => { $(id).innerHTML = ""; });
   $("#cmpsummary").textContent = "";
   $("#swnote").textContent = "";
@@ -1623,6 +1853,333 @@ function renderDrafts(rows) {
     t("drafts.empty"));
 }
 
+// ------------------------------------------------------------ plain view
+//: The same replay, said in sentences and pictures.
+//:
+//: Everything below renders from exactly the objects the detail panels render
+//: from - there is no second read model and no rounding done here that the
+//: detail view does not also do. That is the whole discipline of this section:
+//: a summary somebody acts on must not be able to disagree with the evidence
+//: it claims to summarise, so where a measurement is missing these renderers
+//: say "not checked yet" rather than inventing a reassuring default.
+
+//: Which view the page is in. Remembered, because somebody who wants the
+//: detail view wants it every time, and somebody who wants the summary has
+//: never heard of a dial sweep.
+let VIEW = "plain";
+
+function setView(view) {
+  VIEW = view === "detail" ? "detail" : "plain";
+  document.body.dataset.view = VIEW;
+  $("#plain").hidden = VIEW !== "plain";
+  $("#detail").hidden = VIEW !== "detail";
+  $("#viewplain").setAttribute("aria-pressed", String(VIEW === "plain"));
+  $("#viewdetail").setAttribute("aria-pressed", String(VIEW === "detail"));
+  try { localStorage.setItem("ptm.view", VIEW); } catch (e) { /* storage blocked */ }
+}
+
+//: Segment widths for a stacked bar, in a 1000-unit viewBox.
+//:
+//: A slice that exists has to be visible. One case in six hundred is a third
+//: of a pixel, and a bar that rounds it away is not a small error - it is a
+//: picture saying the category is empty when somebody is about to decide
+//: whether it matters. Slivers are floored at a legible width and the rest are
+//: rescaled to give it back, so the bar still fills exactly.
+function widths(values, W) {
+  const total = values.reduce((a, v) => a + Number(v || 0), 0);
+  if (!total) return values.map(() => 0);
+  const MIN = 9;
+  const raw = values.map(v => Number(v || 0) ? W * Number(v) / total : 0);
+  const small = raw.map(w => w > 0 && w < MIN);
+  const floored = small.reduce((a, b) => a + (b ? MIN : 0), 0);
+  const rest = raw.reduce((a, w, i) => a + (small[i] ? 0 : w), 0);
+  const scale = rest ? (W - floored) / rest : 0;
+  return raw.map((w, i) => small[i] ? MIN : w * scale);
+}
+
+//: A stacked bar and the legend that carries its numbers.
+//:
+//: No text inside the bar: a label that does not fit its own slice either
+//: overflows onto the next one or gets clipped, and both are worse on a phone
+//: than a legend that wraps.
+function stacked(segments) {
+  const parts = segments.filter(s => Number(s.n) > 0);
+  const total = parts.reduce((a, s) => a + Number(s.n), 0);
+  if (!total) return "";
+  const ws = widths(parts.map(s => s.n), 1000);
+  let x = 0;
+  const rects = parts.map((s, i) => {
+    const rect = `<rect x="${x.toFixed(2)}" y="0" width="${ws[i].toFixed(2)}" height="38" fill="${s.color}"></rect>`;
+    x += ws[i];
+    return rect;
+  }).join("");
+  const legend = parts.map(s =>
+    `<span><i style="background:${s.color}"></i>${t("p.legend", {
+      n: num(s.n), label: s.label, pct: pct(s.n / total)})}${
+      s.tag ? ` <span class=muted>&mdash; ${s.tag}</span>` : ""}</span>`).join("");
+  return `<svg class=flowbar viewBox="0 0 1000 38" preserveAspectRatio=none
+    role=img aria-label="${esc(parts.map(s => `${s.plain || s.label}: ${s.n}`).join(", "))}">${rects}</svg>
+    <div class=legend>${legend}</div>`;
+}
+
+//: Where the bar above narrows into the bar below. Purely a connector: it says
+//: "the next picture is this slice of the last one", which is the one thing a
+//: reader has to carry between them.
+const funnel = fromX => `<svg class=funnel viewBox="0 0 1000 26" preserveAspectRatio=none
+  aria-hidden=true><polygon points="${fromX.toFixed(1)},0 1000,0 1000,26 0,26"
+  fill="var(--warn)"></polygon></svg>`;
+
+//: Word wrap for SVG, which has none of its own.
+//:
+//: Splits on spaces, and on characters when a "word" is longer than the line -
+//: which is every Chinese sentence, and is why this is not a one-liner.
+function wrapText(text, limit) {
+  const lines = [];
+  let line = "";
+  for (const word of String(text).split(/\s+/).filter(Boolean)) {
+    if (word.length > limit) {
+      for (const ch of word) {
+        if (line.length >= limit) { lines.push(line); line = ""; }
+        line += ch;
+      }
+      continue;
+    }
+    if (!line) line = word;
+    else if (line.length + 1 + word.length <= limit) line += " " + word;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+//: What the machine does, as five boxes and four arrows.
+//:
+//: This replaces the paragraph that used to be the first thing a reader met.
+//: The sequence *is* the explanation - past decisions, re-decided, compared,
+//: the disagreements sent to a person, the rulings kept - and a picture of it
+//: survives being glanced at, which the paragraph did not.
+function renderHow() {
+  const el = $("#howdiagram");
+  if (!el) return;
+  const steps = [1, 2, 3, 4, 5].map(i =>
+    ({title: t(`p.step${i}.t`), sub: t(`p.step${i}.s`)}));
+  const W = 176, GAP = 30, H = 132;
+  const boxes = steps.map((step, i) => {
+    const x = i * (W + GAP);
+    const lines = wrapText(step.sub, LANG === "zh" ? 13 : 24).slice(0, 4);
+    const body = lines.map((line, k) =>
+      `<tspan x="${x + W / 2}" dy="${k ? 14 : 0}">${esc(line)}</tspan>`).join("");
+    const arrow = i < steps.length - 1
+      ? `<path d="M${x + W + 6} ${H / 2} h${GAP - 18}" stroke="var(--line)" stroke-width="2"></path>
+         <path d="M${x + W + GAP - 12} ${H / 2 - 5} l6 5 -6 5z" fill="var(--accent)"></path>` : "";
+    return `<g>
+      <rect x="${x}" y="8" width="${W}" height="${H - 16}" rx="11"
+            fill="#17223a" stroke="var(--line)"></rect>
+      <circle cx="${x + 18}" cy="30" r="10" fill="var(--accent)" opacity=".18"></circle>
+      <text x="${x + 18}" y="34" text-anchor="middle" font-size="11"
+            fill="var(--accent)" font-weight="700">${i + 1}</text>
+      <text x="${x + W / 2}" y="60" text-anchor="middle" font-size="13"
+            fill="var(--fg)" font-weight="600">${esc(step.title)}</text>
+      <text x="${x + W / 2}" y="80" text-anchor="middle" font-size="11"
+            fill="var(--dim)">${body}</text>
+      ${arrow}</g>`;
+  }).join("");
+  const width = steps.length * W + (steps.length - 1) * GAP;
+  el.innerHTML = `<svg class=howsvg viewBox="0 0 ${width} ${H}" role=img
+    aria-label="${esc(steps.map(s => s.title).join(" - "))}">${boxes}</svg>`;
+}
+
+//: The headline: what this proposal does, in one sentence somebody can repeat.
+function renderVerdict(summary, gate, version) {
+  const el = $("#verdict");
+  const find = d => summary.by_direction.find(x => x.direction === d) || {n: 0, impact: 0};
+  const unit = summary.impact_unit;
+  if (!summary.cases) {
+    el.innerHTML = `<p class=big>${t("p.headline.nothing", {v: esc(version)})}</p>`;
+    return;
+  }
+  const head = summary.flips
+    ? t("p.headline", {flips: num(summary.flips), cases: num(summary.cases), v: esc(version)})
+    : t("p.headline.none", {cases: num(summary.cases), v: esc(version)});
+  const sub = summary.flips
+    ? `<p>${t("p.headline.sub", {
+        loose: num(find("loosening").n), tight: num(find("tightening").n),
+        money: money(unit, summary.policy_driven_net_impact)})}</p>` : "";
+  // Which of these changes this proposal is actually answerable for. It is the
+  // number most often quoted wrong, so it is a sentence rather than a tile.
+  const cause = summary.flips
+    ? `<p>${summary.deviation_flips
+        ? t("p.headline.cause", {n: num(summary.policy_driven_flips),
+                                 m: num(summary.deviation_flips)})
+        : t("p.headline.nocause")}</p>` : "";
+  const reversed = gate && gate.precedents ? gate.violations.length : 0;
+  const chip = gate && gate.precedents
+    ? `<span class=chip><span class="dot ${reversed ? "bad" : "ok"}"></span>${
+        reversed ? t("p.chip.broken", {n: num(reversed), s: plural(reversed)})
+                 : t("p.chip.clean")}</span>`
+    : `<span class=chip><span class="dot off"></span>${t("p.chip.none")}</span>`;
+  const draft = summary.is_draft ? `<p class=warn>${t("p.headline.draft")}</p>` : "";
+  el.innerHTML = `<p class=big>${head}</p>${sub}${cause}${draft}${chip}`;
+}
+
+//: The split, twice over: which way the changes go, and whose fault they are.
+function renderFlow(summary, version) {
+  const el = $("#flowdiagram");
+  if (!summary.cases) { el.innerHTML = `<div class=empty>${t("p.flow.none")}</div>`; return; }
+  const find = d => summary.by_direction.find(x => x.direction === d) || {n: 0, impact: 0};
+  const unchanged = Math.max(0, summary.cases - summary.flips);
+  const top = stacked([
+    {n: unchanged, label: t("p.flow.same"), color: "var(--mute)"},
+    {n: summary.flips, label: t("p.flow.changed"), color: "var(--warn)"},
+  ]);
+  if (!summary.flips) {
+    el.innerHTML = `<p class=flowcap>${t("p.flow.cap1", {
+      n: num(summary.cases), v: esc(version)})}</p>${top}`;
+    return;
+  }
+  // Where the "changed" slice starts, so the funnel below points at it rather
+  // than at the middle of a bar it has nothing to do with.
+  const [sameW] = widths([unchanged, summary.flips], 1000);
+  const direction = stacked([
+    {n: find("loosening").n, label: t("p.flow.loose"), color: "var(--loose)"},
+    {n: find("tightening").n, label: t("p.flow.tight"), color: "var(--tight)"},
+  ]);
+  const cause = stacked([
+    {n: summary.policy_driven_flips, label: t("p.flow.policy"), color: "var(--accent)"},
+    {n: summary.deviation_flips, label: t("p.flow.pre"), color: "var(--mute)"},
+  ]);
+  el.innerHTML =
+    `<p class=flowcap>${t("p.flow.cap1", {n: num(summary.cases), v: esc(version)})}</p>${top}
+     ${funnel(sameW)}
+     <p class=flowcap>${t("p.flow.cap2", {n: num(summary.flips)})}</p>${direction}
+     <p class=flowcap>${t("p.flow.cap3", {n: num(summary.flips)})}</p>${cause}`;
+}
+
+//: Who the change lands on, with the denominator in every row.
+//:
+//: A rate with no denominator is the way this panel gets misread: "40% of
+//: contractors" is one case in two as readily as two hundred in five hundred.
+function renderWho(rows, declared) {
+  const el = $("#whodiagram");
+  if (!rows.length) { el.innerHTML = `<div class=empty>${t("p.who.none")}</div>`; return; }
+  const fields = [...new Set(rows.map(r => r.field))].slice(0, 3);
+  el.innerHTML = fields.map(field => {
+    const group = rows.filter(r => r.field === field)
+      .slice().sort((a, b) => b.flip_rate - a.flip_rate).slice(0, 6);
+    const max = Math.max(...group.map(r => r.flip_rate), 0.0001);
+    return `<div class=group><h3>${t("p.who.by", {field: esc(field)})}</h3>${group.map(r =>
+      `<div class=whorow><span title="${esc(r.value)}">${esc(r.value)}</span>
+        <span class=bar><i style="width:${(r.flip_rate / max * 100).toFixed(1)}%"></i></span>
+        <span class=cnt>${t("p.who.rate", {flips: num(r.flips), cases: num(r.cases)})} &middot; ${pct(r.flip_rate)}</span>
+      </div>`).join("")}</div>`;
+  }).join("") + `<p class=note>${t("p.who.note")}</p>`;
+}
+
+//: Which sentence to edit. One bar, widest slice first.
+const CLAUSE_COLORS = ["#77a7ff", "#48d597", "#f9c75d", "#c792ea", "#5ad7e0", "#ff9f6e"];
+
+function renderWhy(rows, summary) {
+  const el = $("#whydiagram");
+  if (!rows.length) { el.innerHTML = `<div class=empty>${t("p.why.none")}</div>`; return; }
+  const sorted = rows.slice().sort((a, b) => b.flips - a.flips);
+  const head = sorted.slice(0, CLAUSE_COLORS.length);
+  const rest = sorted.slice(CLAUSE_COLORS.length).reduce((a, r) => a + r.flips, 0);
+  const segments = head.map((r, i) => ({
+    n: r.flips,
+    label: esc(r.clause),
+    // A bucket the policy did not cause is greyed rather than coloured: it
+    // shares this bar because it shares the flip count, not the blame.
+    color: r.policy_driven ? CLAUSE_COLORS[i] : "var(--mute)",
+    tag: r.policy_driven ? "" : t("p.why.notpolicy"),
+    plain: r.clause,
+  }));
+  if (rest) segments.push({n: rest, label: t("p.why.other"), color: "#3b4a68"});
+  el.innerHTML = stacked(segments) + `<p class=note>${t("p.why.note")}</p>`;
+}
+
+//: The four questions that decide whether any number above is worth acting on.
+//: Each is a card with a colour, a question and a sentence - and "not checked
+//: yet" wherever the DAG behind it has not run, which is a different statement
+//: from "fine".
+function renderTrust(stability, calibration, cross, power) {
+  const cards = [];
+  const add = (state, question, answer) => cards.push(
+    `<div class=card><h4><span class="dot ${state}"></span>${question}</h4><p>${answer}</p></div>`);
+
+  if (stability && stability.measured) {
+    const noisy = stability.disagreement_rate > 0;
+    add(noisy ? "warn" : "ok", t("p.trust.repeat"),
+        noisy ? t("p.trust.repeat.no", {pct: pct(stability.disagreement_rate)})
+              : t("p.trust.repeat.yes"));
+  } else add("off", t("p.trust.repeat"), t("p.trust.notyet"));
+
+  if (calibration && calibration.measured) {
+    const r = calibration.report;
+    add(r.accuracy >= 0.9 ? "ok" : r.accuracy >= 0.75 ? "warn" : "bad", t("p.trust.people"),
+        t("p.trust.people.yes", {a: num(r.agreed), b: num(r.judged)}));
+  } else add("off", t("p.trust.people"), t("p.trust.notyet"));
+
+  if (cross && cross.measured) {
+    const r = cross.report;
+    add(r.agreement >= 0.9 ? "ok" : r.agreement >= 0.75 ? "warn" : "bad", t("p.trust.second"),
+        t("p.trust.second.yes", {rate: pct(r.agreement)}));
+  } else add("off", t("p.trust.second"), t("p.trust.notyet"));
+
+  if (power && power.measured) {
+    add("ok", t("p.trust.size"),
+        t("p.trust.size.yes", {n: num(power.cases), mde: pct(power.detectable_difference)}));
+  } else add("off", t("p.trust.size"), t("p.trust.notyet"));
+
+  $("#trustcards").innerHTML = `<div class=cards>${cards.join("")}</div>`;
+}
+
+//: The gate, as a checklist rather than a count.
+//:
+//: The distinction that has to survive being skimmed is between a ruling this
+//: proposal overturns and one the rule already in force overturns. Only the
+//: first is something to fix here.
+function renderGateCard(gate) {
+  const el = $("#gatecard");
+  if (!gate || !gate.precedents) {
+    el.innerHTML = `<p class=hero>${t("p.gate.none")}</p>`;
+    return;
+  }
+  const items = [["ok", t("p.gate.have", {n: num(gate.precedents),
+                                          s: plural(gate.precedents)})]];
+  const reversed = gate.violations.length;
+  if (!reversed) items.push(["ok", t("p.gate.clean")]);
+  else {
+    items.push(["bad", t("p.gate.broken", {n: num(reversed)})]);
+    items.push(gate.introduced.length
+      ? ["bad", t("p.gate.introduced", {n: num(gate.introduced.length)})]
+      : ["ok", t("p.gate.noneintroduced")]);
+    if (gate.in_force_violations.length) {
+      items.push(["off", t("p.gate.inforce", {n: num(gate.in_force_violations.length)})]);
+    }
+  }
+  if (gate.stale && gate.stale.length) {
+    items.push(["warn", t("p.gate.stale", {n: num(gate.stale.length)})]);
+  }
+  if (gate.unchecked && gate.unchecked.length) {
+    items.push(["warn", t("p.gate.unchecked", {n: num(gate.unchecked.length)})]);
+  }
+  const mark = state => ({ok: "&check;", off: "&middot;", warn: "!"})[state] || "&times;";
+  const cls = state => state === "ok" ? "loose" : state === "bad" ? "tight"
+    : state === "warn" ? "warn" : "muted";
+  el.innerHTML = `<ul class=checklist>${items.map(([state, text]) =>
+    `<li><span class="mk ${cls(state)}">${mark(state)}</span><span>${text}</span></li>`).join("")}</ul>`;
+}
+
+function renderPlain(data) {
+  $("#plainerror").innerHTML = "";
+  renderVerdict(data.summary, data.gate, data.version);
+  renderFlow(data.summary, data.version);
+  renderWho(data.segmentRows, data.declared);
+  renderWhy(data.clauseRows, data.summary);
+  renderTrust(data.stability, data.calibration, data.cross, data.power);
+  renderGateCard(data.gate);
+}
+
 // --------------------------------------------------------------- boot
 async function render() {
   const domain = $("#domain").value, version = $("#version").value;
@@ -1674,12 +2231,17 @@ async function render() {
   if (summary.is_draft) {
     draftnote.innerHTML = t("draft.note", {v: esc(version)});
   }
+  const declared = (DOMAINS.find(d => d.name === domain) || {}).segment_fields || [];
+  // Same objects, two audiences. Nothing is re-fetched and nothing is
+  // recomputed for the summary, so the two views cannot drift apart.
+  renderPlain({summary, gate, version, segmentRows, clauseRows, declared,
+               stability: stabilityDetail, calibration: calibrationDetail,
+               cross: crossDetail, power: powerDetail});
   renderTiles(summary, costs, gate, calibrationDetail);
   renderPower(powerDetail);
   renderPreflight(preflightDetail);
   renderClauses(clauseRows, summary.impact_unit, summary);
-  renderSegments(segmentRows, summary.impact_unit,
-                 (DOMAINS.find(d => d.name === domain) || {}).segment_fields || []);
+  renderSegments(segmentRows, summary.impact_unit, declared);
   renderDisparity(disparityDetail, summary.impact_unit);
   renderDials(dials);
   renderRules(ruleDetail);
@@ -1762,6 +2324,12 @@ async function boot() {
   $("#swvalues").onkeydown = e => { if (e.key === "Enter") runSweep(); };
   $("#swvalues2").onkeydown = e => { if (e.key === "Enter") runGrid(); };
   $("#lang").onchange = () => setLanguage($("#lang").value);
+  $("#viewplain").onclick = () => setView("plain");
+  $("#viewdetail").onclick = () => setView("detail");
+  $("#godetail").onclick = () => {
+    setView("detail");
+    document.querySelector("#detail").scrollIntoView({block: "start"});
+  };
   onDomainChange();
 }
 
@@ -1782,6 +2350,10 @@ function setLanguage(code) {
 
 LANG = pickLanguage();
 $("#lang").value = LANG;
+// Before the first paint, so the page never shows one view and then swaps to
+// the other in front of the reader.
+try { setView(localStorage.getItem("ptm.view") || "plain"); }
+catch (e) { setView("plain"); }
 applyStatic();
 boot();
 </script></body></html>
