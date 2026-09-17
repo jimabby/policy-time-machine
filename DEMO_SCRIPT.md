@@ -132,14 +132,14 @@ Ask for one vote, then point to that setting's result. Keep the caveat visible.
   independent, and there is no prize for a single take.
 - **Do not narrate what is on screen.** Say what it *means*. The screen already
   says what it says, and it says it faster than you can.
-- **Silence is a tool.** The marked beats — after "nobody knows", after the
-  thirty-eight, after "a model writes the policy" — are doing more work than any
+- **Silence is a tool.** The beats after the audience's guess, after the
+  thirty-eight, and after the threshold vote are doing more work than any
   sentence around them. One full second. It feels like ten from behind the
   microphone and reads as deliberate on playback.
 - **`make up` finishes before you hit record.** A container starting is thirty
   seconds of nothing, and thirty seconds is a sixth of the film.
-- **Cut, in this order, if you overrun:** the sweep (2:10), then the proposer
-  (2:35), then point-in-time (1:25). Never cut the attribution beat at 0:50.
+- **Cut, in this order, if you overrun:** the threshold vote (2:20), then the
+  point-in-time check (0:55). Keep the attribution reveal at 0:25.
 - **If the wifi dies, everything above still runs.** That is deliberate, and if
   it happens live it is worth saying out loud.
 
