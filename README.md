@@ -9,6 +9,14 @@ regression suite that every future rule change must pass.**
 Built for **Beyond the DAG**. Airflow 3.1, the Common AI provider, HITL
 operators, assets, dynamic task mapping, and a UI plugin.
 
+![The Policy Diff Explorer: a plain-language summary of what a rule change does, then the evidence behind it](docs/explorer.gif)
+
+*The Diff Explorer, inside the Airflow UI. It opens on the answer — how many of
+the last 600 decisions change, which way, and how many of those this proposal
+actually caused — and the twenty-odd panels of evidence are one click behind
+it. Every clip in this README is the real tool, on the shipped fixture, with no
+API key.*
+
 ---
 
 ## The problem
@@ -22,6 +30,15 @@ from anecdote, ship it, and find out three months later.
 This makes that question computable — and then makes the answer *stick*.
 
 ## What it produces
+
+![The replay printing its summary, then attributing every change to the clause responsible](docs/attribution.gif)
+
+*`python -m ptm.selftest` — the whole loop with no Airflow and no key, in about
+three seconds; the clip is paced for reading rather than run in real time. The
+last two lines are the ones that matter: 109 of the 147 changes are this
+proposal's doing, and 38 are not.*
+
+The same run, with the parts worth arguing about kept and the rest elided:
 
 ```
 replayed 600 decisions under policy v2
@@ -878,6 +895,8 @@ the sweep, the calibration score and the export bundle all have a `python -m
 ptm.*` entry point, precisely so they can run in CI and on a laptop with no key.
 The regression suite needed you to start Airflow and trigger a DAG.
 
+![The precedent gate failing, and reporting that the candidate policy introduced none of the reversals](docs/gate.gif)
+
 ```bash
 $ python -m ptm.gate expenses v2
 gate: policy v2 vs 8 of 8 precedent(s), against v1 in force
@@ -1377,6 +1396,7 @@ ptm/cli.py                      one definition of --help, for every entry point
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
+docs/*.gif                      the clips above, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
 tests/                          995 tests; the engine's 849 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
