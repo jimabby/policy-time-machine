@@ -530,6 +530,39 @@ class TestTheInstructions:
 
 
 @needs_browser
+class TestEveryStaticStringHasSomethingToSay:
+    """A `data-t` key with no entry in the table renders as the key.
+
+    applyStatic() replaces a labelled element's text with `t(key)`, and t()
+    falls back to the key itself so that an untranslated string is still
+    readable rather than blank. That fallback is right for a *missing
+    translation* and wrong for a key nobody ever defined: every <h2> on the
+    detail page carried one, none of them had an entry, and the page headed
+    itself "H.PREFLIGHT" and "H.CLAUSES" in both languages. Nothing caught it,
+    because the panel tests all read what a panel *contains* and a heading is
+    not inside the panel it names.
+    """
+
+    def test_no_element_renders_its_own_key(self, page):
+        page.click("#viewdetail")
+        leaked = page.page.eval_on_selector_all(
+            "[data-t]",
+            """els => els.map(e => [e.dataset.t, e.innerText.trim()])
+                       .filter(([key, text]) => text.toLowerCase().startsWith(key.toLowerCase()))
+                       .map(([key]) => key)""")
+        assert leaked == [], f"rendered as raw i18n keys: {leaked}"
+
+    def test_the_headings_say_what_the_markup_says(self, page):
+        """The keys were added from the markup's own words, so this is the
+        check that they were copied rather than paraphrased."""
+        page.click("#viewdetail")
+        for heading in ("before you spend anything", "what drives the change",
+                        "blast radius", "does it land evenly?",
+                        "where should the threshold be?", "is the judge right?"):
+            assert heading in page.text("#detail"), heading
+
+
+@needs_browser
 class TestTheLanguageSwitcher:
     """Both languages, rendered by the same code against the same API.
 
