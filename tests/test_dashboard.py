@@ -270,6 +270,50 @@ def visit(browser, server):
 
 @needs_browser
 class TestPresentationSummary:
+    def test_prediction_uses_replay_and_supports_keyboard(self, page):
+        page.focus("#guess")
+        page.press("#guess", "Home")
+        page.press("#guess", "ArrowRight")
+        assert page.inner_text("#guess-value") == "1%"
+        page.click("#guess-reveal")
+        assert "1%" in page.text("#guess-result")
+        assert "24.5%" in page.text("#guess-result")
+        assert "147 of 600" in page.text("#guess-result")
+        page.select_option("#domain", "refunds")
+        page.wait_for_function("document.querySelector('#guess-result')?.textContent === ''")
+        assert page.text("#guess-result") == ""
+        page.click("#guess-reveal")
+        assert "147 of 600" not in page.text("#guess-result")
+        assert not page.errors
+
+    def test_engine_room_is_readable_on_mobile(self, page):
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.click("#viewplain")
+        page.click(".machine-map summary")
+        assert page.is_visible(".machine-layers")
+        assert "shared database" in page.text(".machine-layers")
+        assert page.eval_on_selector(
+            "#architecture", "el => el.scrollWidth <= el.clientWidth")
+        assert not page.errors
+
+    @pytest.mark.parametrize("failed", [False, True])
+    def test_late_comparison_does_not_replace_new_selection(self, page, failed):
+        page.evaluate("""async failed => {
+            const originalFetch = window.fetch;
+            let release;
+            window.fetch = () => new Promise(resolve => { release = resolve; });
+            try {
+                const pending = renderCompare();
+                document.querySelector('#cmpright').value = document.querySelector('#cmpleft').value;
+                await renderCompare();
+                release(new Response(JSON.stringify({compared: 1, differ: 0, agree: 1, differences: []}),
+                                     {status: failed ? 500 : 200}));
+                await pending;
+            } finally { window.fetch = originalFetch; }
+        }""", failed)
+        assert page.text("#compare") == ""
+        assert not page.errors
+
     def test_tour_links_reveal_the_detail_evidence(self, page):
         page.click("#viewplain")
         page.click('.tour-links a[href="#clauses"]')

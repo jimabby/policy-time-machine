@@ -148,6 +148,20 @@ a{color:var(--accent)}
 .flow b{display:block;color:var(--accent);margin-bottom:8px}
 .flow small{display:block;color:var(--dim);margin-top:8px}
 .architecture>p{color:var(--dim);max-width:90ch}
+.prediction{border:1px dashed var(--accent);border-radius:12px;padding:18px;margin-bottom:22px;background:#14233c}
+.prediction label{display:block;font-size:18px;font-weight:600;margin-bottom:6px}
+.prediction-controls{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.prediction input{flex:1;min-width:120px;accent-color:var(--accent)}
+.prediction output{font-size:24px;font-weight:700;min-width:3em}
+.prediction p{color:var(--dim);margin:8px 0}
+.machine-map{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.machine-map summary{cursor:pointer;color:var(--accent);font-weight:600}
+.machine-layers{display:grid;gap:12px;margin-top:16px;text-align:center}
+.machine-layers>div{padding:16px;border:1px solid #38537d;border-radius:12px;background:#182740}
+.machine-layers b,.machine-layers span{display:block}
+.machine-layers span{color:var(--dim);margin-top:5px}
+.machine-layers .storage{border-color:var(--loose)}
+.machine-layers .connector{padding:0;border:0;background:none;color:var(--accent)}
 @media(max-width:720px){.story{grid-template-columns:1fr}.intro{padding:22px}.flow{grid-template-columns:1fr}.flow li:not(:last-child)::after{content:"\2193";right:50%;top:auto;bottom:-25px}.seg{grid-template-columns:minmax(0,1fr)}main>div:not(.intro):not(.story):not(.tiles){overflow-x:auto}.dl{margin-left:0}}
 </style></head><body>
 <header>
@@ -179,6 +193,7 @@ a{color:var(--accent)}
       <a href="#precedents" onclick="setView('detail')" data-t="story.link4"></a>
     </nav>
   </section>
+  <div id=prediction></div>
   <div class=story id=story aria-live=polite></div>
   <section class=architecture id=architecture aria-labelledby=architecture-title>
     <h2 id=architecture-title data-t="arch.title"></h2>
@@ -190,6 +205,16 @@ a{color:var(--accent)}
       <li><b data-t="arch.4"></b><span data-t="arch.4body"></span><small>Precedent gate &rarr; pass / fail</small></li>
     </ol>
     <p data-t="arch.loop"></p>
+    <details class=machine-map>
+      <summary data-t="arch.expand"></summary>
+      <div class=machine-layers>
+        <div><b data-t="arch.engine"></b><span data-t="arch.enginebody"></span></div>
+        <div class=connector data-t="arch.write"></div>
+        <div class=storage><b data-t="arch.store"></b><span data-t="arch.storebody"></span></div>
+        <div class=connector data-t="arch.read"></div>
+        <div><b data-t="arch.screen"></b><span data-t="arch.screenbody"></span></div>
+      </div>
+    </details>
   </section>
 <section id=plain>
   <div id=plainerror></div>
@@ -341,6 +366,19 @@ const api = async path => {
 const I18N = {
 en: {
   "story.eyebrow": "A rehearsal for your next rule change",
+  "guess.title": "Place your prediction",
+  "guess.hint": "Before you scroll: what percentage of recorded decisions will get a different answer?",
+  "guess.reveal": "Compare my guess",
+  "guess.result": "You guessed {guess}%. The replay found {actual}%. That's {flips} of {cases} decisions. What surprised you?",
+  "arch.expand": "Open the engine room: where does the evidence live?",
+  "arch.engine": "Airflow coordinates the work",
+  "arch.enginebody": "Replay · human review · precedent checks · stability checks · policy drafting",
+  "arch.write": "↓ Save results and rulings · ↑ Read evidence for the next check",
+  "arch.store": "Shared database — the machine's memory",
+  "arch.storebody": "Historical cases, dated facts, replay results, cached judgments and human rulings. Policy text lives in files.",
+  "arch.read": "↓ Read stored evidence through the FastAPI plugin",
+  "arch.screen": "Diff Explorer — the story on screen",
+  "arch.screenbody": "Charts and explanations for the room; case-level evidence for the reviewer. A person decides whether to adopt a draft.",
   "story.title": "What if you could try tomorrow's rules on yesterday?",
   "story.link1": "01 \u00b7 See the impact",
   "story.link2": "02 \u00b7 Find the cause",
@@ -745,6 +783,19 @@ en: {
 },
 zh: {
   "story.eyebrow": "\u4e3a\u4e0b\u4e00\u6b21\u89c4\u5219\u53d8\u66f4\u9884\u6f14",
+  "guess.title": "先来猜一猜",
+  "guess.hint": "向下滚动前，猜猜有多少比例的历史决定会得到不同答案？",
+  "guess.reveal": "比较我的预测",
+  "guess.result": "你猜的是 {guess}%，重放结果是 {actual}%。{cases} 个决定中有 {flips} 个不同。哪个结果让你意外？",
+  "arch.expand": "打开机房：证据存在哪里？",
+  "arch.engine": "Airflow 协调各项工作",
+  "arch.enginebody": "重放 · 人工审核 · 先例检查 · 稳定性检查 · 政策起草",
+  "arch.write": "↓ 保存结果与裁决 · ↑ 读取证据进行下一次检查",
+  "arch.store": "共享数据库——时光机的记忆",
+  "arch.storebody": "历史案例、带日期的事实、重放结果、缓存判断及人工裁决。政策文本保存在文件中。",
+  "arch.read": "↓ 通过 FastAPI 插件读取已存储的证据",
+  "arch.screen": "差异浏览器——屏幕上的故事",
+  "arch.screenbody": "用图表向观众解释，用案例证据支持审核。是否采用草案由人决定。",
   "story.title": "\u7528\u660e\u5929\u7684\u89c4\u5219\uff0c\u91cd\u770b\u6628\u5929\u7684\u51b3\u5b9a\u3002",
   "story.link1": "01 \u00b7 \u770b\u5f71\u54cd",
   "story.link2": "02 \u00b7 \u627e\u539f\u56e0",
@@ -1249,7 +1300,7 @@ function remember(domain, version) {
   query.set("version", version);
   history.replaceState(null, "", `${location.pathname}?${query}${location.hash}`);
 }
-const PANELS = ["#tiles","#story","#power","#preflight","#clauses","#segments","#disparity","#sweep",
+const PANELS = ["#tiles","#story","#prediction","#power","#preflight","#clauses","#segments","#disparity","#sweep",
                 "#swbanded","#sweepgrid","#crosscheck","#rules",
                 "#deviations","#compare","#flips","#precedents","#conflicts","#stability",
                 "#calibration","#history","#superseded","#drafts",
@@ -1296,8 +1347,24 @@ function renderPower(result) {
 
 function renderStory(summary) {
   const n = Number(summary.cases), changed = Number(summary.flips);
+  $("#prediction").innerHTML = "";
   if (!n) { $("#story").innerHTML = `<p class=empty>${t("story.empty")}</p>`; return; }
   const rate = Math.max(0, Math.min(100, changed / n * 100));
+  $("#prediction").innerHTML = `<section class=prediction>
+    <label for=guess>${t("guess.title")}</label><p id=guess-hint>${t("guess.hint")}</p>
+    <div class=prediction-controls><input id=guess type=range min=0 max=100 value=50 aria-describedby=guess-hint>
+    <output id=guess-value for=guess>50%</output><button id=guess-reveal type=button>${t("guess.reveal")}</button></div>
+    <p id=guess-result role=status></p></section>`;
+  $("#guess").oninput = () => {
+    $("#guess-value").textContent = $("#guess").value + "%";
+    $("#guess-result").textContent = "";
+  };
+  $("#guess-reveal").onclick = () => {
+    $("#guess-result").textContent = t("guess.result", {
+      guess: $("#guess").value, actual: rate.toFixed(1),
+      flips: num(changed), cases: num(n),
+    });
+  };
   $("#story").innerHTML = `<article class=story-card>
     <h3>${t("story.changed")}</h3><div class=story-number>${pct(changed / n)}</div>
     <p>${t("story.of", {flips:num(changed), cases:num(n)})}</p>
@@ -1464,7 +1531,10 @@ function renderSegments(rows, unit, declared) {
 }
 
 // --------------------------------------------------------- comparison
+let compareSequence = 0;
 async function renderCompare() {
+  const sequence = ++compareSequence, replaySequence = renderSequence;
+  const current = () => sequence === compareSequence && replaySequence === renderSequence && LAST !== null;
   const domain = $("#domain").value, left = $("#cmpleft").value, right = $("#cmpright").value;
   if (!left || !right || left === right) {
     $("#cmpsummary").textContent = t("compare.pick");
@@ -1473,7 +1543,11 @@ async function renderCompare() {
   }
   let result;
   try { result = await api(`/api/compare/${seg(domain)}/${seg(left)}/${seg(right)}`); }
-  catch (e) { $("#compare").innerHTML = `<div class=empty>${t("compare.unavailable")}</div>`; return; }
+  catch (e) {
+    if (current()) $("#compare").innerHTML = `<div class=empty>${t("compare.unavailable")}</div>`;
+    return;
+  }
+  if (!current()) return;
   $("#cmpsummary").innerHTML = result.compared
     ? t("compare.summary", {n: num(result.compared), d: num(result.differ),
                             a: num(result.agree)})
@@ -2380,6 +2454,7 @@ function renderPlain(data) {
 let renderSequence = 0;
 async function render() {
   const sequence = ++renderSequence;
+  $("#prediction").innerHTML = "";
   const domain = $("#domain").value, version = $("#version").value;
   // Before the request, not after: the address bar should describe what the
   // page is showing even when the replay behind it fails to load.

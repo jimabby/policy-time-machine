@@ -29,13 +29,16 @@ people answer the review requests.” No model call or API key is needed.
 
 ## 0:00–0:25 · The bet
 
-**Show:** the dashboard's opening question and impact chart.
+**Show:** the dashboard's opening question and **Place your prediction**.
+Keep the impact chart below the fold until the audience has guessed.
 
 > “We're thinking about changing our expense rules. Before we announce anything:
 > how many old decisions do you think would get a different answer? Ten? Fifty?
 > Half of them?”
 
-Pause for a guess. Then point to the chart.
+Pause for a guess. Move the slider to the room's prediction and click
+**Compare my guess**. Then scroll to the impact chart. The slider is a guess,
+not a policy setting; the reveal uses the selected replay's actual counts.
 
 > “In this demo, 147 out of 600. Almost one in four. That small rule change just
 > became a much more interesting conversation.”
@@ -71,10 +74,15 @@ Let the result sit for a beat. These numbers apply to the shipped expenses fixtu
 **Click:** **Look under the hood** on the dashboard.
 
 Trace the four boxes: remember, rewind, ask a person, check again.
+Open **Open the engine room** for the diagram of workflows, shared memory,
+and the dashboard. Trace it from top to bottom with the pointer.
 
 > “Bring back the old facts. Try both rulebooks. Ask a person about selected
 > changes. Save their answer so the next proposal has to face it too.
 > Airflow coordinates those steps.”
+
+If someone asks where the chart comes from: “The machine stores the evidence
+in one shared memory. This screen reads it back so we can discuss it together.”
 
 For a technical audience, briefly show the monthly runs in Airflow.
 
@@ -147,7 +155,7 @@ Ask for one vote, then point to that setting's result. Keep the caveat visible.
 
 | It breaks | You say | You do |
 | --- | --- | --- |
-| Backfill grid slow to paint | *"same code the DAGs call, driven by a plain loop"* | Cut to **A**, `python -m ptm.selftest` |
+| Backfill grid slow to paint | *"Let's replay the story in the terminal."* | Switch to the prepared terminal and run `python -m ptm.selftest` |
 | No HITL task waiting | *"this is the queue it raises"* | Show the DAG graph instead |
 | A panel is empty | *"that DAG hasn't run in this environment"* | Move on — the panel names the DAG, so do not read it aloud |
 | The gate is red | *"and that's the point — it fails on a reversal"* | Nothing. It is supposed to fail on the shipped fixture |

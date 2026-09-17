@@ -35,6 +35,12 @@ For the website and Airflow workflows, start Docker and run
 [Policy Diff Explorer](http://localhost:8080/ptm/). Start with the impact chart,
 follow the cause of a change, then look at the human rulings.
 
+**Give the room a turn at the controls.** Use **Place your prediction** to guess
+the percentage of decisions that change, then click **Compare my guess**.
+Follow **Find the cause** for the reveal. Under **Look under the hood**, open
+the engine room to see how the workflows, shared memory and charts connect.
+The prediction is just an audience activity; it does not change the replay.
+
 **Choose your route:** [Three-minute demo](DEMO_SCRIPT.md) ·
 [Architecture](#architecture) · [Technical background](docs/DESIGN.md)
 
@@ -59,7 +65,7 @@ caveat it carries, and what each one refuses to claim — is in
 ![The replay printing its summary, then attributing every change to the clause responsible](docs/attribution.gif)
 
 `python -m ptm.selftest` — the whole loop, no Airflow, no key, three seconds.
-600 real decisions replayed under the proposed policy; 147 come out
+600 synthetic decisions replayed under the proposed policy; 147 come out
 differently.
 
 **"147 change" is not actionable. *Which sentence do I edit?* is.** So every
@@ -211,7 +217,7 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 
 | Airflow capability | What it does here |
 |---|---|
-| **Backfill** | Is the simulation engine. One `backfill create` fans out 24 monthly runs that replay two years of real decisions. |
+| **Backfill** | Is the simulation engine. One `backfill create` fans out monthly runs that replay two years of synthetic decisions. |
 | **Data intervals** | Make the replay *honest*. Each run only sees cases inside its own window, and each case is hydrated with facts known on its decision date. Skip this and 39 of 600 cases come out wrong — clip 2. |
 | **Dynamic task mapping** | One judge task per case, with concurrency capped so you don't melt the model endpoint. Doubled when the baseline pass is on. |
 | **Common AI provider** | `LLMOperator` with `output_type=Verdict`, so every verdict is typed, not parsed out of prose. `usage_limits` caps spend per task. The vendor lives in a connection — switching models never touches DAG code. |
@@ -223,6 +229,22 @@ Not "an LLM in a DAG". Every capability here is load-bearing.
 | **`model_id` per run** | The second judge. One connection, the model overridden at trigger time, so cross-checking a replay against a different vendor is a `--conf` flag rather than a DAG edit. |
 
 ## Architecture
+
+Think of it as a rehearsal studio for rules: the history is the script,
+Airflow runs the rehearsal, and people settle the disputed scenes.
+
+```mermaid
+flowchart LR
+    Past["Yesterday's decisions<br/>Facts known on the day"] --> Try["Try both rulebooks"]
+    Try --> Explain["See what changes<br/>and which clause explains it"]
+    Explain --> Review["A person reviews<br/>selected cases"]
+    Review --> Remember["Remember the ruling"]
+    Remember --> Check["Check the next proposal"]
+    Check -. "Revise and rehearse again" .-> Try
+```
+
+The engine room below shows where that story happens. Solid arrows carry
+inputs, evidence or workflow signals; the optional replay closes the loop.
 
 ```mermaid
 flowchart TD
@@ -282,7 +304,7 @@ which is Airflow's own switch for exactly this situation.
 
 ```bash
 make dev       # create .venv with pydantic, pyyaml, pytest, ruff
-make test      # style + lint + 849 engine tests + the whole loop, gate included
+make test      # style + lint + engine tests + the whole loop, gate included
 make preflight # read the policies for problems before paying to replay them
 make cost      # forecast a full LLM-backed replay
 make sweep     # what should the threshold be?
@@ -351,7 +373,7 @@ include/drafts/<domain>/        policy versions a model wrote, never mixed in
                                 with the ones a person did
 docs/DESIGN.md                  the long version of everything above
 docs/*.gif                      the nine clips, captured from the real tool
-tests/                          995 tests; the engine's 849 need nothing but Python
+tests/                          engine, workflow, API and browser checks
 ```
 
 The plugin is deliberately nothing but routing — every read model lives in
@@ -375,8 +397,8 @@ that change how you read the clips above:
   do. Free way to narrow a range; then confirm the shortlist with one real
   replay.
 - **Judge accuracy is measured on the precedent set**, which is by construction
-  the *contested* flips. It is a floor on the judge's accuracy over all cases,
-  not an estimate of it, and on eight rulings the band is very wide.
+  the *contested* flips. It does not establish accuracy over all cases,
+  and on eight rulings the band is very wide.
 - **A segment carrying more of the change than the rest of its field is a
   question, not a finding of unfairness.** Segments differ in what they
   contain. The check never claims otherwise.
