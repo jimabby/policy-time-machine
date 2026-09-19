@@ -1,4 +1,4 @@
-apache-airflow==3.1.0
+apache-airflow==3.3.1
 # Pinned, not floored, and for the reason the structlog note below records: a
 # release nobody here made can turn this build red, and `>=` is an instruction
 # to take it. The providers are where that risk actually lives - HITLOperator
@@ -8,8 +8,8 @@ apache-airflow==3.1.0
 # records the tested version rather than the old floor. Dependabot proposes the
 # bumps (see
 # .github/dependabot.yml) and CI is what decides whether they land.
-apache-airflow-providers-standard==1.18.0
-apache-airflow-providers-common-ai==0.8.0
+apache-airflow-providers-standard==1.19.0
+apache-airflow-providers-common-ai==0.9.0
 pydantic>=2.7
 PyYAML>=6.0
 
