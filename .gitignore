@@ -16,3 +16,11 @@ ptm-*.json
 ptm-*.csv
 .env
 .pytest_cache/
+# What `make coverage` and the CI coverage step leave behind. The database is
+# per-run and the XML is for a reporter to read once; neither is a fact about
+# the project, and a committed coverage report is a number going stale beside
+# the thing it measured - the same failure the test counts in docs/DESIGN.md
+# had, which tests/test_docs.py now exists to stop.
+.coverage
+coverage.xml
+htmlcov/

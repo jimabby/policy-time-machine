@@ -7,3 +7,5 @@ pytest>=8.0
 # could honour them, so three had gone stale unnoticed; ruff.toml says which
 # rules are on and why each one is worth a build failing over.
 ruff>=0.16
+# Coverage, for `make coverage` and the CI floor in pyproject.toml.
+pytest-cov>=5.0

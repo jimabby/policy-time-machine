@@ -1,0 +1,77 @@
+# Packaging and tool configuration.
+#
+# `ptm/` was always a library with a CLI surface - fourteen modules answering
+# `--help`, imported by the DAGs, by the plugin and by the test suite - and it
+# was reachable only by standing in the repository root with PYTHONPATH set.
+# That is why the Makefile, the Dockerfile, the compose file and every CI job
+# each say `PYTHONPATH: .` in their own dialect. This makes it installable, so
+# `pip install -e .` is the one thing a contributor has to do.
+#
+# Ruff is deliberately *not* configured here. Its settings live in ruff.toml,
+# which explains which rules are on and why each is worth failing a build over,
+# and ruff reads that file in preference to this one. Moving it would cost the
+# explanations and gain a smaller file count.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "policy-time-machine"
+version = "1.0.0"
+description = "Try tomorrow's rules on yesterday's decisions."
+readme = "README.md"
+# 3.10 is what the engine job runs and the oldest thing the code is checked
+# against; the DAG jobs run 3.12. Both are in CI, so this range is tested at
+# both ends rather than assumed.
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+
+# The engine only. Airflow, the providers and the pins they need are in
+# requirements.txt, because installing this package must not drag a scheduler
+# into a checkout that only wants to run `python -m ptm.selftest`. That
+# separation is the whole reason the engine is testable without Airflow.
+dependencies = [
+    "pydantic>=2.7",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.16"]
+
+[tool.setuptools]
+# Named rather than discovered. Automatic discovery would sweep up `dags`,
+# `plugins` and `tests`, none of which is an importable part of this package:
+# the first two are directories Airflow is pointed at by configuration, and
+# `dags/` is only ever on sys.path because Airflow puts it there.
+packages = ["ptm", "ptm_dags"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# No addopts, and that is deliberate on both counts. Coverage flags here would
+# break `make unit` in a checkout that has pytest and nothing else, so coverage
+# is asked for explicitly by `make coverage` and by CI. And a `-q` here would
+# *stack* with the `-q` those callers already pass - pytest counts the flag
+# rather than setting a level, so the pair silently means `-qq` and suppresses
+# the collection summary. Verbosity belongs to whoever is running it.
+
+[tool.coverage.run]
+source = ["ptm"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# A ratchet, not an aspiration. The suite measures 90.8% over ptm/ today with
+# `branch = true` above - which is the stricter question, and several points
+# below the line-only figure, so it is the one worth holding. The floor sits
+# far enough under that an ordinary refactor does not redden a build and close
+# enough that a module arriving with no tests does. Raise it when the number
+# rises. Lowering it to make a build pass is the one edit this line exists to
+# make somebody argue for out loud.
+fail_under = 88
+exclude_lines = [
+    "pragma: no cover",
+    # Module entry points. Every one of them is `raise SystemExit(main())`, and
+    # `main()` itself is covered by the CLI tests - see tests/test_cli_and_retention.py.
+    "if __name__ == .__main__.:",
+]

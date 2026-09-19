@@ -44,7 +44,7 @@ def steps(workflow: dict) -> list[tuple[str, dict]]:
 
 class TestEveryStepThatRunsTheEngineIsPointedAtIt:
     def test_the_workflow_parses_and_has_the_jobs_it_claims(self, workflow):
-        assert {"engine", "dags", "dashboard"} <= set(workflow["jobs"])
+        assert {"engine", "dags", "docker", "dashboard"} <= set(workflow["jobs"])
 
     def test_no_step_runs_ptm_without_its_environment(self, workflow):
         """A step missing it does not fall back to the repo - it fails with an
@@ -53,6 +53,14 @@ class TestEveryStepThatRunsTheEngineIsPointedAtIt:
         for job_name, step in steps(workflow):
             body = step.get("run") or ""
             if "python -m ptm." not in body and "-m ptm." not in body:
+                continue
+            # A step that runs the engine *inside the container* takes its
+            # environment from the image and the compose file, not from the
+            # runner. Setting PTM_INCLUDE_DIR on a `docker compose exec` step
+            # would point at a path on the host that the container cannot see -
+            # so demanding one here would be demanding the wrong thing, loudly.
+            # The container's own environment is asserted separately, below.
+            if "docker compose exec" in body:
                 continue
             missing = ENGINE_ENV - set(step.get("env") or {})
             if missing:
@@ -84,6 +92,53 @@ class TestEveryStepThatRunsTheEngineIsPointedAtIt:
         assert not offenders, (
             f"these run a suite that can skip itself, with nothing forcing it not to: "
             f"{offenders}")
+
+    def test_the_demo_stack_is_built_and_torn_down(self, workflow):
+        """`docker compose up --build` is the first command in the README and
+        was the one thing no job ran, so a broken Dockerfile or compose file
+        shipped unnoticed. Asserted down to the teardown: a job that leaves the
+        stack up wedges the port for whatever the runner does next.
+        """
+        body = " ".join(step.get("run") or ""
+                        for step in workflow["jobs"]["docker"]["steps"])
+        assert "docker compose up --build" in body
+        assert "--wait" in body, (
+            "without --wait the job races the healthcheck and asserts against an "
+            "Airflow that has not finished migrating")
+        assert "docker compose down" in body
+        assert any(step.get("if") == "always()"
+                   for step in workflow["jobs"]["docker"]["steps"]), \
+            "the teardown has to run even when an assertion above it failed"
+
+    def test_the_container_supplies_what_the_exec_steps_rely_on(self):
+        """The other half of the exemption above.
+
+        The docker job runs the engine through `docker compose exec` and does
+        not pass it an environment, which is only correct as long as the image
+        and the compose file still set one. If either stops, those steps read
+        the container's default paths and the job goes green having checked a
+        fixture that is not there - the exact failure this file was written
+        after, one layer further in.
+        """
+        compose = yaml.safe_load(
+            (REPO / "docker-compose.yaml").read_text(encoding="utf-8"))
+        declared = compose["services"]["airflow"]["environment"]
+        assert ENGINE_ENV <= set(declared)
+        assert "PTM_DB" in declared
+
+        dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+        for name in (*ENGINE_ENV, "PTM_DB"):
+            assert name in dockerfile, (
+                f"{name} is not set in the image, so anything running in a "
+                f"container started from it without compose reads the wrong path")
+
+    def test_the_coverage_floor_is_enforced_somewhere(self, workflow):
+        """The floor lives in pyproject.toml, so the only thing CI has to get
+        right is asking for coverage at all. A suite run without it reports
+        success having measured nothing, which is the shape of failure this
+        whole file exists to catch."""
+        body = " ".join(step.get("run") or "" for _, step in steps(workflow))
+        assert "--cov=ptm" in body
 
     def test_the_jobs_that_can_skip_themselves_are_forced_not_to(self, workflow):
         """The DAG, plugin and browser tests skip when their dependency is

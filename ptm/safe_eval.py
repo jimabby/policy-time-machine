@@ -24,6 +24,16 @@ The language that remains is the one the rules actually use: comparisons,
 boolean and arithmetic operators, ``in``, a conditional expression, literals,
 and calls to the helpers in :data:`SAFE_BUILTINS`.
 
+**Every refusal arrives as a RuleError.** An operator that will not accept its
+operands - ``amount > '75'`` against a numeric field, ``amount / 0`` - raises
+``TypeError`` or ``ZeroDivisionError`` from inside the language this module
+claims to have bounded. Those used to escape past every caller's
+``except RuleError``, and nothing crashed, which was the problem:
+:func:`ptm.judge.offline_verdict` catches the bare ``Exception`` and moves on,
+so the rule silently became one that never matches while :func:`check` - which
+only ever asks statically - reported it as sound. :func:`_apply` closes that,
+so a refusal is something a caller can report rather than something it absorbs.
+
 **It bounds cost as well as reach.** A whitelist that cannot be escaped can
 still be made to run forever, and a rule evaluates on a worker holding a mapped
 task slot. :data:`MAX_EXPONENT` caps one ``**``; :data:`MAX_RESULT_SIZE` caps
@@ -477,6 +487,34 @@ def _guard(size: int, what: str, unit: str) -> None:
               f"would hang a worker holding a mapped task slot.")
 
 
+def _apply(operator: Any, what: str, *operands: Any) -> Any:
+    """Apply one operator, turning anything it raises into a :class:`RuleError`.
+
+    The helper call in :func:`_eval` has done this since ``int('1' * 100000)``
+    proved it necessary. The operators themselves did not, and the gap was the
+    same one: ``amount_gbp > '75'`` - a threshold a model quoted, which is the
+    likeliest single mistake in a generated rule set - raises ``TypeError``, and
+    ``amount / 0`` raises ``ZeroDivisionError``. Both walked straight past every
+    ``except RuleError`` in the project.
+
+    Nothing crashed, and that was the failure rather than the consolation.
+    :func:`ptm.judge.offline_verdict` catches the bare ``Exception`` and treats
+    it as "does not match", so the rule quietly decided nothing, its clause was
+    never cited, and every case it was written for took the default outcome -
+    while :func:`check_expression` reported the rule as sound, because asking
+    statically is all it can do. Naming the refusal is what lets
+    :func:`ptm.lint.probe` report it instead, so the message says which operand
+    was the wrong type rather than merely that something went wrong.
+    """
+    try:
+        return operator(*operands)
+    except RuleError:
+        raise
+    except Exception as exc:
+        shown = ", ".join(f"{o!r} ({type(o).__name__})" for o in operands)
+        _fail(f"cannot {what} {shown}: {exc}")
+
+
 def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
     if isinstance(node, ast.Constant):
         return node.value
@@ -504,7 +542,8 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
         operator = _UNARY_OPS.get(type(node.op))
         if operator is None:
             _fail(f"uses an unsupported unary operator {type(node.op).__name__}")
-        return operator(_eval(node.operand, scope))
+        return _apply(operator, f"apply unary {type(node.op).__name__}",
+                      _eval(node.operand, scope))
     if isinstance(node, ast.BinOp):
         # Before the operands are computed, not after: the whole point of
         # refusing the shape is that evaluating it is the expensive part.
@@ -518,7 +557,7 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             if not isinstance(right, (int, float)) or abs(right) > MAX_EXPONENT:
                 _fail(f"raises to the power of {right!r}; the ceiling is {MAX_EXPONENT}")
             _guard(_power_size(left, right), "an integer", "bits")
-            return left ** right
+            return _apply(lambda a, b: a ** b, "raise to a power", left, right)
         operator = _BIN_OPS.get(type(node.op))
         if operator is None:
             _fail(f"uses an unsupported operator {type(node.op).__name__}")
@@ -526,7 +565,7 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             # Checked before multiplying, not after: 'x' * 10**9 is a gigabyte
             # allocated by the time a check on the result could see it.
             _guard(_repeat_size(left, right), "a sequence", "elements")
-        result = operator(left, right)
+        result = _apply(operator, "combine", left, right)
         _guard(_size_of(result), "a value", "units")
         return result
     if isinstance(node, ast.Compare):
@@ -536,7 +575,7 @@ def _eval(node: ast.AST, scope: dict[str, Any]) -> Any:
             if operator is None:
                 _fail(f"uses an unsupported comparison {type(op).__name__}")
             right = _eval(comparator, scope)
-            if not operator(left, right):
+            if not _apply(operator, "compare", left, right):
                 return False
             left = right
         return True

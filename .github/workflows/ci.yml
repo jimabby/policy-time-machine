@@ -16,6 +16,20 @@ jobs:
           python-version: "3.10"
       - run: pip install -r requirements-dev.txt
 
+      # The engine's dependencies are four packages and they are ours to move,
+      # so an advisory here is both actionable and this project's problem, and
+      # the step fails. Deliberately *not* run over requirements.txt: auditing a
+      # scheduler's transitive tree produces findings nobody in the pull request
+      # can act on, and a gate that is red for unrelated reasons is one people
+      # learn to skip - the same argument this project makes about a precedent
+      # gate that passes because the check was switched off. Airflow's tree is
+      # handled by Dependabot instead, which proposes upgrades rather than
+      # blocking unrelated work. See .github/dependabot.yml.
+      - name: Audit the engine's dependencies
+        run: |
+          pip install pip-audit
+          pip-audit --strict --desc
+
       # The code carries `# noqa` directives and nothing here could honour them,
       # so three of them had gone stale and no build said so. ruff.toml explains
       # which rules are on and why each one is worth failing a build over - the
@@ -30,8 +44,13 @@ jobs:
         env:
           PTM_INCLUDE_DIR: ./include
 
-      - name: Test suite
-        run: python -m pytest -q
+      # With coverage, and the floor is coverage's own `fail_under` in
+      # pyproject.toml rather than a flag here - so `make coverage` and this
+      # step cannot disagree about what passing means. Scoped to ptm/: the DAG
+      # modules are proved by parsing under a real Airflow in the next job,
+      # which is a different question from how many of their lines ran.
+      - name: Test suite, with the coverage floor
+        run: python -m pytest --cov=ptm --cov-report=term-missing
 
       # Proves the whole loop runs end to end with no Airflow and no API key,
       # which is also how the demo is rehearsed.
@@ -232,6 +251,51 @@ jobs:
           PTM_OFFLINE: "1"
           PYTHONPATH: .
           PTM_REQUIRE_PLUGIN: "1"
+
+  # `docker compose up --build -d` is the first command in the README and was
+  # the one thing no job here ran. A broken Dockerfile, a compose file whose
+  # environment block has drifted from .env.example, a plugin that does not
+  # mount - all of it shipped unnoticed, because every other job installs the
+  # dependencies its own way and never builds the image anybody actually uses.
+  docker:
+    name: The demo stack builds and serves the Explorer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --wait blocks on the healthcheck in docker-compose.yaml, which polls the
+      # Explorer's own API. So this step passing already means Airflow migrated,
+      # parsed the DAGs and mounted the plugin; it fails rather than hangs if any
+      # of that never happens.
+      - name: Build and start it the way the README says to
+        run: docker compose up --build -d --wait
+
+      # Unauthenticated on purpose. The compose file sets
+      # simple_auth_manager_all_admins and the plugin still authenticates every
+      # route against Airflow's token - SimpleAllAdminMiddleware is what supplies
+      # one. That the two work together is a claim the compose file makes in a
+      # comment and that nothing checked; this is where it gets checked.
+      - name: The Explorer answers, and knows about the seeded domain
+        run: |
+          curl -fsS http://localhost:8080/ptm/api/domains | tee /dev/stderr | grep -q expenses
+          curl -fsS http://localhost:8080/ptm/ | grep -qi "<html"
+
+      # The seed runs in the container command, so the fixture the Explorer is
+      # serving is the shipped one and the summary must be non-empty. A stack
+      # that comes up healthy and serves an empty database is the failure this
+      # job would otherwise report as success.
+      - name: It is serving real history
+        run: |
+          docker compose exec -T airflow python -m ptm.lint
+          docker compose exec -T airflow python -m ptm.selftest | tail -5
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v
 
   dashboard:
     name: Diff Explorer renders in a browser

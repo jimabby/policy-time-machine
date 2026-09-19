@@ -74,6 +74,31 @@ services:
       - airflow-home:/opt/airflow/logs
     command: >
       bash -c "python -m ptm.seed && exec airflow standalone"
+    # What "ready" means, so something other than a person watching the logs can
+    # decide it. `docker compose up -d` returns as soon as the container starts,
+    # which is a good half-minute before `airflow standalone` has migrated the
+    # metadata database, parsed the DAGs and mounted the plugin - so the README's
+    # "once ready, open the Diff Explorer" was an instruction to keep refreshing.
+    # The probe asks the plugin's own route rather than Airflow's health
+    # endpoint: the Explorer is the thing being waited for, and it is mounted
+    # last, so an answer here means the whole stack including this project's
+    # part of it. start_period covers the migration without counting those
+    # attempts as failures. `make up` waits on this, and so does the CI smoke job.
+    #
+    # 401 and 403 count as ready, and that is not a loosening. The plugin
+    # authenticates every route, so with PTM_OPEN_UI=false a probe that demanded
+    # 200 would mark a perfectly healthy stack unhealthy forever and `make up`
+    # would fail for the one person who locked it down. What is being waited for
+    # is the route existing and answering; who may read it is a different
+    # question and one this project answers elsewhere. Connection refused or a
+    # 404 still means not ready, which is the distinction that matters.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import http.client as h; c = h.HTTPConnection('localhost', 8080, timeout=5); c.request('GET', '/ptm/api/domains'); raise SystemExit(0 if c.getresponse().status in (200, 401, 403) else 1)"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
 volumes:
   airflow-home:

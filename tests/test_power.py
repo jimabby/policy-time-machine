@@ -58,6 +58,38 @@ class TestDetectableDifference:
         assert stats.sample_size(0.245, 0.245 + mde) <= 600
         assert stats.sample_size(0.245, 0.245 + mde * 0.8) > 600
 
+    def test_it_inverts_the_sample_size_downwards_too(self):
+        """The half that was never asked, and the half that was wrong.
+
+        The test above only ever moved *up* from the baseline, so the untested
+        direction was free to be whatever the arithmetic happened to give - and
+        power_report was mirroring the upward answer onto it.
+        """
+        mde = stats.detectable_difference(0.245, 600, direction="down")
+        assert stats.sample_size(0.245, 0.245 - mde) <= 600
+        assert stats.sample_size(0.245, 0.245 - mde * 0.8) > 600
+
+    @pytest.mark.parametrize("baseline", [0.05, 0.10, 0.245, 0.40])
+    def test_the_two_directions_are_not_the_same_number(self, baseline):
+        """Which is the whole reason `direction` exists.
+
+        `sample_size` is symmetric in its two *rates*; that is a different
+        property from being symmetric about a fixed baseline, and it is the
+        second one power_report needed and did not have. A rise and a fall of
+        the same size from the same baseline sit at different variances, so
+        they cost different numbers of cases.
+        """
+        up = stats.detectable_difference(baseline, 600, direction="up")
+        down = stats.detectable_difference(baseline, 600, direction="down")
+        assert down < up
+
+    def test_a_boundary_rate_answers_with_the_direction_that_exists(self):
+        """A rate of 100% cannot rise. Answering 0.0 would say this sample can
+        detect no change at all, which is false and is the reading somebody
+        would act on."""
+        assert stats.detectable_difference(1.0, 600, direction="up") > 0
+        assert stats.detectable_difference(0.0, 600, direction="down") > 0
+
     def test_no_cases_detects_nothing(self):
         assert stats.detectable_difference(0.245, 0) == 1.0
 
@@ -71,6 +103,42 @@ class TestThePowerReport:
     def test_it_names_the_band_that_is_not_a_finding(self):
         report_ = stats.power_report(0.245, 600)
         assert report_["detectable_rate_lo"] < 0.245 < report_["detectable_rate_hi"]
+
+    def test_each_edge_of_the_band_comes_from_its_own_direction(self):
+        """The regression this was written for.
+
+        The band is printed as "anything between X and Y is inside this
+        sample's noise and must not be reported as a change", and its lower
+        edge was a mirror of the upper one. On the shipped fixture that put it
+        at 17.2% when the arithmetic says 17.9%, so the report called a
+        detectable *fall* noise - and `sample_size`, asked about the very same
+        rate, said 490 cases would have settled it. Two functions in one module
+        contradicting each other about one number.
+
+        Asserted as self-consistency rather than against pinned percentages, so
+        it keeps meaning something if the fixture changes.
+        """
+        report_ = stats.power_report(0.245, 600)
+        down = report_["detectable_difference_down"]
+        up = report_["detectable_difference_up"]
+        assert down < up
+        # Each edge is its own direction's answer, not a mirror of the other's.
+        # Asserted against the differences rather than against a case count: the
+        # edges are rounded to four places for display, and pushing an exact
+        # boundary through that rounding tests the rounding. The boundary itself
+        # is proved on the unrounded numbers, in TestDetectableDifference above.
+        assert report_["detectable_rate_lo"] == round(0.245 - down, 4)
+        assert report_["detectable_rate_hi"] == round(0.245 + up, 4)
+        # And the lower edge is above where mirroring would have put it, which
+        # is the bug in one line: 17.9% rather than 17.2%.
+        assert report_["detectable_rate_lo"] > round(0.245 - up, 4)
+
+    def test_the_headline_number_is_the_larger_of_the_two(self):
+        """One figure gets quoted on its own, so it has to be the one that is
+        safe alone - the move this sample can detect whichever way it goes."""
+        report_ = stats.power_report(0.245, 600)
+        assert report_["detectable_difference"] == max(
+            report_["detectable_difference_up"], report_["detectable_difference_down"])
         assert report_["power"] == 0.8
 
     def test_a_target_this_history_cannot_settle_says_how_far_short_it_is(self):

@@ -1,0 +1,37 @@
+# Dependency updates, proposed as pull requests rather than enforced as a gate.
+#
+# That distinction is the whole design. requirements.txt pins Airflow and its
+# providers exactly, because a release nobody here made should not be able to
+# turn this build red on its own - the structlog note in that file is what
+# happens when it can. But a pin nobody ever moves is just an old version with
+# a comment, so something has to propose the move. Dependabot opens the PR and
+# CI decides: the DAGs parse under the new provider or they do not, and the
+# answer arrives on a branch instead of in front of an audience.
+#
+# This is also why there is no blocking vulnerability scan over the Airflow
+# tree. A gate that fails on an advisory in a transitive dependency of a
+# scheduler is a gate that is red for reasons nobody in the PR can act on, and
+# a gate people learn to ignore is worse than no gate - the same argument this
+# project makes about the precedent gate and the rule gate. The engine's own
+# dependencies are small and ours, so those *are* audited strictly in CI.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the Airflow set. They are released together and version-skew
+      # between a provider and the core is the failure worth catching, so
+      # reviewing them apart would mean reviewing a combination CI never ran.
+      airflow:
+        patterns:
+          - "apache-airflow*"
+    labels: ["dependencies"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]

@@ -742,7 +742,7 @@ that comes *before* the backfill — **how many cases do I need to tell 20% from
 ```bash
 $ python -m ptm.report expenses v2 --power --target 0.20
 600 case(s) can detect a move of 7.3% or more from 24.5% (95% confidence, 80% power)
-  anything between 17.2% and 31.8% is inside this sample's noise and must not be
+  anything between 17.9% and 31.8% is inside this sample's noise and must not be
   reported as a change
   telling 24.5% from 20.0% needs 1,340 case(s), 740 more than exist. That
   comparison cannot be settled on this history however much is spent judging it.
@@ -1134,7 +1134,7 @@ ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          995 tests; the engine's 849 need nothing but Python
+tests/                          1064 tests; the engine's 891 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1205,7 +1205,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 689 tests,
+  so a skip there means something has genuinely changed. The engine's 891 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.

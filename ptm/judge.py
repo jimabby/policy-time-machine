@@ -78,7 +78,7 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
     other version's.
     """
     rules = domain.offline_rules.get(version, [])
-    scope = {k: _coerce(v) for k, v in case.payload.items()}
+    scope = case_scope(case)
     for rule in rules:
         try:
             matched = safe_eval.evaluate(rule["when"], scope)
@@ -98,6 +98,19 @@ def offline_verdict(case: Case, domain: DomainConfig, version: str) -> Verdict:
             )
     return Verdict(outcome=domain.validate_outcome(domain.outcomes[0]),
                    rationale=NO_RULE_RATIONALE, confidence=0.6)
+
+
+def case_scope(case: Case) -> dict:
+    """The names a rule sees when this case is judged.
+
+    Public, and shared with :func:`ptm.lint.probe`, because a probe that
+    evaluated rules against a scope built any other way would be answering a
+    question about its own arithmetic. The coercion below is part of the
+    contract - a payload carrying ``"500"`` is a rule's ``500`` - so a probe
+    that skipped it would report working rules as broken and, worse, miss the
+    quoted-threshold mistake it exists to catch.
+    """
+    return {k: _coerce(v) for k, v in case.payload.items()}
 
 
 def _coerce(v):

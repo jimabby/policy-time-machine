@@ -37,7 +37,7 @@ import sys
 from . import cli, stats
 from .config import DomainConfig, clauses_in, load_domain
 from .judge import NO_RULE_RATIONALE, offline_verdict
-from .lint import payload_fields
+from .lint import payload_fields, probe, probe_cases
 from .models import Case, RuleSet, Verdict
 from .safe_eval import check_expression, shadowed
 
@@ -109,7 +109,8 @@ def as_offline_rules(ruleset: RuleSet) -> list[dict]:
 
 
 def validate(rules: list[dict], domain: DomainConfig, version: str,
-             policy_text: str | None = None) -> list[str]:
+             policy_text: str | None = None,
+             cases: list[Case] | None = None) -> list[str]:
     """Reject a rule set before it is allowed anywhere near a replay.
 
     The same checks :mod:`ptm.lint` runs over hand-written rules, applied to
@@ -128,6 +129,21 @@ def validate(rules: list[dict], domain: DomainConfig, version: str,
     a policy nobody wrote, looking wildly permissive. Adding a clause is the
     normal case for a drafter - :func:`ptm.proposal.apply_to_markdown` appends
     one under its own heading on purpose - so this had to read the draft.
+
+    ``cases`` are what the rules are *run* against, because the checks above
+    are all static and there is one failure none of them can see. A model
+    writing ``amount_gbp > '75'`` - the threshold quoted, the likeliest single
+    mistake here - produces a rule that parses, reads a real field, cites a real
+    clause and raises the moment it meets a numeric field. Offline that refusal
+    reads as "does not match", so the rule decides nothing and the replay is
+    quietly wrong rather than visibly broken. Default None loads them; an empty
+    list skips the probe, and no history on file skips it too.
+
+    Only a rule refused by **every** case probed is reported. A rule that simply
+    matches nothing is a warning :mod:`ptm.lint` makes and not grounds for
+    rejection: a rule set is ordered and first-match-wins, so one entry dropped
+    takes the whole set with it, and a fixture with no case for a legitimate
+    rule is an ordinary thing for a fixture to be.
 
     This is a report, not the containment. :mod:`ptm.safe_eval` computes a rule
     by walking it rather than by calling ``eval``, so an expression that gets
@@ -154,6 +170,18 @@ def validate(rules: list[dict], domain: DomainConfig, version: str,
         clause = str(rule.get("clause") or "").strip()
         if clause and declared and clause not in declared:
             problems.append(f"{at}: cites clause {clause!r}, absent from policy {version}")
+    # The rules, run. Last of the per-rule checks because it is the only one
+    # that needs a database, and the only one that can be silent for a reason
+    # that is about the deployment rather than about the rules.
+    for row in probe(rules, probe_cases(domain) if cases is None else cases):
+        if row["always_refused"]:
+            problems.append(
+                f"rule[{row['rule_index']}]: is refused by every one of the "
+                f"{row['probed']} case(s) probed, so it can never fire: {row['reason']}. "
+                f"Nothing above catches this - the rule parses, reads real fields and "
+                f"cites a real clause - and offline the refusal reads as 'does not "
+                f"match', so clause {row['clause'] or '-'} would simply never be cited.")
+
     # Unreachable rules, last, because the check is about the list rather than
     # about any one entry. A generated set is ordered by a model that was told
     # order matters, and the way that goes wrong is a general restriction

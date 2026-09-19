@@ -131,12 +131,23 @@ def sample_size(baseline: float, target: float, z: float = Z95,
 
 
 def detectable_difference(baseline: float, n: int, z: float = Z95,
-                          power: float = Z_POWER80) -> float:
+                          power: float = Z_POWER80, direction: str = "up") -> float:
     """The smallest move from ``baseline`` that ``n`` cases per arm could find.
 
     The inverse of :func:`sample_size`, and the more useful direction here: the
     case count is rarely a choice - it is however much history exists - so the
     question is what that history can and cannot settle.
+
+    ``direction`` is which way the move goes, and it is a parameter because the
+    answer differs. :func:`sample_size` is symmetric in its two *rates* -
+    ``sample_size(a, b) == sample_size(b, a)`` - and that is a different
+    property from being symmetric about a fixed baseline, which it is not: the
+    variance term depends on where the two rates sit, so a rise from 24.5% and
+    a fall from 24.5% of the very same size need different numbers of cases.
+    Reading one and mirroring it was wrong by 0.7 points on the shipped fixture
+    and by a full point at a 10% baseline, always in the same direction -
+    calling a detectable *fall* noise. That is the direction a tightening moves
+    in, so it was wrong about the question this project is mostly asked.
 
     Solved by bisection rather than by rearranging, because the pooled variance
     term contains the answer. Forty halvings of a bounded interval is
@@ -144,13 +155,21 @@ def detectable_difference(baseline: float, n: int, z: float = Z95,
     """
     if n <= 0:
         return 1.0
-    headroom = 1.0 - float(baseline)
-    # A baseline with no room above it can still move down, and a difference of
-    # zero would be the wrong answer for a rate of 100%.
-    sign = 1.0 if headroom > 0 else -1.0
-    lo, hi = 0.0, headroom if headroom > 0 else float(baseline)
+    sign = -1.0 if direction == "down" else 1.0
+    # How far there is to go before the rate leaves [0, 1].
+    hi = (1.0 - float(baseline)) if sign > 0 else float(baseline)
     if hi <= 0:
-        return 0.0
+        # The asked-for direction has nowhere to go: a rate of 100% cannot rise
+        # and a rate of 0% cannot fall. The only move that exists is the other
+        # one, and answering with it beats answering zero - "this sample can
+        # detect no change at all" is false, and it is the reading somebody
+        # would act on. Both edges of a power report at a boundary rate then
+        # describe the same single direction, which is what the rate leaves.
+        sign = -sign
+        hi = (1.0 - float(baseline)) if sign > 0 else float(baseline)
+        if hi <= 0:
+            return 0.0
+    lo = 0.0
     for _ in range(40):
         mid = (lo + hi) / 2
         needed = sample_size(baseline, baseline + sign * mid, z, power)
@@ -158,7 +177,14 @@ def detectable_difference(baseline: float, n: int, z: float = Z95,
             hi = mid
         else:
             lo = mid
-    return round(hi, 5)
+    # Rounded *up* rather than to nearest. What this returns is meant to be a
+    # difference ``n`` cases can actually detect, and rounding down hands back a
+    # slightly smaller one that they cannot - so :func:`sample_size`, asked
+    # about this function's own answer, would come back with n + 1. One case, at
+    # the fifth decimal, and invisible at every precision anybody quotes; it is
+    # still the two halves of one module disagreeing, which is the thing this
+    # module exists to stop.
+    return math.ceil(hi * 100000) / 100000
 
 
 def power_report(baseline: float, n: int, target: float | None = None,
@@ -171,14 +197,24 @@ def power_report(baseline: float, n: int, target: float | None = None,
     claim at all. A comparison that no amount of judging can settle is worth
     knowing about before the judging, not after.
     """
-    mde = detectable_difference(baseline, n, z, power)
+    up = detectable_difference(baseline, n, z, power, "up")
+    down = detectable_difference(baseline, n, z, power, "down")
     out = {
         "cases": int(n),
         "baseline_rate": round(float(baseline), 4),
         "power": round(1 - _tail(power), 2),
-        "detectable_difference": mde,
-        "detectable_rate_lo": round(max(0.0, baseline - mde), 4),
-        "detectable_rate_hi": round(min(1.0, baseline + mde), 4),
+        # The headline stays one number, and it is the *larger* of the two: the
+        # move this sample can detect whichever way it goes, which is the only
+        # single figure that is safe to quote on its own.
+        "detectable_difference": max(up, down),
+        "detectable_difference_up": up,
+        "detectable_difference_down": down,
+        # Each edge from its own calculation. Mirroring one of them put this
+        # band's lower edge below where the arithmetic actually falls, so the
+        # report declared detectable falls to be noise - and `sample_size`, two
+        # functions up, would have said otherwise about the very same rate.
+        "detectable_rate_lo": round(max(0.0, baseline - down), 4),
+        "detectable_rate_hi": round(min(1.0, baseline + up), 4),
     }
     if target is not None:
         needed = sample_size(baseline, target, z, power)

@@ -396,8 +396,16 @@ def conn() -> Iterator[sqlite3.Connection]:
 
 def init_db() -> None:
     with conn() as c:
+        # WAL is a property of the database file and survives every later
+        # connection, which is why it is set here and nowhere else. A
+        # `PRAGMA foreign_keys=ON` used to sit beside it and was doing nothing
+        # twice over: the setting is per *connection*, so it applied to this one
+        # and to none of the connections that actually write, and SCHEMA
+        # declares no foreign keys for it to enforce in the first place. A line
+        # that reads as a guarantee and is not one is worse than its absence -
+        # the tables are joined on (domain, case_id) by convention, and that
+        # convention is held by the queries and the tests, not by SQLite.
         c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA foreign_keys=ON")
         c.executescript(SCHEMA)
         _migrate(c)
 

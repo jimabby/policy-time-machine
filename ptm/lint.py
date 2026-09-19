@@ -23,6 +23,16 @@ something else. :func:`ptm.safe_eval.shadowed` proves it statically; the failure
 is silent in exactly the same way as the one above, and now arrives from a model
 as well as from a person, because ``propose_<domain>`` writes these.
 
+**A rule that is refused every time it is evaluated.** The three above are all
+findable by reading the rule. This one is not: ``amount_gbp > '75'`` - a
+threshold a model quoted, which is the likeliest single mistake in a generated
+rule set - parses, reads a real field, cites a real clause and passes every
+static check here. At judging time it raises, :func:`ptm.judge.offline_verdict`
+treats that as "does not match", and the rule silently decides nothing. So
+:func:`probe` stops reading the rules and *runs* them, against real cases, and
+reports the ones that never fire and the ones that refuse. It needs a seeded
+database and quietly checks nothing without one - see :func:`probe_cases`.
+
     python -m ptm.lint            # every domain
     python -m ptm.lint expenses   # one domain
 
@@ -35,13 +45,104 @@ from __future__ import annotations
 import string
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 
 from . import cli, preflight
 from . import sweep as sweep_engine
 from .config import DomainConfig, available_domains, load_domain
-from .judge import SAFE_BUILTINS
-from .safe_eval import check_expression, names_in
+from .judge import SAFE_BUILTINS, case_scope
+from .safe_eval import RuleError, check_expression, evaluate, names_in
 from .safe_eval import shadowed as shadowed_rules
+
+#: How many cases :func:`probe` evaluates each rule against.
+#:
+#: The probe is rules x cases of pure arithmetic - the whole 600-case fixture
+#: costs milliseconds - but a domain carrying a real history should not turn
+#: ``python -m ptm.lint`` into a replay. Taken newest-first, because the oldest
+#: slice of history is the least representative one: slowly-changing facts have
+#: not changed yet, so a rule keyed on one of them looks dead against the front
+#: of the period for a reason that has nothing to do with the rule.
+PROBE_CASES = 500
+
+
+def probe(rules: list[dict], cases: list) -> list[dict]:
+    """Run each rule over real cases and report what actually happened.
+
+    Every other check in this module is static, and there is a failure none of
+    them can see. ``amount_gbp > '75'`` parses, reads a real field, cites a real
+    clause, is refused by nothing - and raises ``TypeError`` the moment it meets
+    a numeric ``amount_gbp``. :func:`ptm.judge.offline_verdict` catches that and
+    moves on, so the rule never fires: its clause is never cited and every case
+    it was written for takes the default outcome. A quoted threshold is the
+    likeliest single mistake in a generated rule set and ``propose_<domain>``
+    has a model write these, so the one check that catches it is running them.
+
+    Each entry carries how many of ``cases`` the condition held for, how many
+    refused it, and the first refusal's reason. Deliberately **standalone**
+    rather than first-match-wins: whether an earlier rule would have eaten this
+    one is :func:`ptm.safe_eval.shadowed`'s question, already asked and already
+    reported, and answering it again here would report one fault twice under two
+    different names.
+    """
+    found: list[dict] = []
+    scopes = [case_scope(c) for c in cases]
+    # No cases is no evidence, not evidence of nothing. Returning a row per rule
+    # here would report every rule in a domain with no history as one that
+    # "matched none of the 0 case(s) probed" - a finding of zero drawn from a
+    # measurement never taken, which is the one thing this project refuses to
+    # print anywhere else.
+    if not scopes:
+        return found
+    for index, rule in enumerate(rules):
+        expression = (rule.get("when") or "").strip()
+        if not expression:
+            continue
+        matched = refused = 0
+        reason = ""
+        for scope in scopes:
+            try:
+                if evaluate(expression, scope):
+                    matched += 1
+            except RuleError as exc:
+                refused += 1
+                reason = reason or str(exc)
+            except Exception as exc:  # pragma: no cover - safe_eval promises RuleError
+                refused += 1
+                reason = reason or f"{type(exc).__name__}: {exc}"
+        found.append({
+            "rule_index": index,
+            "clause": str(rule.get("clause", "")),
+            "outcome": rule.get("outcome", ""),
+            "expression": expression,
+            "probed": len(scopes),
+            "matched": matched,
+            "refused": refused,
+            "reason": reason,
+            # Refused by every case it was shown. Not "might be dead" - dead,
+            # for a reason that is in the rule rather than in the fixture, which
+            # is what separates this from a rule the history simply has no case
+            # for. This is the one a caller is entitled to reject on.
+            "always_refused": refused == len(scopes),
+        })
+    return found
+
+
+def probe_cases(domain: DomainConfig, limit: int = PROBE_CASES) -> list:
+    """Cases to probe ``domain``'s rules against, or none if there is no history.
+
+    An unreachable store is silently no cases. A lint that requires a seeded
+    database is a lint people stop running - CI runs this before anything has
+    replayed, and a fresh checkout has no ``ptm.db`` at all - and the probe then
+    reports nothing rather than failing. Same argument the rule gate and the
+    calibration gate make about a measurement that was never taken: nothing
+    measured is not a finding of zero.
+    """
+    try:
+        from .store import load_cases
+        return load_cases(domain.name, until=datetime.now(), limit=limit,
+                          newest_first=True)
+    except Exception:
+        return []
 
 
 @dataclass
@@ -105,6 +206,9 @@ def check_domain(name: str) -> list[Problem]:
 
     rendered = template_fields(domain)
     known = payload_fields(domain)
+    # Loaded once for the domain rather than once per version: the probe below
+    # runs inside the per-version loop and the cases do not vary by version.
+    cases = probe_cases(domain)
 
     # --- the domain's own contract ----------------------------------------
     if len(set(domain.outcomes)) != len(domain.outcomes):
@@ -316,6 +420,30 @@ def check_domain(name: str) -> list[Problem]:
                         f"{row['outcome']!r} from clause {row['clause'] or '-'}. Move the "
                         f"specific rule above the general one.")
 
+        # The rules, run rather than read. Everything above this line is a
+        # property of the text; this is the only check that can see a rule which
+        # is refused the moment it meets a real case, and it is silent on a
+        # checkout with no history rather than demanding one. See probe().
+        for row in probe(rules, cases):
+            at = f"{where}[{row['rule_index']}]"
+            if row["always_refused"]:
+                err(at, f"is refused by every one of the {row['probed']} case(s) probed, "
+                        f"so it can never fire: {row['reason']}. It parses, reads real "
+                        f"fields and cites a real clause, which is why nothing above "
+                        f"catches it - at judging time offline_verdict treats the refusal "
+                        f"as 'does not match', so clause {row['clause'] or '-'} is never "
+                        f"cited and every case this was written for takes "
+                        f"{domain.outcomes[0]!r} instead.")
+            elif row["refused"]:
+                warn(at, f"is refused by {row['refused']} of {row['probed']} probed "
+                         f"case(s): {row['reason']}. Those cases silently fall through to "
+                         f"the rules below it.")
+            elif not row["matched"]:
+                warn(at, f"matched none of the {row['probed']} case(s) probed, so nothing "
+                         f"in this history is decided by clause {row['clause'] or '-'}. "
+                         f"Expected for a rule covering a case the fixture has none of; a "
+                         f"bug if it is meant to be doing work.")
+
         uncited = sorted(declared - cited)
         if uncited:
             warn(where, f"policy clause(s) {uncited} are not exercised by any offline rule. "
@@ -339,7 +467,10 @@ USAGE = """usage:
 Check every domain YAML against the policies it claims to implement: rules
 reading fields no case has, rules citing clauses the policy does not contain,
 rules an earlier rule makes unreachable, outcomes no rule can reach, dials a
-sweep would collapse rather than move.
+sweep would collapse rather than move - and then the rules actually run against
+real cases, which is the only way to catch one that parses perfectly and is
+refused by every case it meets (a quoted threshold, say). The last check needs a
+seeded database and is silently skipped without one.
 
   domain ...   defaults to every domain in include/domains/
 

@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -22,9 +22,13 @@ D ?= expenses
 help:      ## List targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
 
-up:        ## Start Airflow 3.1 at http://localhost:8080 (no login)
-	docker compose up --build -d
-	@echo "Airflow starting -> http://localhost:8080  |  Diff Explorer -> http://localhost:8080/ptm/"
+# --wait blocks until the healthcheck in docker-compose.yaml passes, which is a
+# request to the Diff Explorer's own API. Without it this returned while Airflow
+# was still migrating and the next line invited you to open a page that would
+# not exist for another half-minute.
+up:        ## Start Airflow 3.1 at http://localhost:8080 (no login), and wait for it
+	docker compose up --build -d --wait
+	@echo "Airflow ready -> http://localhost:8080  |  Diff Explorer -> http://localhost:8080/ptm/"
 	@echo "No login: the compose file sets simple_auth_manager_all_admins for the demo."
 	@echo "Set PTM_OPEN_UI=false to turn that off; Airflow then generates a password"
 	@echo "into simple_auth_manager_passwords.json.generated and prints it to the logs."
@@ -66,6 +70,14 @@ lint:      ## Check every domain YAML against the policies it claims to implemen
 
 unit:      ## Run the test suite
 	$(ENV) $(PY) -m pytest -q
+
+# Scoped to ptm/ because that is the part with a coverage question worth asking:
+# dags/ and ptm_dags/ are covered by parsing under a real Airflow, which is a
+# different job and is not what a line count measures. The floor lives in
+# pyproject.toml and is a ratchet rather than an aspiration - raise it when the
+# number rises, never lower it to make a build pass.
+coverage:  ## Run the test suite with a line-coverage report over ptm/
+	$(ENV) $(PY) -m pytest -q --cov=ptm --cov-report=term-missing --cov-report=xml
 
 style:     ## Check the code the way CI does (see ruff.toml for what and why)
 	$(PY) -m ruff check .

@@ -384,7 +384,7 @@ list: [docs/DESIGN.md](docs/DESIGN.md#layout).
 ## Caveats
 
 The [full list is in the design notes](docs/DESIGN.md#caveats) — there are
-thirty of them, and each one is a claim this project declines to make. The six
+twenty-seven of them, and each one is a claim this project declines to make. The six
 that change how you read the clips above:
 
 - **Single-container Airflow on SQLite.** Fine for a demo, not a topology.
