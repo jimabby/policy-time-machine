@@ -105,6 +105,12 @@ def say(message: str = "", colour: str = "") -> None:
 #
 # (title, question, arguments, expect_nonzero, slow)
 def steps(domain: str, version: str) -> list[tuple]:
+    # What the candidate is compared against. The tour is normally v2 against
+    # the v1 it amends; running it *on* v1 would ask for v1 against itself,
+    # which agrees on every case by construction and which ptm.report refuses
+    # rather than print as a finding. Comparing against v2 instead keeps the
+    # step meaningful whichever version the tour is pointed at.
+    against = "v2" if version == "v1" else "v1"
     return [
         ("Lint",
          "Do the offline rules still implement the policies they cite?",
@@ -144,9 +150,21 @@ def steps(domain: str, version: str) -> list[tuple]:
         ("Calibration",
          "Is the judge RIGHT? Scored against the humans who ruled.",
          ["ptm.calibration", domain, version], False, False),
+        ("Who it lands on",
+         "Is this change concentrated on one group? The question compliance asks first.",
+         ["ptm.disparity", domain, version], False, False),
         ("Proposal",
          "Draft the next version of the policy from the evidence (writes nothing).",
          ["ptm.proposal", domain, version], False, False),
+        # The question the whole loop is for, and the one the tour never showed:
+        # every step above measures one version. These two put two of them side
+        # by side, which is the only way "did the edit help?" gets an answer.
+        ("Every version, side by side",
+         "Did the edit help? What each version moves, causes, and reverses.",
+         ["ptm.report", domain, "--history"], False, False),
+        ("The two of them, case by case",
+         "Which decisions actually differ - a count of differences is not a list.",
+         ["ptm.report", domain, "--compare", against, version], False, False),
         ("Export",
          "Every panel with its caveats attached, as one file.",
          ["ptm.report", domain, version, "-o", f"ptm-{domain}-{version}.json"],

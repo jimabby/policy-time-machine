@@ -101,6 +101,13 @@ triggering a DAG, while the lint, the preflight, the sweep and the calibration
 score all ran in CI. `python -m ptm.gate` is that DAG's enforce step reading
 stored verdicts, with three exit codes, because a precedent nothing has judged
 is not a pass and a shell testing for zero has to be able to tell the two apart.
+That argument applied to three more and they now have entry points too:
+`ptm.stability` takes the noise-floor measurement (and says on its own last
+line that offline it is 0% by construction, and refuses to gate on it),
+`ptm.crosscheck` reads the last second opinion, and `ptm.disparity` asks who
+the change lands on. `ptm.report --compare` and `--history` answer the question
+the whole loop is for — *did the edit help?* — which until then lived only on a
+FastAPI route behind an Airflow login.
 
 **Typed verdicts, not parsed prose.** `LLMOperator` with `output_type=Verdict`
 means every answer arrives as a validated object with an outcome, a confidence
@@ -239,7 +246,7 @@ printed once into the logs.
 
 ---
 
-**Verified:** 1064 tests (891 need nothing but Python), `ruff` clean, all eleven
+**Verified:** 1158 tests (985 need nothing but Python), `ruff` clean, all eleven
 DAGs parsing under a real Airflow in both offline and LLM-backed configurations,
 the plugin's routes driven through a real client, and the Diff Explorer loaded in
 Chromium and clicked through — failing on any console error or any panel that

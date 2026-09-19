@@ -98,7 +98,8 @@ jobs:
       - name: Every entry point answers --help
         run: |
           for m in preflight calibration rules lint prune sweep report proposal \
-                   selftest seed pit_check gate precedents; do
+                   selftest seed pit_check gate precedents stability crosscheck \
+                   disparity; do
             python -m ptm.$m --help > /dev/null
           done
         env:
@@ -142,6 +143,14 @@ jobs:
         run: |
           python -m ptm.gate expenses v2 --introduced-only
           python -m ptm.gate refunds v2 --introduced-only --offline-judge
+          # --json puts the reversals themselves on stdout rather than only the
+          # exit code, which is what lets a CI step post them instead of saying
+          # that there were some. Prose goes to stderr, so this parse is the
+          # assertion that the two streams stay separated.
+          python -m ptm.gate expenses v2 --introduced-only --json 2>/dev/null |
+            python -c "import json,sys; d=json.load(sys.stdin); \
+              assert d['code'] == 0 and d['passed'], d['headline']; \
+              print(len(d['violations']), 'reversal(s),', len(d['introduced']), 'introduced')"
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db
@@ -155,6 +164,44 @@ jobs:
         run: |
           python -m ptm.report expenses v2 --power
           python -m ptm.report expenses v2 --power --target 0.20
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The three measurements that used to be reachable only by triggering a
+      # DAG. Offline the stability figure and the cross-check are inert and say
+      # so on their own last line, which is exactly why they run here: the thing
+      # being proved is that the sampling, the confirmation pass, the storage
+      # and the reading all still work end to end, not that a deterministic
+      # judge agrees with itself. The disparity check is *not* inert - it reads
+      # the blast radius the replay above stored - so this is a real gate.
+      - name: Judge noise, a second opinion, and who the change lands on
+        run: |
+          python -m ptm.stability expenses v2 --cases 12 --samples 3
+          python -m ptm.stability expenses v2 --target flips --cases 8
+          python -m ptm.stability expenses v2 --show
+          python -m ptm.crosscheck expenses v2
+          python -m ptm.disparity expenses v2
+          python -m ptm.disparity expenses v2 --json > /dev/null
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # Did the edit help? The one question the whole loop is for, and the read
+      # models behind it lived only on a FastAPI route behind an Airflow login
+      # until they had these two flags. --compare is checked against a version
+      # pair the fixture actually has verdicts for, so an empty comparison here
+      # is a regression rather than a configuration.
+      - name: Compare two versions, and the whole history
+        run: |
+          python -m ptm.report expenses --compare v1 v2
+          python -m ptm.report expenses --history
+          python -m ptm.report expenses --compare v1 v2 --json |
+            python -c "import json,sys; d=json.load(sys.stdin); \
+              assert d['compared'], 'nothing compared'; \
+              print(d['differ'], 'difference(s) over', d['compared'], 'case(s)')"
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

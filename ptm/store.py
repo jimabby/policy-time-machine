@@ -569,6 +569,47 @@ def _free_supersede_stamp(c: sqlite3.Connection, domain: str, case_id: str) -> s
     return stamp
 
 
+def repoint_precedents(domain: str, from_version: str, to_version: str) -> list[str]:
+    """Re-file rulings made under one policy version's name against another.
+
+    One caller, and a narrow one: :func:`ptm.proposal.adopt` promotes
+    ``v2-draft1`` into ``v3`` and then deletes the draft. Every ruling a
+    reviewer made while looking at that draft still names it, and
+    :func:`ptm.diff.stale_precedents` then reports each one as ``version_gone``
+    - "what the reviewer was shown cannot be recovered" - forever. That sentence
+    was false the moment it was printed: adoption had just copied the very text
+    the reviewer read into ``include/policies/<domain>/v3.md``, and it is the
+    only operation in this project that knows both names for the same document.
+
+    So the rename travels with the document. Deliberately **not** routed through
+    :func:`save_precedent`: nothing about the ruling changes - not the outcome,
+    not who made it, not when - so there is no earlier version to archive, and
+    writing a ``precedent_history`` row here would invent a supersession that
+    never happened and make a re-adjudication count look like two.
+
+    Returns the case ids moved, so a caller can report what it did rather than
+    assert it.
+    """
+    if not from_version or from_version == to_version:
+        return []
+    with conn() as c:
+        moved = [r["case_id"] for r in c.execute(
+            "SELECT case_id FROM precedents WHERE domain=? AND policy_version=?",
+            (domain, from_version))]
+        if moved:
+            c.execute(
+                "UPDATE precedents SET policy_version=? WHERE domain=? AND policy_version=?",
+                (to_version, domain, from_version))
+            # The archive carries the same name and is read by the same check,
+            # so leaving it behind would move the live ruling and strand the
+            # record of what it replaced under a version nothing can resolve.
+            c.execute(
+                """UPDATE precedent_history SET policy_version=?
+                   WHERE domain=? AND policy_version=?""",
+                (to_version, domain, from_version))
+    return sorted(moved)
+
+
 def precedent_history(domain: str, case_id: str | None = None) -> list[dict]:
     """Rulings that a later ruling on the same case replaced, newest first."""
     where = "WHERE domain=?" + (" AND case_id=?" if case_id else "")

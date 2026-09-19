@@ -39,6 +39,8 @@ import pytest
 from ptm import (
     calibration,
     cli,
+    crosscheck,
+    disparity,
     gate,
     lint,
     pit_check,
@@ -49,6 +51,7 @@ from ptm import (
     report,
     rules,
     seed,
+    stability,
     store,
     sweep,
 )
@@ -73,6 +76,15 @@ ENTRY_POINTS = [
     ("ptm.pit_check", pit_check.main),
     ("ptm.gate", gate.main),
     ("ptm.precedents", precedents.main),
+    # The three measurements that had no entry point. ptm.gate's own docstring
+    # makes the argument for why that mattered: everything here can be reached
+    # from a shell with no Airflow *precisely* so it runs in CI and on a laptop
+    # with no key, and a measurement reachable only by triggering a DAG is one
+    # nobody takes. Stability was the last of them, and it is the one the whole
+    # project quotes as the error bar on every flip rate it reports.
+    ("ptm.stability", stability.main),
+    ("ptm.crosscheck", crosscheck.main),
+    ("ptm.disparity", disparity.main),
 ]
 ENTRY_IDS = [name for name, _ in ENTRY_POINTS]
 

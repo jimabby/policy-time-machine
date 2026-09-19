@@ -133,6 +133,25 @@ def _side(flags: list[bool]) -> dict:
             "accuracy_lo": round(lo, 4), "accuracy_hi": round(hi, 4)}
 
 
+def _lean(gap: float) -> str:
+    """Which way a confidence gap runs, in words. Zero is neither way.
+
+    ``'over' if gap > 0 else 'under'`` read a gap of exactly zero - a judge
+    whose stated confidence matches how often it is right, which is the thing
+    this module is asking for - as "underconfident by 0%". It is the one result
+    worth printing plainly, and it was the one reported as a fault.
+
+    The threshold is the *displayed* precision rather than the stored one, and
+    that is the whole subtlety: at four decimal places a gap of 0.0001 is not
+    zero, so it took the other branch and printed "overconfident by 0%" - the
+    same sentence, with a direction attached to a magnitude the reader is being
+    shown as nothing. A number that rounds away must not leave a word behind.
+    """
+    if f"{abs(gap):.0%}" == "0%":
+        return "as confident as it is right"
+    return f"{'over' if gap > 0 else 'under'}confident by {abs(gap):.0%}"
+
+
 def describe(report: CalibrationReport) -> str:
     """The report as the CLI and the DAG log print it."""
     if not report.judged:
@@ -143,14 +162,13 @@ def describe(report: CalibrationReport) -> str:
     lines = [
         f"judge vs {report.judged} human ruling(s) under policy {report.policy_version}",
         f"  agreed on {report.agreed} of {report.judged}  -  {band}",
-        f"  mean confidence {report.mean_confidence:.0%}, "
-        f"{'over' if report.overconfidence > 0 else 'under'}confident by "
-        f"{abs(report.overconfidence):.0%} (ECE {report.expected_calibration_error:.0%})",
+        f"  mean confidence {report.mean_confidence:.0%}, {_lean(report.overconfidence)} "
+        f"(ECE {report.expected_calibration_error:.0%})",
     ]
     for b in report.buckets:
         lines.append(f"    claimed {b.lo:.0%}-{b.hi:.0%}: right {b.agreed}/{b.n} "
                      f"({b.accuracy:.0%}), said {b.mean_confidence:.0%} "
-                     f"-> {'over' if b.gap > 0 else 'under'} by {abs(b.gap):.0%}")
+                     f"-> {_lean(b.gap)}")
     if report.confusion:
         lines.append("  where it goes wrong:")
         for row in report.confusion[:5]:

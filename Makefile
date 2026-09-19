@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -99,6 +99,28 @@ rulings:   ## Export every human ruling, with what each one replaced
 power:     ## How big a change could this much history actually detect?
 	$(ENV) $(PY) -m ptm.report expenses v2 --power
 
+noise:     ## The judge's noise floor, without Airflow. Inert offline, and says so
+	$(ENV) $(PY) -m ptm.stability expenses v2
+
+confirmed: ## Re-judge the recorded flips so an unstable one stays out of the queue
+	$(ENV) $(PY) -m ptm.stability expenses v2 --target flips
+
+second:    ## What a second judge made of it. Reads the last one; needs PTM_OFFLINE=0 to make one
+	$(ENV) $(PY) -m ptm.crosscheck expenses v2
+
+blast:     ## Which segments carry more of the change than the rest of their field
+	$(ENV) $(PY) -m ptm.disparity expenses v2
+
+versions:  ## Every version replayed, side by side. Did the edit help?
+	$(ENV) $(PY) -m ptm.report expenses --history
+
+# The pair the loop exists to produce. `make versions` says what each version
+# does; this says which cases the two of them actually disagree about, which is
+# the half a table of totals cannot show.
+compare:   ## Two versions case by case. make compare L=v1 R=v2
+	@test -n "$(L)" -a -n "$(R)" || (echo "ERROR set L=<version> R=<version>; 'make versions' lists them" && exit 2)
+	$(ENV) $(PY) -m ptm.report expenses --compare $(L) $(R)
+
 cost:      ## Forecast what a full LLM-backed replay would cost
 	$(ENV) $(PY) -c "import json; from ptm import report; \
 		print(json.dumps(report.cost_report('expenses','v2')['forecast'], indent=2))"
@@ -154,6 +176,15 @@ adopt:     ## Promote a draft into include/policies/ and register it. make adopt
 	@test -n "$(V)" || (echo "ERROR set V=<draft version>; 'make drafts' lists them" && exit 2)
 	@test -n "$(BY)" || (echo "ERROR set BY=\"your name\" - adopting a policy records who did" && exit 2)
 	$(ENV) $(PY) -m ptm.proposal $(D) --adopt $(V) --by "$(BY)" $(if $(AS),--as $(AS),)
+
+# The only irreversible act here - two files written and a hand-maintained YAML
+# rewritten in place - and until this flag existed it was also the only one with
+# no way to look first. Same arguments as `adopt`, so the two cannot disagree
+# about what is about to happen.
+adopt-plan: ## What `make adopt` would do, without doing it. Same V= and BY=
+	@test -n "$(V)" || (echo "ERROR set V=<draft version>; 'make drafts' lists them" && exit 2)
+	@test -n "$(BY)" || (echo "ERROR set BY=\"your name\" - adopting a policy records who did" && exit 2)
+	$(ENV) $(PY) -m ptm.proposal $(D) --adopt $(V) --by "$(BY)" $(if $(AS),--as $(AS),) --dry-run
 
 discard:   ## Delete a draft's files, keeping what it proposed and why. make discard V=v2-draft1
 	@test -n "$(V)" || (echo "ERROR set V=<draft version>; 'make drafts' lists them" && exit 2)

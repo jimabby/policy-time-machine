@@ -613,48 +613,112 @@ def _warn_about_the_rules(domain_name: str, version: str) -> None:
         print(f"  WARNING {problem}")
 
 
+def _is_option(arg: str) -> bool:
+    """Whether an argument is a flag rather than a value.
+
+    Deliberately narrower than ``startswith("-")``, which is what every other
+    entry point here can afford to use because none of them takes a number
+    positionally. This one does: ``python -m ptm.sweep expenses v2 balance
+    -50,0,50`` sweeps a threshold that is legitimately negative, and reading the
+    leading minus as a flag would refuse a sweep that used to work. Two dashes,
+    or the help flag, and nothing else.
+    """
+    return arg.startswith("--") or arg in cli.HELP_FLAGS
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     if cli.wants_help(args):
         print(USAGE)
         return 0
-    if len(args) < 2:
+    # The positional arguments, taken apart from the flags before any of them is
+    # read as a name. This module was the last entry point still interpreting
+    # argv by its raw length, which is why `--joint` had to be filtered out of
+    # the axis list by hand and why a stray flag shifted `field` onto `values`.
+    joint_mode = "--joint" in args
+    positional = [a for a in args if not _is_option(a)]
+    unknown = [a for a in args if _is_option(a) and a != "--joint"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    if len(positional) < 2:
         print(USAGE)
         return 2
 
-    domain_name, version = args[0], args[1]
-    domain = load_domain(domain_name)
-    if "--joint" in args:
-        axes = [a for a in args[args.index("--joint") + 1:] if not a.startswith("--")]
+    domain_name, version = positional[0], positional[1]
+    # Both resolved here, before anything is computed, and both reported the way
+    # every sibling entry point reports a refusal. An unknown domain used to
+    # arrive as a FileNotFoundError traceback - exit 1, where the rest of this
+    # project reserves 2 for "could not be run" - and an unknown *version* was
+    # worse: it printed an empty dial list and exited 0, which reads as a policy
+    # that has no thresholds rather than a policy that does not exist. That is
+    # the same confident-wrong-answer failure `thresholds()` refuses to make
+    # about a band rule, made about the whole version.
+    try:
+        domain = load_domain(domain_name)
+    except FileNotFoundError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+    if version not in domain.policies:
+        print(f"ERROR unknown policy version {version!r} for {domain_name}; have "
+              f"{sorted(domain.policies)}", file=sys.stderr)
+        return 2
+
+    if joint_mode:
+        axes = positional[2:]
         if len(axes) != 2:
             print(USAGE)
             return 2
         try:
-            _print_joint(joint(domain_name, version,
-                               parse_axis(axes[0]), parse_axis(axes[1])))
+            # parse_axis and parse_values raise ValueError, which every caller
+            # here used to let through as a traceback: the message was already
+            # the right sentence, it simply arrived as a crash.
+            first, second = parse_axis(axes[0]), parse_axis(axes[1])
+        except ValueError as exc:
+            print(f"ERROR {exc}\n\n{USAGE}", file=sys.stderr)
+            return 2
+        try:
+            _print_joint(joint(domain_name, version, first, second))
         except LookupError as exc:
             print(f"ERROR {exc}", file=sys.stderr)
             return 2
         _warn_about_the_rules(domain_name, version)
         return 0
-    if len(args) == 2:
+    if len(positional) == 2:
         print(f"numeric dials in {domain_name}/{version}:")
-        for t in thresholds(domain, version):
+        found = thresholds(domain, version)
+        for t in found:
             note = (f"  [not sweepable: compared against {t['values']}]"
                     if t["collapses"] else "")
             print(f"  clause {t['clause'] or '-':<6} {t['field']:<24} = {t['value']:<10} "
                   f"-> {t['outcome']}{note}")
+        if not found:
+            # An empty list is a finding about the policy, and it is the one the
+            # old unknown-version path produced by accident. Said out loud now
+            # that it can only mean what it says.
+            print("  none: this version's offline rules compare no field against a "
+                  "number, so there is no dial to sweep")
         return 0
-    if len(args) == 4:
-        clause, field, raw = "", args[2], args[3]
-    elif len(args) >= 5:
-        clause, field, raw = args[2], args[3], args[4]
+    if len(positional) == 4:
+        clause, field, raw = "", positional[2], positional[3]
+    elif len(positional) >= 5:
+        clause, field, raw = positional[2], positional[3], positional[4]
     else:
         print(USAGE)
         return 2
 
     try:
-        result = sweep(domain_name, version, field, parse_values(raw), clause=clause)
+        values = parse_values(raw)
+    except ValueError as exc:
+        print(f"ERROR the settings to sweep must be comma-separated numbers: {exc}\n\n"
+              f"{USAGE}", file=sys.stderr)
+        return 2
+    if not values:
+        print(f"ERROR a sweep needs at least one setting to try\n\n{USAGE}",
+              file=sys.stderr)
+        return 2
+    try:
+        result = sweep(domain_name, version, field, values, clause=clause)
     except LookupError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2

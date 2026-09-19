@@ -29,6 +29,7 @@ agreement.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 
@@ -169,7 +170,7 @@ def describe(result: dict) -> str:
 
 USAGE = """usage:
   python -m ptm.gate [domain] [version] [--introduced-only] [--offline-judge]
-                     [--baseline VERSION | --no-baseline]
+                     [--baseline VERSION | --no-baseline] [--json]
 
 Re-check every human ruling against a policy version and exit non-zero if one is
 reversed. This is precedent_gate_<domain> without Airflow, reading the verdicts
@@ -186,10 +187,55 @@ already on file rather than paying to judge them again.
                       fixture answering rather than a judge - reported as such.
   --baseline VERSION  compare against this version instead of the domain's
                       in_force; --no-baseline skips the comparison entirely.
+  --json              write the whole result to stdout as JSON, with the verdict
+                      and the exit code in it, and the prose to stderr. For the
+                      CI step that wants to post the reversals rather than only
+                      report that there were some.
 
 Exit 0 the gate passed, 1 it failed, 2 it could not be run - an unknown version,
 or a precedent nothing has judged. The third is not a pass and is kept apart
 from one on purpose."""
+
+
+def verdict(result: dict, introduced_only: bool = False) -> dict:
+    """The gate's answer as data: the exit code, and the sentence for it.
+
+    Split out of :func:`main` so ``--json`` and the printed form cannot drift
+    apart. The exit status has always been this module's machine interface,
+    which is right for a shell that only asks pass or fail and useless to a CI
+    step that wants to post *which* rulings were reversed - that step had to
+    re-parse the prose. The codes are unchanged and still mean what
+    :data:`FAILED` and :data:`CANNOT_RUN` say they mean.
+    """
+    version = result["version"]
+    domain_name = result["domain"]
+    if not result["precedents"]:
+        return {"code": 0, "passed": True, "ran": True, "failing": [],
+                "headline": f"no human ruling has been recorded for {domain_name} yet, "
+                            f"so there is no regression suite to run. Adjudicate some "
+                            f"flips first - this passing means nothing until it does."}
+    if result["unchecked"]:
+        return {"code": CANNOT_RUN, "passed": False, "ran": False, "failing": [],
+                "headline": f"{len(result['unchecked'])} precedent(s) have never been "
+                            f"judged under {version}, so this gate would be reporting a "
+                            f"pass it did not check. Run precedent_gate_{domain_name}, "
+                            f"or --offline-judge to settle them from the offline rules."}
+    failing = (result["introduced"] if introduced_only
+               else [v["case_id"] for v in result["violations"]])
+    if failing:
+        scope = ("introduced by " + version if introduced_only
+                 else "reversed by " + version)
+        return {"code": FAILED, "passed": False, "ran": True, "failing": failing,
+                "headline": f"GATE FAILS: {len(failing)} established ruling(s) {scope}."}
+    if result["violations"] and introduced_only:
+        return {"code": 0, "passed": True, "ran": True, "failing": [],
+                "headline": f"GATE PASSES: {len(result['violations'])} ruling(s) are "
+                            f"reversed here, and every one of them is a reversal policy "
+                            f"{result['baseline_version'] or 'in force'} already makes. "
+                            f"None is this proposal's doing."}
+    return {"code": 0, "passed": True, "ran": True, "failing": [],
+            "headline": f"GATE PASSES: {version} reverses none of the "
+                        f"{result['checked']} ruling(s) on file."}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     introduced_only = "--introduced-only" in args
     offline_judge = "--offline-judge" in args
+    as_json = "--json" in args
     no_baseline = "--no-baseline" in args
     baseline: str | None = None
     if "--baseline" in args:
@@ -220,39 +267,37 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = check(domain_name, version, baseline, offline_judge)
     except (LookupError, FileNotFoundError) as exc:
+        if as_json:
+            # A refusal is a result too, and a consumer that only ever parses
+            # stdout must not have to tell "could not run" from "crashed" by
+            # looking at an empty pipe.
+            json.dump({"error": str(exc), "domain": domain_name, "version": version,
+                       "code": CANNOT_RUN, "passed": False, "ran": False},
+                      sys.stdout, indent=2)
+            print()
         print(f"ERROR {exc}", file=sys.stderr)
         return CANNOT_RUN
 
+    answer = verdict(result, introduced_only)
+    if as_json:
+        # Prose to stderr so stdout is nothing but the document. The reader who
+        # wanted `| jq` and the reader watching the run both get what they came
+        # for, and neither has to strip the other's output.
+        print(describe(result), file=sys.stderr)
+        print(answer["headline"], file=sys.stderr)
+        json.dump({**result, **answer, "introduced_only": introduced_only},
+                  sys.stdout, indent=2, default=str)
+        print()
+        return answer["code"]
+
     print(describe(result))
-
-    if not result["precedents"]:
-        print(f"\nno human ruling has been recorded for {domain_name} yet, so there is "
-              f"no regression suite to run. Adjudicate some flips first - this passing "
-              f"means nothing until it does.")
-        return 0
-    if result["unchecked"]:
-        print(f"\nERROR {len(result['unchecked'])} precedent(s) have never been judged "
-              f"under {version}, so this gate would be reporting a pass it did not "
-              f"check. Run precedent_gate_{domain_name}, or --offline-judge to settle "
-              f"them from the offline rules.", file=sys.stderr)
-        return CANNOT_RUN
-
-    failing = (result["introduced"] if introduced_only
-               else [v["case_id"] for v in result["violations"]])
-    if failing:
-        scope = ("introduced by " + version if introduced_only else "reversed by " + version)
-        print(f"\nGATE FAILS: {len(failing)} established ruling(s) {scope}.",
-              file=sys.stderr)
-        return FAILED
-    if result["violations"] and introduced_only:
-        print(f"\nGATE PASSES: {len(result['violations'])} ruling(s) are reversed here, "
-              f"and every one of them is a reversal policy "
-              f"{result['baseline_version'] or 'in force'} already makes. None is this "
-              f"proposal's doing.")
-        return 0
-    print(f"\nGATE PASSES: {version} reverses none of the "
-          f"{result['checked']} ruling(s) on file.")
-    return 0
+    # Anything non-zero goes to stderr, where it went before, and the refusal
+    # keeps its ERROR prefix: "could not be run" has to look different from a
+    # gate that ran and failed, in the output as well as in the exit code.
+    prefix = "ERROR " if answer["code"] == CANNOT_RUN else ""
+    print(f"\n{prefix}{answer['headline']}",
+          file=sys.stderr if answer["code"] else sys.stdout)
+    return answer["code"]
 
 
 if __name__ == "__main__":  # pragma: no cover

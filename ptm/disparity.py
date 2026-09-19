@@ -35,7 +35,10 @@ happens *before* the rule ships rather than in the complaint that follows it.
 
 from __future__ import annotations
 
-from . import stats
+import json
+import sys
+
+from . import cli, stats
 from .config import DomainConfig
 from .models import DisparityFinding
 
@@ -190,3 +193,91 @@ def _movement(f: DisparityFinding) -> str:
     if f.direction == "unmoved":
         return "no case in this segment changed outcome"
     return "both directions" if f.direction == "mixed" else f"mostly {f.direction}"
+
+
+USAGE = """usage:
+  python -m ptm.disparity [domain] [version] [--gate warn|fail] [--json]
+
+Which segments the change lands on far harder than the rest of their field, and
+which it largely passes over. Read from the blast radius already stored, so it
+costs nothing and reports the same numbers the Explorer's panel does.
+
+  domain        defaults to 'expenses'
+  version       defaults to 'v2'
+  --gate MODE   override the domain's disparity.gate for this run. 'fail' exits
+                non-zero on a concentration that is both large and supported by
+                the sample size; 'warn' reports and returns 0.
+  --json        the whole finding set as JSON, for a report or a PR comment.
+
+A concentration is a question, not a verdict, which is why the default is
+whatever the domain YAML chose rather than 'fail'."""
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m ptm.disparity [domain] [version]``; non-zero on a gated finding.
+
+    The concentration check ran inside ``replay_<domain>`` and inside
+    :mod:`ptm.selftest`, and could be asked on its own from neither. That is the
+    same gap :mod:`ptm.gate` opens by describing: *is this change landing on one
+    group?* is the first question a compliance function asks, and the only way
+    to put it was to start Airflow and replay.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
+
+    as_json = "--json" in args
+    mode = ""
+    if "--gate" in args:
+        index = args.index("--gate")
+        mode = args[index + 1] if index + 1 < len(args) else ""
+        if mode not in {"warn", "fail"}:
+            print(f"ERROR --gate takes 'warn' or 'fail', got {mode or 'nothing'!r}\n\n"
+                  f"{USAGE}", file=sys.stderr)
+            return 2
+        args.pop(index + 1)
+
+    unknown = [a for a in args if a.startswith("-") and a not in {"--json", "--gate"}]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    positional = [a for a in args if not a.startswith("-")]
+    domain_name = positional[0] if positional else "expenses"
+    version = positional[1] if len(positional) > 1 else "v2"
+
+    from . import report as report_module
+    from . import store
+
+    store.init_db()
+    try:
+        result = report_module.disparity(domain_name, version)
+    except LookupError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+
+    gate = mode or result["gate"]
+    if as_json:
+        print(json.dumps({**result, "gate": gate}, indent=2, default=str))
+    else:
+        print(result["summary"])
+        print(f"  {result['caveat']}")
+
+    gating = result["gating"]
+    if gating and gate == "fail":
+        print(f"\nGATE FAILS: {len(gating)} segment(s) carry far more of this change "
+              f"than the rest of their field, and disparity.gate is 'fail'.",
+              file=sys.stderr)
+        return 1
+    if gating:
+        # Not silent, and not an exit code. The whole argument of this module is
+        # that a concentration is a question somebody should answer before the
+        # rule ships, and a warning nobody prints is a question nobody is asked.
+        print(f"\n{len(gating)} segment(s) would fail a 'fail' gate; this domain's "
+              f"disparity.gate is {gate!r}, so they are reported and not enforced.",
+              file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

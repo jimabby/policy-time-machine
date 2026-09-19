@@ -885,6 +885,94 @@ def drafts(domain: str) -> list[dict]:
 
 # ------------------------------------------------------------------- the CLI
 
+def describe_comparison(result: dict, limit: int = 20) -> str:
+    """Two versions side by side, as the CLI prints them.
+
+    The question is *did the edit help?*, so the answer leads with the cases
+    that moved between the two rather than with either version's totals: a
+    reader who wanted the totals has ``--history``, and a count of differences
+    with no case ids under it is the shape of answer that sends somebody back
+    to the dashboard.
+    """
+    left, right = result["left"], result["right"]
+    lines = [f"{left} against {right}, over the {result['compared']} case(s) both "
+             f"versions have judged"]
+    if not result["compared"]:
+        # Nothing judged under both is not agreement, and a bare "0 differ"
+        # reads exactly like perfect agreement. Same refusal the rule gate and
+        # the calibration gate make about a measurement never taken.
+        lines.append(f"  neither version has verdicts for any case the other has judged "
+                     f"({result['judged_left']} under {left}, {result['judged_right']} "
+                     f"under {right}). Replay both before comparing them.")
+        return "\n".join(lines)
+    lines.append(f"  agree on {result['agree']}, differ on {result['differ']} "
+                 f"({result['differ'] / result['compared']:.1%})")
+    if not result["differ"]:
+        lines.append(f"  {left} and {right} reach the same outcome for every case both "
+                     f"have seen; whatever the edit changed, it did not change an answer "
+                     f"on this history")
+        return "\n".join(lines)
+    lines.append(f"  {'case':<12}{'recorded':>12}{'  ' + left:>14}{'  ' + right:>14}")
+    for row in result["differences"][:limit]:
+        lines.append(f"  {row['case_id']:<12}{row['actual_outcome'] or '-':>12}"
+                     f"  {row['left_outcome']:>12}  {row['right_outcome']:>12}"
+                     f"   clause {row['left_clause'] or '-'} -> "
+                     f"{row['right_clause'] or '-'}")
+    if result["differ"] > limit:
+        lines.append(f"  ... and {result['differ'] - limit} more; -o writes the whole set")
+    lines.append("  a difference is not an improvement. Which of the two is right about "
+                 "a case is what the precedent gate answers, and only for the cases a "
+                 "human has ruled on.")
+    return "\n".join(lines)
+
+
+def describe_history(result: dict, digits: int = 1) -> str:
+    """Every replayed version in one table, as the CLI prints it.
+
+    Three numbers per version because a version is judged on three different
+    things and quoting one of them is how a policy gets adopted for the wrong
+    reason: what it moves, how much of that it is *responsible* for, and how
+    many human rulings it reverses.
+    """
+    unit = result["impact_unit"]
+    lines = [f"every version of {result['domain']} that has been replayed, oldest run "
+             f"first ({result['precedents']} ruling(s) on file)"]
+    # 22 for the rate, because the band it carries is "24.5% (21.2%-28.1%)" -
+    # nineteen characters at a one-decimal precision and more at two. The first
+    # width tried was 18, which does not truncate, it simply stops padding, so
+    # the flip count and the rate ran together into one unreadable number.
+    lines.append(f"  {'version':<14}{'cases':>7}{'flips':>7}{'rate':>22}"
+                 f"{'caused':>8}{'reverses':>10}{'net ' + unit:>14}")
+    for row in result["versions"]:
+        if not row["runs"]:
+            # Listed rather than dropped: a version nothing has replayed is a
+            # real state and an absent row reads as a version that does not
+            # exist. "never the candidate" rather than "never replayed",
+            # because the policy in force is judged on every case as the
+            # *baseline* of somebody else's run - it has verdicts on file and
+            # no run of its own, and calling that unreplayed would contradict
+            # the comparison two commands away that reads those very verdicts.
+            mark = " (draft)" if row["is_draft"] else ""
+            lines.append(f"  {row['policy_version'] + mark:<14}{'-':>7}{'-':>7}"
+                         f"{'never the candidate':>22}{'-':>8}{'-':>10}{'-':>14}")
+            continue
+        band = (f"{row['flip_rate']:.{digits}%} "
+                f"({row['flip_rate_lo']:.{digits}%}-{row['flip_rate_hi']:.{digits}%})")
+        reverses = (f"{row['reverses']}" if row["precedents_checked"]
+                    else "unchecked")
+        mark = ("*" if row["in_force"] else " ") + ("d" if row["is_draft"] else " ")
+        lines.append(f"  {row['policy_version']:<12}{mark}{row['cases']:>7}"
+                     f"{row['flips']:>7}{band:>22}{row['policy_driven_flips']:>8}"
+                     f"{reverses:>10}{row['net_impact']:>14,.0f}")
+    lines.append("  (* = in force, d = a draft nobody has approved. 'caused' excludes "
+                 "changes the policy in force already makes; 'unchecked' means no "
+                 "verdict on file, which is not the same as reversing nothing. A "
+                 "version that is never the candidate can still have been judged as "
+                 "another run's baseline - use --compare to see those verdicts.)")
+    lines.append(f"  {result['caveat']}")
+    return "\n".join(lines)
+
+
 USAGE = """usage:
   python -m ptm.report <domain> <version> [--csv] [-o FILE]
         Everything the Diff Explorer shows, as one JSON bundle with the
@@ -894,11 +982,20 @@ USAGE = """usage:
         How big a change this much history could actually detect, and how
         many cases it would take to settle a comparison it cannot.
 
+  python -m ptm.report <domain> --compare <left> <right> [--json] [-o FILE]
+        Did the edit help? The two versions case by case, over the cases both
+        of them have judged.
+
+  python -m ptm.report <domain> --history [--json] [-o FILE]
+        Every version ever replayed, side by side: what each moves, what it is
+        responsible for, and how many human rulings it reverses.
+
   python -m ptm.report --list
         The domains and versions this database knows about.
 
 Writes to stdout unless -o names a file, so it pipes into jq, an attachment,
-or the spreadsheet the decision actually gets argued in."""
+or the spreadsheet the decision actually gets argued in. --compare and
+--history print a table; add --json for the object behind it."""
 
 
 def _flag(args: list[str], name: str) -> str | None:
@@ -937,6 +1034,12 @@ def main(argv: list[str] | None = None) -> int:
 
     as_csv = "--csv" in args
     as_power = "--power" in args
+    as_history = "--history" in args
+    as_json = "--json" in args
+    # --compare takes two versions rather than one, so it cannot go through
+    # _flag; both are read off the positionals below, after the option scan has
+    # had its say about anything dashed.
+    comparing = "--compare" in args
     target: float | None = None
     if "--target" in args:
         index = args.index("--target")
@@ -971,12 +1074,48 @@ def main(argv: list[str] | None = None) -> int:
             skip = True
             continue
         # --target's value is popped above, so only the flag itself is left.
-        if arg in {"--csv", "--power", "--target"}:
+        if arg in {"--csv", "--power", "--target", "--history", "--json", "--compare"}:
             continue
         if arg.startswith("-"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
             return 2
         positional.append(arg)
+
+    # Two modes take a domain and no version, because they are about the domain:
+    # --history compares every version it has, and --compare names its own two.
+    if as_history or comparing:
+        if not positional:
+            print(f"ERROR name a domain; have {available_domains()}\n\n{USAGE}",
+                  file=sys.stderr)
+            return 2
+        domain = positional[0]
+        store.init_db()
+        try:
+            if comparing:
+                if len(positional) < 3:
+                    print(f"ERROR --compare needs two versions to compare\n\n{USAGE}",
+                          file=sys.stderr)
+                    return 2
+                left, right = positional[1], positional[2]
+                if left == right:
+                    # Not an error the read model would catch: comparing a
+                    # version with itself agrees on everything and says nothing,
+                    # which reads as a finding rather than as a mistake.
+                    print(f"ERROR --compare needs two different versions; {left!r} "
+                          f"agrees with itself on every case by construction",
+                          file=sys.stderr)
+                    return 2
+                result = compare(domain, left, right, limit=5000)
+                body = (json.dumps(result, indent=2, default=str) if as_json
+                        else describe_comparison(result))
+            else:
+                result = history(domain)
+                body = (json.dumps(result, indent=2, default=str) if as_json
+                        else describe_history(result))
+        except LookupError as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
+        return _emit(body, out_path)
 
     if len(positional) < 2:
         print(USAGE, file=sys.stderr)
@@ -998,6 +1137,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
 
+    return _emit(body, out_path)
+
+
+def _emit(body: str, out_path: str | None) -> int:
+    """Write the result where the caller asked for it. One copy, two callers."""
     if out_path:
         # Explicit encoding, for the same reason policy_text reads one: the
         # bundle carries policy prose and reviewer notes, and a cp1252 default

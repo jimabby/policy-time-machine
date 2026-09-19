@@ -34,11 +34,26 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 MINIMUM = (3, 10)
 
 
+#: Directories that are not this project's source, matched the way
+#: ``.gitignore`` matches them. The venv entry is a *prefix* test rather than an
+#: equality one, and that is the whole point: ``.gitignore`` says ``.venv*/``,
+#: so a checkout whose environment is ``.venv-af`` or ``.venv311`` is an
+#: ordinary thing to have - and ``".venv" not in p.parts`` matched none of them.
+#: The scan then walked the entire virtualenv, parsing 5,725 third-party files
+#: instead of this project's 84. It did not fail, which is why nothing said so;
+#: it simply took minutes, and it would have reported a dependency's syntax as
+#: this project's the first time one of them used a newer grammar than the
+#: floor. A check that quietly measures the wrong thing is the failure every
+#: other check here is written to avoid.
+EXCLUDED = ("__pycache__", ".git")
+
+
+def _is_ours(path: pathlib.Path) -> bool:
+    return not any(part in EXCLUDED or part.startswith(".venv") for part in path.parts)
+
+
 def python_files() -> list[pathlib.Path]:
-    return sorted(
-        p for p in REPO.rglob("*.py")
-        if ".venv" not in p.parts and "__pycache__" not in p.parts
-        and ".git" not in p.parts)
+    return sorted(p for p in REPO.rglob("*.py") if _is_ours(p))
 
 
 def backslashes_in_fstring_expressions(source: str) -> list[tuple[int, str]]:

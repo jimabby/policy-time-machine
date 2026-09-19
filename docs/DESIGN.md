@@ -1042,6 +1042,7 @@ A draft is a proposal, so the last step is a person's:
 
 ```bash
 python -m ptm.proposal expenses --list
+python -m ptm.proposal expenses --adopt v2-draft1 --by "jim (finance)" --dry-run
 python -m ptm.proposal expenses --adopt v2-draft1 --by "jim (finance)"
 python -m ptm.proposal expenses --discard v2-draft1
 ```
@@ -1053,6 +1054,30 @@ that is not a draft, refuses to write over an existing version, and refuses to
 do any of it anonymously. Adopting does not make the policy *in force* — that
 is `in_force` in the YAML, one more deliberate edit, because a version existing
 and a version governing are different claims.
+
+`--dry-run` runs every one of those checks and prints every edit it would make,
+then writes nothing. This is the only irreversible act in the project — two
+files created and a hand-maintained YAML rewritten in place, with no undo — and
+it was the only one with no way to look first. `ptm.prune` has a dry run,
+`ptm_retention` has one, the replay has `preflight=fail`. The plan and the real
+thing are rendered by one function, because a dry run assembled by different
+code from the command it describes is a dry run that can be accurate about
+something that has since changed.
+
+**Adoption re-files the rulings made against the draft.** A reviewer who
+settled a case while looking at `v2-draft1` produced a precedent naming that
+version, and adoption is about to delete it. Without the re-filing,
+`stale_precedents` reports every one of those rulings as `version_gone` —
+*"what the reviewer was shown cannot be recovered"* — permanently, while the
+gate goes on enforcing them; and the sentence is false, because adoption has
+just copied that exact text into `include/policies/<domain>/<version>.md`. It is
+the only operation here that knows both names for one document, so the rename
+travels with it. Deliberately **not** routed through `save_precedent`: nothing
+about the ruling changes, so there is no earlier version to archive, and
+writing a `precedent_history` row would invent a supersession that never
+happened and make a re-adjudication count read as two. A draft somebody
+*discards* is a different story and still reports `version_gone`, correctly —
+that text really is gone.
 
 
 ## Lint your domain first
@@ -1134,7 +1159,7 @@ ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1064 tests; the engine's 891 need nothing but Python
+tests/                          1158 tests; the engine's 985 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1151,6 +1176,52 @@ headline into a slide. The same two are reachable from a shell as
 `python -m ptm.report <domain> <version> [--csv]`, because the moment a decision
 is being argued about away from the dashboard is exactly the moment nobody can
 start the dashboard.
+
+### Every measurement, from a shell
+
+`ptm/gate.py` opens by making an argument about itself that applied to three
+other modules: everything here can run with no Airflow and no key *precisely*
+so it works in CI and on a laptop, and a measurement reachable only by
+triggering a DAG is a measurement nobody takes. The three that were left, and
+the two read models that answer the question the whole loop is for:
+
+```
+python -m ptm.stability <domain> <version>        the judge's noise floor
+python -m ptm.stability <domain> <version> --target flips
+                                                  confirm each flip before a
+                                                  human is asked to rule on it
+python -m ptm.crosscheck <domain> <version>       what a second judge made of it
+python -m ptm.disparity <domain> <version>        who carries more of the change
+python -m ptm.report <domain> --compare v1 v2     did the edit help?
+python -m ptm.report <domain> --history           every version, side by side
+```
+
+Three of them behave differently from each other, and the difference is the
+point rather than an inconsistency:
+
+- **`ptm.stability` takes the measurement.** It is the only one that has to
+  *judge*, so from a shell it judges with the offline judge — and then says, on
+  its own last line, that a deterministic judge agrees with itself by
+  construction and the 0% means the instrument is switched off. It refuses to
+  gate on that figure for the same reason `ptm.rules` and `ptm.calibration`
+  refuse to gate on theirs. What is *not* inert is the confirmation pass:
+  `--target flips` writes the tag `select_for_review` reads, which is what keeps
+  a flip the judge will not reproduce out of the human queue.
+- **`ptm.crosscheck` reads one.** There is deliberately no offline stand-in — it
+  would be one rule set answering twice, and a 100% agreement rate that means
+  nothing is worse than no cross-check. With nothing on file it says what to run
+  and exits 0, because nothing measured is not a failure and is certainly not
+  agreement.
+- **`ptm.disparity` is a real gate offline.** It reads the blast radius the
+  replay already stored, so there is nothing inert about it; `--gate fail`
+  overrides the domain's setting for one run, the way the replay DAG's parameter
+  does.
+
+`ptm.gate --json` puts the reversals themselves on stdout with the verdict in
+them and the prose on stderr. The exit codes were always the machine interface,
+which is right for a shell asking pass-or-fail and useless to a CI step that
+wants to *post* which rulings were reversed rather than report that there were
+some.
 
 ## Verified against
 
@@ -1205,7 +1276,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 891 tests,
+  so a skip there means something has genuinely changed. The engine's 985 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.

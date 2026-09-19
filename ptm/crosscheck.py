@@ -28,13 +28,15 @@ scores a judge against an answer, and it needs a human to have supplied one.
 
 from __future__ import annotations
 
+import json
+import sys
 from collections import Counter
 
-from . import stats
+from . import cli, stats, store
 from .config import DomainConfig
 from .models import CrossCheckReport, Verdict
 
-__all__ = ["CrossCheckReport", "analyse", "describe"]
+__all__ = ["CrossCheckReport", "analyse", "describe", "main"]
 
 
 def analyse(primary: dict[str, Verdict], secondary: dict[str, Verdict],
@@ -177,3 +179,75 @@ def describe(report: CrossCheckReport, flips: int | None = None) -> str:
     lines.append("  a second judge is independent, not correct. Where they disagree this "
                  "says so and stops - only ptm.calibration scores a judge against an answer.")
     return "\n".join(lines)
+
+
+USAGE = """usage:
+  python -m ptm.crosscheck [domain] [version] [--json]
+
+What a second, independent judge made of the same policy and the same cases -
+and, more usefully, which cases the two of them split on. Those are the
+sentences of the policy that do not settle a case, found without spending a
+human on any of them.
+
+  domain    defaults to 'expenses'
+  version   defaults to 'v2'
+  --json    the stored report as JSON, disagreements included.
+
+This reads the last cross-check on file rather than running one. A second judge
+needs a second model, so producing one means PTM_OFFLINE=0 and
+
+  airflow dags trigger judge_stability_<domain> \\
+    --conf '{"compare_model":"anthropic:claude-haiku-4-5"}'
+
+There is deliberately no offline stand-in: it would be one rule set answering
+twice, and a 100% agreement rate that means nothing is worse than no
+cross-check at all. Exit 0 either way - nothing measured is not a failure."""
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m ptm.crosscheck [domain] [version]`` - the last second opinion.
+
+    Reading rather than judging, for the same reason :mod:`ptm.gate` reads: the
+    measurement is already stored, scoring it again costs money, and the point
+    of a shell entry point is that the number can be looked at without starting
+    Airflow. Unlike the gate, this one can never *take* the measurement here -
+    see the usage string.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if cli.wants_help(args):
+        print(USAGE)
+        return 0
+    as_json = "--json" in args
+    unknown = [a for a in args if a.startswith("-") and a != "--json"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    positional = [a for a in args if not a.startswith("-")]
+    domain_name = positional[0] if positional else "expenses"
+    version = positional[1] if len(positional) > 1 else "v2"
+
+    from . import report as report_module
+
+    store.init_db()
+    try:
+        result = report_module.cross_check(domain_name, version)
+    except LookupError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+    if not result["measured"]:
+        # Not an error and not a pass. The same refusal ptm.rules and
+        # ptm.calibration make about an unmeasured figure: reporting agreement
+        # nobody measured is the one thing this module exists not to do.
+        print(f"no cross-check on file for {domain_name}/{version}: {result['hint']}")
+        return 0
+    print(result["summary"])
+    print(f"  {result['caveat']}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

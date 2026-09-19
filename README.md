@@ -313,11 +313,27 @@ make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
 make gate      # the precedent regression suite; non-zero if a ruling is reversed
 make power     # how big a change could this much history actually detect?
+make noise     # the judge's noise floor — inert offline, and it says so
+make confirmed # re-judge the flips, so an unstable one stays out of the queue
+make second    # what a second judge made of it (needs PTM_OFFLINE=0 to make one)
+make blast     # which segments carry more of the change than the rest
+make versions  # every version replayed, side by side — did the edit help?
+make compare L=v1 R=v2                  # the two of them, case by case
 make propose   # draft the next version of the policy (writes nothing)
 make export    # everything the Explorer shows, as one file
 make vacuum    # drop the rows that stopped earning their disk, and shrink the file
+make adopt-plan V=v2-draft1 BY="your name"  # what adopting would do, without doing it
 make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
 ```
+
+**Every measurement is reachable from a shell now, including the three that
+were not.** The judge's noise floor, the second opinion and the concentration
+check used to need a running Airflow; `make noise`, `make second` and `make
+blast` are those, and each one still refuses what its module exists to refuse —
+offline the noise floor is 0% by construction and says so rather than gating on
+it, and a cross-check nobody has run reports that rather than reporting
+agreement. [The design notes](docs/DESIGN.md#every-measurement-from-a-shell)
+have why the three behave differently.
 
 `make tour` runs the whole thing end to end in about nine seconds. On a box
 with no `make` — which is most Windows boxes — `python demo.py` is the same

@@ -234,3 +234,91 @@ class TestAGridAxisThatDecidesNothing:
         out = capsys.readouterr().out
         assert "WARNING" in out and "interaction:" in out
         assert out.index("WARNING") < out.index("interaction:")
+
+
+class TestTheCliRefusesRatherThanCrashes:
+    """This was the last entry point still interpreting argv by its raw length.
+
+    Every sibling reports a bad argument the same way - ``ERROR ...`` on stderr
+    and exit 2, the code this project reserves for "could not be run" - because
+    :mod:`ptm.cli` and :func:`ptm.selftest.cli_main` were written after a
+    traceback came out of the one command whose job is to show the project
+    running cleanly. ``ptm.sweep`` never got that pass: it raised
+    ``FileNotFoundError`` at exit 1 for an unknown domain, ``ValueError`` for a
+    quoted threshold, and - the one that was not even a crash - exited **0**
+    for an unknown version, printing an empty dial list.
+    """
+
+    def test_an_unknown_domain_is_an_error_and_not_a_traceback(self, capsys):
+        assert sweep.main(["nosuchdomain", "v2"]) == 2
+        assert "no domain config" in capsys.readouterr().err
+
+    def test_an_unknown_version_is_refused_rather_than_reported_empty(self, capsys):
+        """The worst of the four, because it looked like an answer.
+
+        ``numeric dials in expenses/v99:`` followed by nothing, exit 0, reads
+        as a policy that states no thresholds. That is precisely the confident
+        wrong answer :func:`ptm.sweep.thresholds` refuses to give about a band
+        rule, given about a version that does not exist.
+        """
+        assert sweep.main(["expenses", "v99"]) == 2
+        err = capsys.readouterr().err
+        assert "unknown policy version 'v99'" in err and "v1" in err
+
+    def test_an_unknown_version_is_refused_in_the_sweeping_form_too(self, capsys):
+        assert sweep.main(["expenses", "v99", "amount_gbp", "25,50"]) == 2
+        assert "unknown policy version" in capsys.readouterr().err, (
+            "it used to blame the field for a version that was never there")
+
+    def test_a_quoted_threshold_is_reported_not_raised(self, seeded, capsys):
+        assert sweep.main(["expenses", "v2", "amount_gbp", "abc"]) == 2
+        assert "comma-separated numbers" in capsys.readouterr().err
+
+    def test_a_malformed_joint_axis_is_reported_not_raised(self, seeded, capsys):
+        assert sweep.main(["expenses", "v2", "--joint",
+                           "amount_gbp", "days_notice=3,7"]) == 2
+        assert "needs the form" in capsys.readouterr().err
+
+    def test_an_unknown_option_is_named(self, capsys):
+        assert sweep.main(["expenses", "v2", "--nosuchflag"]) == 2
+        assert "--nosuchflag" in capsys.readouterr().err
+
+    def test_a_flag_no_longer_shifts_the_positionals(self, seeded, capsys):
+        """Arguments were read by count, so a stray flag moved field onto values.
+
+        ``--joint`` had to be filtered out of the axis list by hand for exactly
+        this reason; every other flag simply corrupted the parse.
+        """
+        assert sweep.main(["expenses", "v2", "--json", "amount_gbp", "25,50"]) == 2
+        assert "--json" in capsys.readouterr().err
+
+    def test_an_empty_dial_list_now_says_what_it_means(self, capsys):
+        """The sentence the unknown-version path used to produce by accident.
+
+        A version with no numeric dial is a real state and worth printing; it
+        just has to be the only thing that prints this.
+        """
+        assert sweep.main(["refunds", "v1"]) == 0
+        out = capsys.readouterr().out
+        assert "numeric dials in refunds/v1" in out
+
+    def test_a_negative_threshold_is_a_value_and_not_a_flag(self, seeded, capsys):
+        """A leading minus is a sign. Reading it as an option would refuse a
+        sweep that used to work, which is the one thing a parse fix must not do.
+
+        Thresholds are policy numbers and some domains have signed ones - a
+        balance, a temperature, a margin. The old code took values positionally
+        and so accepted these by accident; a flag scan written as
+        ``startswith("-")`` would have turned that accident into a refusal.
+        """
+        assert sweep.main(["expenses", "v2", "amount_gbp", "-25,50,75"]) == 0
+        assert "-25" in capsys.readouterr().out
+
+    def test_the_forms_that_worked_still_work(self, seeded, capsys):
+        """The fix is a parse, not a new interface."""
+        assert sweep.main(["expenses", "v2"]) == 0
+        assert sweep.main(["expenses", "v2", "amount_gbp", "50,75"]) == 0
+        assert sweep.main(["expenses", "v2", "1.1", "amount_gbp", "50,75"]) == 0
+        assert sweep.main(["expenses", "v2", "--joint",
+                           "1.1:amount_gbp=50,75", "3.1:days_notice=3,7"]) == 0
+        assert "<- current" in capsys.readouterr().out

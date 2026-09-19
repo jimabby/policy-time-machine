@@ -14,11 +14,13 @@ step the whole pipeline defers to a person.
 from __future__ import annotations
 
 import shutil
+from datetime import datetime
 
 import pytest
 import yaml
 
-from ptm import config, proposal, report, store
+from ptm import config, diff, proposal, report, store
+from ptm.models import Precedent
 
 
 @pytest.fixture
@@ -172,3 +174,163 @@ class TestTheCommandLine:
         out = capsys.readouterr().out
         assert "not written" in out, "without --write nothing touches the disk"
         assert not (workspace / "drafts").exists()
+
+
+class TestTheRulingsMadeAgainstADraft:
+    """Adopting a draft must not orphan the rulings made while looking at it.
+
+    A reviewer settles a case under ``v2-draft1``; adoption copies that exact
+    text into ``include/policies/expenses/v3.md`` and deletes the draft. The
+    ruling still named ``v2-draft1``, so :func:`ptm.diff.stale_precedents`
+    reported it as ``version_gone`` - "what the reviewer was shown cannot be
+    recovered" - permanently, while the gate went on enforcing it. The sentence
+    was false the moment it was printed, and adoption is the only operation in
+    the project that knows both names for the same document.
+    """
+
+    def _ruling(self, version, case_id="exp-0001", outcome="deny", by="finance.lead"):
+        return Precedent(case_id=case_id, domain="expenses", correct_outcome=outcome,
+                         ruled_by=by, note="ruled while looking at the draft",
+                         established_at=datetime(2026, 3, 1),
+                         policy_version=version, judged_outcome="approve",
+                         judged_clause="8.1")
+
+    def test_a_ruling_made_under_the_draft_survives_adoption(self, workspace, fresh_db):
+        write_draft(workspace)
+        store.save_precedent(self._ruling("v2-draft1"))
+
+        domain = config.load_domain("expenses")
+        before = diff.stale_precedents(store.load_precedents("expenses"), domain,
+                                       "v2-draft1")
+        assert before == [], "the ruling is about the draft it names, before adoption"
+
+        result = proposal.adopt("expenses", "v2-draft1", "jim")
+        domain = proposal.reload_domain("expenses")
+        after = diff.stale_precedents(store.load_precedents("expenses"),
+                                      domain, result["version"])
+        assert after == [], (
+            "the adopted policy is the text the reviewer was shown, so the ruling is "
+            f"not stale against it; got {after}")
+        assert result["repointed_precedents"] == ["exp-0001"]
+        assert [p.policy_version for p in store.load_precedents("expenses")] == ["v3"]
+
+    def test_without_the_re_filing_it_would_be_version_gone(self, workspace, fresh_db):
+        """The bug itself, pinned by the mechanism rather than by the symptom.
+
+        A ruling naming a version the domain no longer has is exactly what
+        ``version_gone`` is for - and it is the right answer for a draft
+        somebody *discarded*. What made it wrong after adoption is that the
+        version did not go anywhere; it was renamed.
+        """
+        write_draft(workspace)
+        store.save_precedent(self._ruling("v2-draft1"))
+        proposal.discard("expenses", "v2-draft1")
+
+        domain = proposal.reload_domain("expenses")
+        stale = diff.stale_precedents(store.load_precedents("expenses"), domain, "v2")
+        assert [r["reason"] for r in stale] == ["version_gone"], (
+            "a discarded draft really is gone, and the ruling really is unreadable")
+
+    def test_the_archive_moves_with_the_ruling(self, workspace, fresh_db):
+        """``precedent_history`` carries the same field and the same check reads it.
+
+        Moving the live ruling and leaving its archive behind would strand the
+        record of what an earlier reviewer said under a version nothing can
+        resolve - which is the half of the durable artefact that exists
+        precisely so a supersession cannot happen silently.
+        """
+        write_draft(workspace)
+        store.save_precedent(self._ruling("v2-draft1", outcome="deny"))
+        store.save_precedent(self._ruling("v2-draft1", outcome="partial", by="ops.lead"))
+
+        proposal.adopt("expenses", "v2-draft1", "jim")
+        archived = store.precedent_history("expenses")
+        assert archived, "the first ruling was superseded and kept"
+        assert {r["policy_version"] for r in archived} == {"v3"}
+
+    def test_it_re_files_nothing_it_was_not_asked_to(self, workspace, fresh_db):
+        """Rulings made against a real version are none of adoption's business."""
+        write_draft(workspace)
+        store.save_precedent(self._ruling("v2", case_id="exp-0002"))
+        store.save_precedent(self._ruling("v2-draft1", case_id="exp-0003"))
+
+        result = proposal.adopt("expenses", "v2-draft1", "jim")
+        assert result["repointed_precedents"] == ["exp-0003"]
+        by_case = {p.case_id: p.policy_version
+                   for p in store.load_precedents("expenses")}
+        assert by_case == {"exp-0002": "v2", "exp-0003": "v3"}
+
+    def test_re_filing_is_a_rename_and_not_a_supersession(self, workspace, fresh_db):
+        """Nothing about the ruling changed, so nothing may be archived.
+
+        Routing this through ``save_precedent`` would have been the obvious
+        implementation and would invent a supersession that never happened -
+        making a re-adjudication count, which the Explorer shows beside every
+        ruling, read as two.
+        """
+        write_draft(workspace)
+        store.save_precedent(self._ruling("v2-draft1"))
+        proposal.adopt("expenses", "v2-draft1", "jim")
+
+        assert store.revision_counts("expenses") == {}, (
+            "a rename must not look like somebody ruling a second time")
+        [ruling] = store.load_precedents("expenses")
+        assert (ruling.correct_outcome, ruling.ruled_by) == ("deny", "finance.lead")
+        assert ruling.established_at == datetime(2026, 3, 1)
+
+    def test_repointing_is_a_no_op_when_there_is_nothing_to_move(self, fresh_db):
+        assert store.repoint_precedents("expenses", "", "v3") == []
+        assert store.repoint_precedents("expenses", "v3", "v3") == []
+        assert store.repoint_precedents("expenses", "v2-draft9", "v3") == []
+
+
+class TestAdoptingDryRun:
+    """The one irreversible act in the project, with a way to look first."""
+
+    def test_it_reports_every_edit_and_makes_none_of_them(self, workspace, fresh_db):
+        write_draft(workspace)
+        store.save_precedent(
+            Precedent(case_id="exp-0001", domain="expenses", correct_outcome="deny",
+                      ruled_by="finance.lead", established_at=datetime(2026, 3, 1),
+                      policy_version="v2-draft1"))
+        yaml_before = (workspace / "domains" / "expenses.yaml").read_text(encoding="utf-8")
+
+        plan = proposal.adopt("expenses", "v2-draft1", "jim", dry_run=True)
+
+        assert plan["dry_run"] and plan["version"] == "v3"
+        assert plan["repointed_precedents"] == ["exp-0001"]
+        assert plan["offline_rules"] == 1
+        assert not (workspace / "policies" / "expenses" / "v3.md").exists()
+        assert (workspace / "drafts" / "expenses" / "v2-draft1.md").exists()
+        assert (workspace / "domains" / "expenses.yaml").read_text(encoding="utf-8") \
+            == yaml_before
+        assert [p.policy_version for p in store.load_precedents("expenses")] \
+            == ["v2-draft1"], "a dry run does not touch the durable artefact either"
+
+    def test_it_refuses_exactly_what_the_real_thing_refuses(self, workspace, fresh_db):
+        """A dry run that accepts what adoption would reject is worse than none."""
+        write_draft(workspace)
+        with pytest.raises(LookupError):
+            proposal.adopt("expenses", "v2", "jim", dry_run=True)
+        with pytest.raises(ValueError):
+            proposal.adopt("expenses", "v2-draft1", "  ", dry_run=True)
+        with pytest.raises(LookupError):
+            proposal.adopt("expenses", "v2-draft1", "jim", as_version="v2", dry_run=True)
+
+    def test_the_plan_matches_what_adopting_then_does(self, workspace, fresh_db):
+        write_draft(workspace)
+        plan = proposal.adopt("expenses", "v2-draft1", "jim", dry_run=True)
+        done = proposal.adopt("expenses", "v2-draft1", "jim")
+        shared = ("draft", "version", "by", "policy", "domain_yaml", "offline_rules",
+                  "repointed_precedents")
+        assert {k: plan[k] for k in shared} == {k: done[k] for k in shared}
+        assert plan["would_remove"] == done["removed"]
+
+    def test_the_cli_says_would_rather_than_did(self, workspace, fresh_db, capsys):
+        write_draft(workspace)
+        assert proposal.main(
+            ["expenses", "--adopt", "v2-draft1", "--by", "jim", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "would adopt v2-draft1 as v3" in out
+        assert "nothing was written" in out
+        assert not (workspace / "policies" / "expenses" / "v3.md").exists()

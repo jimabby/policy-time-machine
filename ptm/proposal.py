@@ -691,7 +691,7 @@ DRAFT_STAMP = "Not approved by anyone."
 
 
 def adopt(domain_name: str, draft_version: str, by: str,
-          as_version: str | None = None) -> dict:
+          as_version: str | None = None, dry_run: bool = False) -> dict:
     """Promote a draft to a policy version somebody is accountable for.
 
     This is the step the whole pipeline defers to a person, so it asks for the
@@ -706,6 +706,13 @@ def adopt(domain_name: str, draft_version: str, by: str,
     a version that already exists. Adopting does not make the policy *in force*:
     that is ``in_force`` in the domain YAML, one more deliberate edit, because
     a version existing and a version governing are different claims.
+
+    ``dry_run`` runs every check and reports every edit it would make, then
+    writes nothing. This is the one irreversible act in the project - two files
+    created and a hand-maintained YAML rewritten in place, with no undo - and it
+    was the only one with no way to look first. ``ptm.prune`` has a dry run,
+    ``ptm_retention`` has one, the replay has ``preflight=fail``; the step that
+    puts a machine's draft into the policy book had none.
     """
     domain = reload_domain(domain_name)
     if draft_version not in domain.draft_versions:
@@ -743,14 +750,40 @@ def adopt(domain_name: str, draft_version: str, by: str,
              if rules_path.exists() else [])
 
     policy_dir = config.INCLUDE_DIR / "policies" / domain_name
-    policy_dir.mkdir(parents=True, exist_ok=True)
     policy_path = policy_dir / f"{version}.md"
+    yaml_path = config.INCLUDE_DIR / "domains" / f"{domain_name}.yaml"
+
+    # Rulings made while a reviewer was looking at this draft. They name the
+    # draft, and the draft is about to stop existing - so without the re-filing
+    # below every one of them becomes permanently `version_gone` to
+    # ptm.diff.stale_precedents, which tells the reader that what the reviewer
+    # was shown "cannot be recovered" while this function is in the act of
+    # copying it into policy_path. Counted before the write in both modes, so a
+    # dry run reports the same number the real one will move.
+    ruled_under_draft = [p.case_id for p in store.load_precedents(domain_name)
+                         if p.policy_version == draft_version]
+
+    planned = {"draft": draft_version, "version": version, "by": by,
+               "policy": str(policy_path), "domain_yaml": str(yaml_path),
+               "offline_rules": len(rules),
+               "repointed_precedents": sorted(ruled_under_draft)}
+
+    if dry_run:
+        return {**planned, "dry_run": True, "removed": [],
+                "would_remove": [str(folder / f"{draft_version}.md")]
+                + ([str(rules_path)] if rules_path.exists() else [])}
+
+    policy_dir.mkdir(parents=True, exist_ok=True)
     policy_path.write_text(markdown, encoding="utf-8")
 
-    yaml_path = config.INCLUDE_DIR / "domains" / f"{domain_name}.yaml"
     yaml_path.write_text(
         _register(yaml_path.read_text(encoding="utf-8"), domain_name, version, rules),
         encoding="utf-8")
+
+    # Before the draft's files go, and before anything can read the domain
+    # again: from here on `draft_version` resolves to nothing, and a ruling
+    # still naming it is a ruling the gate enforces on text nobody can find.
+    repointed = store.repoint_precedents(domain_name, draft_version, version)
 
     removed = discard(domain_name, draft_version)
     # Recorded beside the provenance rather than over it. The patch, the
@@ -760,9 +793,51 @@ def adopt(domain_name: str, draft_version: str, by: str,
     # somebody took responsibility for from one somebody threw away, which the
     # files alone cannot say: both leave include/drafts/ empty.
     store.mark_adopted(domain_name, draft_version, version, by)
-    return {"draft": draft_version, "version": version, "by": by,
-            "policy": str(policy_path), "domain_yaml": str(yaml_path),
-            "offline_rules": len(rules), "removed": removed}
+    return {**planned, "dry_run": False, "removed": removed,
+            "repointed_precedents": repointed}
+
+
+def describe_adoption(result: dict) -> str:
+    """What adoption did, or what it would do. One renderer for both.
+
+    Written once rather than twice on purpose: a dry run whose output is
+    assembled by different code from the real thing is a dry run that can be
+    accurate about a command that has since changed, which is the failure
+    :func:`ptm.store.prune_preview` exists to avoid on the other side of the
+    project.
+    """
+    planning = result.get("dry_run")
+    verb = "would adopt" if planning else "adopted"
+    lines = [f"{verb} {result['draft']} as {result['version']}, by {result['by']}"]
+    lines.append(f"  {'would write' if planning else 'wrote'}    {result['policy']}")
+    lines.append(
+        f"  {'would register' if planning else 'registered'} it in {result['domain_yaml']}"
+        + (f" with {result['offline_rules']} offline rule(s)"
+           if result["offline_rules"] else
+           " with no offline rules - PTM_OFFLINE=1 will return the most generous "
+           "outcome for every case under it"))
+    moved = result.get("repointed_precedents") or []
+    if moved:
+        # Said out loud because it is the one edit here that touches the durable
+        # artefact. Nothing about the rulings changes - not the outcome, not who
+        # made it - only the name of the document they were made against, which
+        # is the name this command is in the act of changing.
+        lines.append(
+            f"  {'would re-file' if planning else 're-filed'} {len(moved)} ruling(s) made "
+            f"under {result['draft']} against {result['version']}: {moved[:10]}")
+        lines.append("      the text they were ruled on is the text being adopted, so "
+                     "without this the gate would enforce them forever while reporting "
+                     "that what the reviewer saw cannot be recovered")
+    for path in result.get("would_remove") or result.get("removed") or []:
+        lines.append(f"  {'would remove' if planning else 'removed'}   {path}")
+    if planning:
+        lines.append("\n  nothing was written. Drop --dry-run to do it.")
+    else:
+        lines.append(f"\n{result['version']} is a policy version like any other now: "
+                     f"lint it, replay it, gate it. It is not yet the policy *in force* "
+                     f"- that is `in_force` in the domain YAML, and one more deliberate "
+                     f"edit.")
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------- verification
@@ -874,8 +949,11 @@ USAGE = """usage:
         Delete a draft's files. The provenance row is kept.
 
   python -m ptm.proposal <domain> --adopt <version> --by <name> [--as <version>]
+                                  [--dry-run]
         Promote a draft into include/policies/ and register it, with its
-        offline rules, in the domain YAML. Records who adopted it."""
+        offline rules, in the domain YAML. Records who adopted it, and re-files
+        every ruling made under the draft's name against the adopted one.
+        --dry-run runs every check and prints every edit, then writes nothing."""
 
 
 def _flag(args: list[str], name: str) -> str | None:
@@ -906,6 +984,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     write = "--write" in args
     listing = "--list" in args
+    dry_run = "--dry-run" in args
     discarding = _flag(args, "--discard")
     adopting = _flag(args, "--adopt")
     adopter = _flag(args, "--by") or ""
@@ -917,14 +996,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR --as needs a version\n\n{USAGE}", file=sys.stderr)
         return 2
 
-    flags = {"--write", "--list", "--discard", "--adopt", "--by", "--as"}
+    flags = {"--write", "--list", "--dry-run", "--discard", "--adopt", "--by", "--as"}
     positional, skip = [], False
     for arg in args:
         if skip:
             skip = False
             continue
         if arg in flags:
-            skip = arg not in {"--write", "--list"}
+            skip = arg not in {"--write", "--list", "--dry-run"}
             continue
         if arg.startswith("--"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
@@ -969,20 +1048,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR --adopt needs a version\n\n{USAGE}", file=sys.stderr)
             return 2
         try:
-            result = adopt(domain_name, adopting, adopter, adopt_as)
+            result = adopt(domain_name, adopting, adopter, adopt_as, dry_run=dry_run)
         except (LookupError, ValueError) as exc:
             print(f"ERROR {exc}", file=sys.stderr)
             return 2
-        print(f"adopted {result['draft']} as {result['version']}, by {result['by']}")
-        print(f"  wrote    {result['policy']}")
-        print(f"  registered it in {result['domain_yaml']}"
-              + (f" with {result['offline_rules']} offline rule(s)"
-                 if result["offline_rules"] else
-                 " with no offline rules - PTM_OFFLINE=1 will return the most generous "
-                 "outcome for every case under it"))
-        print(f"\n{result['version']} is a policy version like any other now: lint it, "
-              f"replay it, gate it. It is not yet the policy *in force* - that is "
-              f"`in_force` in the domain YAML, and one more deliberate edit.")
+        print(describe_adoption(result))
         return 0
 
     if version not in domain.policies:

@@ -147,3 +147,81 @@ class TestItReportsWhatTheDagReports:
         store.save_precedent(ruling("exp-not-a-case", "approve"))
         result = gate.check("expenses", "v2")
         assert "exp-not-a-case" in result["cases_missing"]
+
+
+class TestTheMachineReadableForm:
+    """Three exit codes are the right interface for a shell and not enough for CI.
+
+    A step that wants to *post* the reversals rather than report that there were
+    some had to re-parse the prose. ``--json`` puts the whole result on stdout
+    with the verdict in it, and the prose on stderr, so neither reader has to
+    strip the other's output.
+    """
+
+    def _out(self, capsys):
+        import json
+
+        captured = capsys.readouterr()
+        return json.loads(captured.out), captured.err
+
+    def test_the_document_carries_the_verdict_and_the_evidence(self, judged, capsys):
+        case_id = a_case_where(judged, "v2", "deny")
+        store.save_precedent(ruling(case_id, "approve"))
+
+        assert gate.main(["expenses", "v2", "--json"]) == gate.FAILED
+        body, err = self._out(capsys)
+        assert body["code"] == gate.FAILED and body["passed"] is False
+        assert body["ran"] is True
+        assert body["failing"] == [case_id]
+        assert [v["case_id"] for v in body["violations"]] == [case_id]
+        assert "GATE FAILS" in body["headline"]
+        assert "GATE FAILS" in err, "the prose still goes somewhere, just not stdout"
+
+    def test_stdout_is_nothing_but_the_document(self, judged, capsys):
+        """So it pipes into jq without a filter in front of it."""
+        case_id = a_case_where(judged, "v2", "deny")
+        store.save_precedent(ruling(case_id, "deny"))
+
+        assert gate.main(["expenses", "v2", "--json"]) == 0
+        body, err = self._out(capsys)
+        assert body["passed"] is True
+        assert "gate: policy v2" in err
+
+    def test_a_refusal_is_a_document_too(self, judged, capsys):
+        """An unknown version used to leave stdout empty, which a consumer
+        cannot tell from a crash."""
+        assert gate.main(["expenses", "v99", "--json"]) == gate.CANNOT_RUN
+        body, _ = self._out(capsys)
+        assert body["code"] == gate.CANNOT_RUN
+        assert body["ran"] is False and "unknown policy version" in body["error"]
+
+    def test_unchecked_is_reported_as_not_run_rather_than_failed(self, judged, capsys):
+        """The distinction the exit codes exist for, carried into the JSON."""
+        store.save_precedent(ruling("exp-0001", "deny", version="v2"))
+        store.query("DELETE FROM verdicts WHERE case_id='exp-0001'")
+
+        assert gate.main(["expenses", "v2", "--json"]) == gate.CANNOT_RUN
+        body, _ = self._out(capsys)
+        assert body["ran"] is False and body["passed"] is False
+        assert body["unchecked"] == ["exp-0001"]
+
+    def test_introduced_only_travels_with_the_answer(self, judged, capsys):
+        """Which question was asked changes what the code means, so it is in
+        the document rather than left to whoever wrote the command line."""
+        case_id = a_case_where(judged, "v1", "deny")
+        store.save_precedent(ruling(case_id, "approve"))
+
+        gate.main(["expenses", "v2", "--introduced-only", "--json"])
+        body, _ = self._out(capsys)
+        assert body["introduced_only"] is True
+
+    def test_the_verdict_function_agrees_with_the_exit_code(self, judged, capsys):
+        """One computation, two renderings - which is the point of splitting it."""
+        case_id = a_case_where(judged, "v2", "deny")
+        store.save_precedent(ruling(case_id, "approve"))
+        result = gate.check("expenses", "v2")
+
+        assert gate.verdict(result)["code"] == gate.main(["expenses", "v2"])
+        capsys.readouterr()
+        assert gate.verdict(result, introduced_only=True)["code"] == gate.main(
+            ["expenses", "v2", "--introduced-only"])
