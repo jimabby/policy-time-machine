@@ -10,7 +10,7 @@ jobs:
     name: Engine (no Airflow)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
@@ -204,7 +204,7 @@ jobs:
     name: DAGs parse under Airflow 3.1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -261,7 +261,7 @@ jobs:
     name: The demo stack builds and serves the Explorer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # --wait blocks on the healthcheck in docker-compose.yaml, which polls the
       # Explorer's own API. So this step passing already means Airflow migrated,
@@ -301,7 +301,7 @@ jobs:
     name: Diff Explorer renders in a browser
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
