@@ -324,7 +324,7 @@ def build(ctx: DomainDags) -> None:
                              written["patch"],
                              evidence={k: v for k, v in found.items() if k not in ("curves", "grid")},
                              verification=verification, drafted_by=JUDGE_ID,
-                             run_id=ctx["run_id"])
+                             run_id=f"{ctx['dag'].dag_id}::{ctx['run_id']}")
             print(proposal.describe(patch, verification))
             print(f"\n{written['draft_version']} is now a policy version of "
                   f"{domain_name}. Replay it to find out what it does to the cases "

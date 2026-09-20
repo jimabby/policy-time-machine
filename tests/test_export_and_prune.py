@@ -144,10 +144,10 @@ class TestPrune:
                                    {"primary": "a", "secondary": "b", "compared": 1})
         with store.conn() as c:
             c.execute("UPDATE cross_checks SET created_at=?", (utc_days_ago(200),))
-            c.execute("UPDATE cross_checks SET created_at=? WHERE run_id='newest'",
-                      (utc_days_ago(199),))
+            c.execute("UPDATE cross_checks SET created_at=? WHERE run_id=?",
+                      (utc_days_ago(199), store.scoped_run_id("expenses", "newest", "crosscheck")))
         store.prune("expenses", days=90)
-        assert store.latest_cross_check("expenses", "v2")["run_id"] == "newest"
+        assert store.latest_cross_check("expenses", "v2")["run_id"] == store.scoped_run_id("expenses", "newest", "crosscheck")
 
     def test_it_is_scoped_to_one_domain_when_asked(self, fresh_db):
         store.cache_put([entry("e"), entry("r", domain="refunds", case_id="c2")])

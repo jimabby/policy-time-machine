@@ -6,7 +6,9 @@ threshold moved from 75 to 100 re-judges all six hundred cases, including the
 hundreds the edit cannot possibly reach. At USD 4 a replay that is survivable
 once and a habit nobody forms.
 
-**The key is the prompt, not the case.** ``sha256(model + prompt)``. Keying on
+**The key includes the complete judgment inputs.** :func:`judgment_key` hashes
+the archived policy inputs (including offline rules, system instructions and
+output schema), the case and the actual model connection identity. Keying on
 ``(case_id, policy_version)`` would be the obvious choice and would be quietly
 wrong: editing a clause does not change the version label, so every stale
 verdict would be served as though the policy had not moved. Hashing the prompt
@@ -75,6 +77,13 @@ def key(prompt: str, model: str, epoch: str | None = None) -> str:
     digest.update(b"\x00")
     digest.update(prompt.encode("utf-8"))
     return digest.hexdigest()
+
+
+def judgment_key(case, domain, version: str, judge: dict) -> str:
+    """Hash every controlled judgment input, including rules and system instructions."""
+    from .provenance import digest, policy_inputs
+    return key(digest({"policy": policy_inputs(domain, version, judge),
+                       "case": case.model_dump(mode="json")}), judge["model"])
 
 
 def lookup(keys: list[str], count: bool = True) -> dict[str, Verdict]:

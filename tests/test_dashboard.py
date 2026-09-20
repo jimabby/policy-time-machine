@@ -927,10 +927,8 @@ class TestExportAndNavigation:
         assert page.locator("#flips tr.row").count() >= 1
         assert "shown" in page.text("#status")
 
-    def test_filtering_asks_the_API_for_nothing(self, page):
-        """The rows are already in hand and the query changes no other panel.
-        Re-fetching all nineteen read models on every keystroke is what this
-        replaced, and nothing about the rendering would show it came back."""
+    def test_filtering_fetches_only_the_case_page(self, page):
+        """Search the complete dataset without reloading unrelated panels."""
         calls: list[str] = []
         page.on("request", lambda r: calls.append(r.url) if "/api/" in r.url else None)
         before = page.locator("#flips tr.row").count()
@@ -938,4 +936,27 @@ class TestExportAndNavigation:
         page.wait_for_function(
             f"() => document.querySelectorAll('#flips tr.row').length < {before}",
             timeout=10_000)
-        assert calls == []
+        assert calls and all("/api/flip-page/" in url for url in calls)
+
+
+@needs_browser
+class TestReplayEvidence:
+    def test_review_workspace_opens_with_both_policies(self, page):
+        page.locator("#flips tr.row button").first.click()
+        page.wait_for_selector("#reviewbody article", timeout=10_000)
+        assert page.is_visible("#reviewdialog")
+        assert "baseline: v1" in page.text("#reviewbody")
+        assert "candidate: v2" in page.text("#reviewbody")
+        assert "facts known on the decision date" in page.text("#reviewbody")
+        assert "current ruling" in page.text("#reviewbody")
+        page.click("#reviewdialog form button")
+        assert not page.is_visible("#reviewdialog")
+        assert not page.errors
+
+    def test_coverage_and_pagination_are_visible(self, page):
+        page.wait_for_function("document.querySelector('#replaycoverage').textContent.includes('600 of 600')")
+        assert "provenance needs attention" in page.text("#replaycoverage")
+        assert "147" in page.text("#flipcount")
+        assert page.locator("#flipnext").is_disabled()
+        assert page.locator("#flipprev").is_disabled()
+        assert page.get_attribute("#snapshotdownload", "href") == "/ptm/api/snapshots/expenses/v2"

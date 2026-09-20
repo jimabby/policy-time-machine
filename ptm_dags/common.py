@@ -28,7 +28,7 @@ from airflow.sdk import Asset, Param, task
 
 from ptm import cache, cost
 from ptm.config import JUDGE_MODEL, LLM_CONN_ID, OFFLINE, DomainConfig, load_domain
-from ptm.judge import build_prompt
+from ptm.judge import SYSTEM_PROMPT, build_prompt
 from ptm.models import Case, Verdict
 
 if not OFFLINE:
@@ -48,18 +48,27 @@ __all__ = [
 ]
 
 START = pendulum.datetime(2024, 9, 1, tz="UTC")
-SYSTEM_PROMPT = (
-    "You are a policy adjudicator. You apply written policy to historical cases "
-    "exactly as written, without sympathy, precedent or hindsight. You are shown "
-    "each case as it was recorded on the day it was decided; you must not reason "
-    "about anything that happened after that date. When the policy does not "
-    "settle a case, you say so with low confidence rather than inventing a rule."
-)
 DEFAULTS = {"owner": "policy-time-machine", "retries": 1}
 #: What answered a prompt, for the cache key and the ledger. The offline judge
 #: is a different answerer from any model, and serving one's verdict as the
 #: other's would make a comparison between them agree with itself perfectly.
 JUDGE_ID = JUDGE_MODEL if not OFFLINE else "offline"
+
+
+def judge_configuration() -> dict:
+    """Resolve the actual connection at task execution; never record credentials."""
+    if OFFLINE:
+        return {"model": "offline"}
+    from airflow.sdk import BaseHook
+
+    from ptm.provenance import digest
+    connection = BaseHook.get_connection(LLM_CONN_ID)
+    model = connection.extra_dejson.get("model")
+    if not model:
+        raise AirflowFailException("Set the model in the AI connection's extra.model field")
+    return {"model": model, "connection_id": LLM_CONN_ID,
+            "connection_type": connection.conn_type, "endpoint": connection.host or "",
+            "configuration_hash": digest(connection.extra_dejson)}
 
 
 def _review_timeout(domain) -> timedelta | None:
@@ -144,6 +153,7 @@ def _item(case: Case, domain, version: str, baseline_version: str = "",
     the second one from cache would report a judge with no noise floor.
     """
     prompt = build_prompt(case, domain, version)
+    judge = judge_configuration()
     item = {
         "case_id": case.case_id,
         "domain": case.domain,
@@ -153,9 +163,10 @@ def _item(case: Case, domain, version: str, baseline_version: str = "",
         "actual_rationale": case.actual_rationale,
         "prompt_chars": len(prompt),
         "baseline_prompt_chars": 0,
+        "judge": judge,
     }
     if cacheable:
-        item["cache_key"] = cache.key(prompt, JUDGE_ID)
+        item["cache_key"] = cache.judgment_key(case, domain, version, judge)
     if baseline_version:
         # A baseline pass judges every case twice. Its prompt is sized and keyed
         # separately rather than added to the candidate's, because the two
@@ -165,7 +176,7 @@ def _item(case: Case, domain, version: str, baseline_version: str = "",
         baseline_prompt = build_prompt(case, domain, baseline_version)
         item["baseline_prompt_chars"] = len(baseline_prompt)
         if cacheable:
-            item["baseline_cache_key"] = cache.key(baseline_prompt, JUDGE_ID)
+            item["baseline_cache_key"] = cache.judgment_key(case, domain, baseline_version, judge)
     return item
 
 
@@ -295,7 +306,8 @@ def merge(items: list[dict], misses: list[dict], fresh: list,
         by_key = {m["case_id"]: (m.get(key_field, ""), int(m.get(chars_field) or 0))
                   for m in misses}
         cache.remember(
-            items[0]["domain"] if items else "", version, JUDGE_ID,
+            items[0]["domain"] if items else "", version,
+            items[0].get("judge", {}).get("model", JUDGE_ID) if items else JUDGE_ID,
             {case_id: (by_key[case_id][0], by_key[case_id][1], verdict)
              for case_id, verdict in judged.items() if by_key.get(case_id, ("",))[0]})
 

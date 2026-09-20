@@ -42,12 +42,15 @@ from ptm import (
     crosscheck,
     disparity,
     gate,
+    ingest,
     lint,
     pit_check,
     precedents,
     preflight,
     proposal,
+    provenance,
     prune,
+    replay,
     report,
     rules,
     seed,
@@ -63,6 +66,9 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 #: than discovered: a module that stopped having a CLI should fail this list
 #: loudly rather than quietly drop out of the sweep below.
 ENTRY_POINTS = [
+    ("ptm.ingest", ingest.main),
+    ("ptm.provenance", provenance.main),
+    ("ptm.replay", replay.main),
     ("ptm.preflight", preflight.main),
     ("ptm.calibration", calibration.main),
     ("ptm.rules", rules.main),

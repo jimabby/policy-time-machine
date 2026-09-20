@@ -15,7 +15,7 @@ import pendulum
 from airflow.exceptions import AirflowFailException
 from airflow.sdk import Param, dag, task
 
-from ptm import cost, diff, disparity, preflight, store
+from ptm import cost, diff, disparity, preflight, provenance, store
 from ptm.config import LLM_CONN_ID, OFFLINE
 from ptm.judge import build_prompt, offline_verdict
 from ptm.models import Verdict
@@ -29,6 +29,7 @@ from ptm_dags.common import (
     _case,
     _item,
     _version_from_context,
+    judge_configuration,
     merge,
     to_judge,
 )
@@ -54,6 +55,9 @@ def build(ctx: DomainDags) -> None:
     flips_asset = ctx.flips
     policy_param = ctx.policy_param
 
+    def record_failure(context):
+        provenance.failed(f"{context['dag'].dag_id}::{context['run_id']}", domain_name)
+
     # ------------------------------------------------------------------ replay
     @dag(
         dag_id=f"replay_{domain_name}",
@@ -62,6 +66,7 @@ def build(ctx: DomainDags) -> None:
         catchup=False,
         max_active_runs=4,
         default_args=DEFAULTS,
+        on_failure_callback=record_failure,
         params={
             "policy_version": policy_param,
             # Manual runs replay all of history, so they are capped by default:
@@ -164,6 +169,12 @@ def build(ctx: DomainDags) -> None:
             limit = (cap or None) if manual else None
             cases = store.load_cases(domain_name, until=hi, since=lo,
                                      limit=limit, newest_first=manual and bool(cap))
+            eligible = store.query("SELECT COUNT(*) n FROM cases WHERE domain=? "
+                                   "AND decided_at>=? AND decided_at<?",
+                                   (domain_name, store._bound(lo), store._bound(hi)))[0]["n"]
+            provenance.begin(f"{ctx['dag'].dag_id}::{ctx['run_id']}", domain_name, version,
+                             provenance.capture(domain, version, cases, baseline_version,
+                                                lo, hi, eligible, judge_configuration()))
             print(f"{len(cases)} cases to replay under policy {version}")
             if cases:
                 print(f"covering {cases[0].decided_at:%Y-%m-%d} to {cases[-1].decided_at:%Y-%m-%d}")
@@ -208,7 +219,14 @@ def build(ctx: DomainDags) -> None:
                       **ctx) -> dict:
             version = ctx["params"]["policy_version"]
             baseline_version = (ctx["params"].get("baseline_version") or "").strip()
-            run_id = ctx["run_id"]
+            run_id = f"{ctx['dag'].dag_id}::{ctx['run_id']}"
+            snapshot = provenance.prepared(run_id, domain_name)
+            if snapshot and provenance.digest(provenance.policy_inputs(
+                    domain, version, judge_configuration())) != snapshot["policy_hash"]:
+                raise AirflowFailException("Policy or judge changed during replay; start a new run")
+            if snapshot and baseline_version and provenance.digest(provenance.policy_inputs(
+                    domain, baseline_version, judge_configuration())) != snapshot["baseline_hash"]:
+                raise AirflowFailException("Baseline changed during replay; start a new run")
             cases = [_case(i) for i in items]
             verdicts = (candidate or {}).get("verdicts") or []
             baseline_verdicts = (baseline_pass or {}).get("verdicts") or []
@@ -251,7 +269,7 @@ def build(ctx: DomainDags) -> None:
                               case_segments=diff.case_segment_rows(cases, domain),
                               ledger=ledger,
                               baseline_version=baseline_version if baseline else "",
-                              baseline_verdicts=baseline)
+                              baseline_verdicts=baseline, snapshot=snapshot)
 
             for row in summary["by_clause"]:
                 print(f"{row['clause']:>34}  {row['flips']:>4} flips "

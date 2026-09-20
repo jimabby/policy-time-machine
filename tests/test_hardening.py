@@ -89,8 +89,8 @@ class TestRetentionReachesTheTablesThatActuallyGrow:
 
     def test_the_newest_verdict_and_flip_survive_at_any_age(self, replayed_four_times):
         store.prune(None, 0)
-        assert [r["run_id"] for r in store.query("SELECT run_id FROM verdicts")] == ["run3"]
-        assert [r["run_id"] for r in store.query("SELECT run_id FROM flips")] == ["run3"]
+        assert [r["run_id"] for r in store.query("SELECT run_id FROM verdicts")] == [store.scoped_run_id("expenses", "run3")]
+        assert [r["run_id"] for r in store.query("SELECT run_id FROM flips")] == [store.scoped_run_id("expenses", "run3")]
 
     def test_what_the_read_models_return_does_not_change(self, replayed_four_times):
         """The whole justification: pruning these is invisible because the rows

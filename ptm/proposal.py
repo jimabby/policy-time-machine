@@ -725,6 +725,8 @@ def adopt(domain_name: str, draft_version: str, by: str,
         raise ValueError("adopting a policy records who adopted it; pass --by <name>")
 
     version = (as_version or next_policy_version(domain)).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", version):
+        raise ValueError("policy version must be a filename: letters, numbers, '.', '_' or '-'")
     if version in domain.policies:
         raise LookupError(
             f"{domain_name} already has a policy version {version!r}. Adopting over it "
@@ -751,6 +753,8 @@ def adopt(domain_name: str, draft_version: str, by: str,
 
     policy_dir = config.INCLUDE_DIR / "policies" / domain_name
     policy_path = policy_dir / f"{version}.md"
+    if policy_path.resolve().parent != policy_dir.resolve() or policy_path.exists():
+        raise ValueError(f"refusing to overwrite or leave the policy directory: {policy_path}")
     yaml_path = config.INCLUDE_DIR / "domains" / f"{domain_name}.yaml"
 
     # Rulings made while a reviewer was looking at this draft. They name the
@@ -774,7 +778,8 @@ def adopt(domain_name: str, draft_version: str, by: str,
                 + ([str(rules_path)] if rules_path.exists() else [])}
 
     policy_dir.mkdir(parents=True, exist_ok=True)
-    policy_path.write_text(markdown, encoding="utf-8")
+    with policy_path.open("x", encoding="utf-8") as output:
+        output.write(markdown)
 
     yaml_path.write_text(
         _register(yaml_path.read_text(encoding="utf-8"), domain_name, version, rules),

@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 
 from . import calibration as calibration_engine
-from . import cli, cost, diff, stats, store
+from . import cli, cost, diff, provenance, stats, store
 from . import crosscheck as crosscheck_engine
 from . import disparity as disparity_engine
 from . import preflight as preflight_engine
@@ -68,8 +68,8 @@ def summary(domain: str, version: str) -> dict:
              WHERE domain=? AND policy_version=? GROUP BY case_id
            )""", (domain, version))[0]
     dirs = store.query(
-        """SELECT f.direction, COUNT(*) n, SUM(f.impact) impact FROM flips f
-           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM flips
+        """SELECT f.direction, COUNT(*) n, SUM(f.impact) impact FROM current_flips f
+           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM current_flips
                  WHERE domain=? AND policy_version=? GROUP BY case_id) latest
              ON latest.latest_rowid=f.rowid
            GROUP BY f.direction""", (domain, version))
@@ -383,6 +383,7 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
         "preflight": preflight(domain, version),
         "rule_agreement": rule_agreement(domain, version),
         "power": power(domain, version),
+        "coverage": provenance.coverage(domain, version),
         "flips": flips(domain, version, limit=limit),
         "caveats": [
             "Impact is the value of the cases whose outcome changes, not a cash-flow "
@@ -413,7 +414,8 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
     }
 
 
-def flips(domain: str, version: str, limit: int = 200) -> list[dict]:
+def flips(domain: str, version: str, limit: int = 200,
+          offset: int = 0, search: str = "") -> list[dict]:
     _checked(domain, version)
     rows = store.query(
         """SELECT f.case_id, f.actual_outcome, f.new_outcome, f.direction, f.impact,
@@ -422,16 +424,94 @@ def flips(domain: str, version: str, limit: int = 200) -> list[dict]:
                   c.actual_rationale,
                   (SELECT correct_outcome FROM precedents p
                     WHERE p.case_id = f.case_id AND p.domain = f.domain) AS precedent
-           FROM flips f JOIN cases c ON c.case_id = f.case_id
-           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM flips
+           FROM current_flips f JOIN cases c ON c.case_id = f.case_id
+           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM current_flips
                  WHERE domain=? AND policy_version=? GROUP BY case_id) latest
              ON latest.latest_rowid=f.rowid
-           ORDER BY f.impact DESC LIMIT ?""",
-        (domain, version, limit))
+           WHERE instr(lower(f.case_id), lower(?)) > 0
+           ORDER BY f.impact DESC, f.case_id LIMIT ? OFFSET ?""",
+        (domain, version, search, limit, offset))
     for r in rows:
         r["payload"] = json.loads(r["payload"])
         r["segments"] = json.loads(r["segments"] or "{}")
     return rows
+
+
+def flip_page(domain: str, version: str, limit: int = 200,
+              offset: int = 0, search: str = "") -> dict:
+    _checked(domain, version)
+    counts = store.query("""SELECT COUNT(DISTINCT case_id) total,
+        COUNT(DISTINCT CASE WHEN instr(lower(case_id),lower(?))>0 THEN case_id END) matched
+        FROM current_flips WHERE domain=? AND policy_version=?""", (search, domain, version))[0]
+    return {**counts, "offset": offset, "limit": limit,
+            "items": flips(domain, version, limit, offset, search)}
+
+
+def coverage(domain: str, version: str) -> dict:
+    _checked(domain, version)
+    return provenance.coverage(domain, version)
+
+
+def snapshots(domain: str, version: str) -> list[dict]:
+    _domain(domain)
+    return provenance.snapshots(domain, version, include_inputs=True)
+
+
+def review_case(domain: str, version: str, case_id: str) -> dict:
+    """The evidence a reviewer needs, with archived inputs when available."""
+    import re
+
+    config = _checked(domain, version)
+    cases = store.load_cases(domain, until=datetime.max, case_ids=[case_id])
+    if not cases:
+        raise LookupError(f"unknown case {case_id!r}")
+    case = cases[0].model_dump(mode="json")
+    pointers = store.query("SELECT run_id FROM replay_cases WHERE domain=? AND policy_version=? AND case_id=?",
+                           (domain, version, case_id))
+    run = pointers[0]["run_id"] if pointers else None
+    archived = store.query("SELECT snapshot FROM replay_snapshots WHERE run_id=?", (run,)) if run else []
+    snap = json.loads(archived[0]["snapshot"]) if archived else None
+    if snap:
+        case = next((c for c in snap["inputs"] if c["case_id"] == case_id), case)
+    candidate = store.latest_verdicts(domain, version).get(case_id)
+    baseline_version = snap["baseline_version"] if snap else config.in_force
+    baseline = store.latest_verdicts(domain, baseline_version).get(case_id)
+    if run:
+        for suffix, target in (("", "candidate"), (store.BASELINE_RUN_SUFFIX, "baseline")):
+            rows = store.query("SELECT * FROM verdicts WHERE run_id=? AND domain=? AND case_id=?",
+                               (run + suffix, domain, case_id))
+            if rows:
+                if target == "candidate":
+                    candidate = rows[0]
+                else:
+                    baseline = rows[0]
+    if snap:
+        candidate = snap.get("verdicts", {}).get(case_id, candidate)
+        baseline = snap.get("baseline_verdicts", {}).get(case_id, baseline)
+
+    def policy_side(verdict, policy_version, archived_policy):
+        text = archived_policy["policy_text"] if archived_policy else (
+            config.policy_text(policy_version) if policy_version in config.policies else "")
+        clause = (verdict or {}).get("policy_clause", "")
+        match = re.search(rf"^\s*{re.escape(clause)}\s+(.*?)(?=^\s*\d+\.\d+\s|^#|\Z)",
+                          text, re.MULTILINE | re.DOTALL) if clause else None
+        return {"version": policy_version, "verdict": verdict, "policy_text": text,
+                "clause": clause, "clause_text": match.group(1).strip() if match else ""}
+
+    cross = store.latest_cross_check(domain, version)
+    disagreements = (cross or {}).get("report", {}).get("disagreements", [])
+    return {"case": case, "run_id": run, "archived_inputs": bool(snap),
+            "candidate": policy_side(candidate, version, snap["policy"] if snap else None),
+            "baseline": policy_side(baseline, baseline_version, snap.get("baseline") if snap else None),
+            "rulings": [p.model_dump(mode="json") for p in store.load_precedents(domain) if p.case_id == case_id],
+            "history": store.precedent_history(domain, case_id),
+            "stability": store.flip_stability(domain, version).get(case_id),
+            "disagreement": next((d for d in disagreements if d["case_id"] == case_id), None),
+            "cross_check_at": (cross or {}).get("created_at"),
+            "review_dag": f"adjudicate_{domain}",
+            "note": "Record rulings in the Airflow human review task. Secondary-model evidence "
+                    "is from its separately dated measurement; absence of a recorded disagreement "
+                    "does not establish agreement."}
 
 
 def clauses(domain: str, version: str) -> list[dict]:

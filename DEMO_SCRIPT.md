@@ -164,3 +164,17 @@ That last row is not a save. `ptm.gate expenses v2` fails on the shipped data
 because policy v1 reverses the same two rulings, and the proposal introduces
 neither. A red gate on camera is the feature working. Know that cold, because it
 is the one thing a sharp judge will ask about.
+
+
+## Inspect the evidence behind a result
+
+Open **Replay coverage and evidence** to show how many imported cases were replayed
+and whether the saved inputs are still current. In the detailed view, use case
+search and the page controls, then click **Review** on a changed case. Show the
+historical facts, the baseline and candidate clauses, and the human ruling history.
+The review dialog links to the Airflow workflow where a reviewer records a ruling.
+
+For a separate import demonstration, run `python manage.py import expenses
+examples/expenses.csv`, inspect the preview, then repeat with `--write`. Follow
+with `python manage.py replay expenses v2` and `python manage.py coverage expenses v2`.
+These commands default to `include/history.db` and leave the tour database alone.

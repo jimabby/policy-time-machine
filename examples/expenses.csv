@@ -1,0 +1,3 @@
+case_id,subject_id,decided_at,actual_outcome,submitted_by,grade,category,amount_gbp,receipt,days_notice,director_approval,alcohol,client_driven,note
+import-example-001,example-person-001,2025-01-15T09:00:00Z,deny,Example Person,2,travel,100,yes,30,yes,no,no,Synthetic example for the importer
+import-example-002,example-person-002,2025-02-10T10:00:00+10:00,approve,Another Example,3,travel,200,no,30,yes,no,no,Synthetic example with a timezone offset

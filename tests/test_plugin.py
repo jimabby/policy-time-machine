@@ -58,7 +58,7 @@ def load_plugin():
 
 
 #: Values to fill the dashboard's URL templates with.
-CONCRETE = {"domain": "expenses", "version": "v2", "left": "v1", "right": "v2"}
+CONCRETE = {"domain": "expenses", "version": "v2", "left": "v1", "right": "v2", "case_id": "exp-0084"}
 
 #: Endpoints the page calls with a query string it assembles separately, so the
 #: bare path extracted from the source would be a 422 rather than a real call.
@@ -198,6 +198,8 @@ class TestEveryUrlTheDashboardAsksFor:
         unused = []
         for route in app.routes:
             path = getattr(route, "path", "")
+            if path == "/api/flips/{domain}/{version}":
+                continue  # retained for existing API clients; covered by direct route tests
             if not path.startswith("/api/"):
                 continue
             # Compare on shape: the page's URLs are concrete, the routes are

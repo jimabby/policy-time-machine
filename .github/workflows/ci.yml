@@ -16,6 +16,15 @@ jobs:
           python-version: "3.10"
       - run: pip install -r requirements-dev.txt
 
+      - name: Import and replay historical cases without seeding
+        run: |
+          python manage.py --db /tmp/ptm-import.db import expenses examples/expenses.csv
+          python manage.py --db /tmp/ptm-import.db import expenses examples/expenses.csv --write
+          python manage.py --db /tmp/ptm-import.db replay expenses v2
+          python manage.py --db /tmp/ptm-import.db coverage expenses v2
+          python manage.py --db /tmp/ptm-import.db snapshots expenses v2 -o /tmp/ptm-evidence.json
+          python -c "import json; rows=json.load(open('/tmp/ptm-evidence.json')); assert rows[0]['status'] == 'complete' and rows[0]['inputs'] and rows[0]['verdicts']"
+
       # The engine's dependencies are four packages and they are ours to move,
       # so an advisory here is both actionable and this project's problem, and
       # the step fails. Deliberately *not* run over requirements.txt: auditing a

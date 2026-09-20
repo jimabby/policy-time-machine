@@ -318,7 +318,7 @@ def build(ctx: DomainDags) -> None:
                     case_id=f["case_id"], domain=domain_name, correct_outcome=chosen[0],
                     ruled_by=ruled_by,
                     note=(resp.get("params_input") or {}).get("note", ""),
-                    established_at=pendulum.now("UTC"), established_by_run=ctx["run_id"],
+                    established_at=pendulum.now("UTC"), established_by_run=f"{ctx['dag'].dag_id}::{ctx['run_id']}",
                     # The circumstances, not just the answer. Which policy the
                     # reviewer was shown and what it gave for this case is what
                     # makes the ruling re-readable later: a precedent the gate

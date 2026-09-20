@@ -17,6 +17,14 @@ from . import safe_eval
 from .config import DomainConfig
 from .models import Case, Verdict
 
+SYSTEM_PROMPT = (
+    "You are a policy adjudicator. You apply written policy to historical cases "
+    "exactly as written, without sympathy, precedent or hindsight. You are shown "
+    "each case as it was recorded on the day it was decided; you must not reason "
+    "about anything that happened after that date. When the policy does not "
+    "settle a case, you say so with low confidence rather than inventing a rule."
+)
+
 PROMPT = """You are adjudicating a historical {label} case under a proposed policy.
 
 # The policy (version {version})

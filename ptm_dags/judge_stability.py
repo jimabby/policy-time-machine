@@ -284,7 +284,7 @@ def build(ctx: DomainDags) -> None:
             result = stability.analyse(samples, repeats)
             ledger = _ledger(rows, usage=_measured_usage(
                 "" if OFFLINE else "stability_judge"))
-            store.save_stability(ctx["run_id"], domain_name, version,
+            store.save_stability(f"{ctx['dag'].dag_id}::{ctx['run_id']}", domain_name, version,
                                  samples, result.model_dump(), ledger)
 
             confirmed = 0
@@ -292,7 +292,7 @@ def build(ctx: DomainDags) -> None:
                 recorded = {r["case_id"]: r.get("recorded_outcome", "") for r in rows}
                 confirmations = stability.confirm(samples, recorded)
                 confirmed = store.save_flip_stability(domain_name, version, confirmations,
-                                                      run_id=ctx["run_id"])
+                                                      run_id=f"{ctx['dag'].dag_id}::{ctx['run_id']}")
                 print(stability.describe_confirmations(confirmations))
 
             # The second judge, if one ran. Scored against the primary judge's
@@ -325,7 +325,7 @@ def build(ctx: DomainDags) -> None:
                     secondary_label=(params.get("compare_model") or "second judge").strip(),
                     actual=actual)
                 cross = report_model.model_dump(mode="json")
-                store.save_cross_check(ctx["run_id"], domain_name, version, cross)
+                store.save_cross_check(f"{ctx['dag'].dag_id}::{ctx['run_id']}", domain_name, version, cross)
                 print()
                 print(crosscheck.describe(report_model))
 

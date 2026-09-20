@@ -21,6 +21,7 @@ from . import (
     disparity,
     preflight,
     proposal,
+    provenance,
     stability,
     stats,
     store,
@@ -69,9 +70,8 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
         # Without it a flip can be seen but not explained - see ptm.diff.attribute.
         baseline = {c.case_id: offline_verdict(c, domain, baseline_version) for c in cases}
         # The domain belongs in the run id. save_replay clears prior rows by
-        # run id - safe in Airflow, where run ids are per-DAG and therefore
-        # already per-domain - so sharing one across domains would make a
-        # refunds run silently delete the expenses results.
+        # run id. Persistence also namespaces IDs by domain; Airflow callers
+        # include their DAG ID because native run IDs are only unique per DAG.
         run_id = f"selftest__{domain_name}__{lo:%Y-%m}"
         found = diff.flips(cases, verdicts, domain, baseline=baseline)
         s = diff.summarise(found, len(cases), domain)
@@ -80,7 +80,8 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
                           segments=diff.segment_stats(cases, found, domain),
                           case_segments=diff.case_segment_rows(cases, domain),
                           ledger=cost.zero(), baseline_version=baseline_version,
-                          baseline_verdicts=baseline)
+                          baseline_verdicts=baseline,
+                          snapshot=provenance.capture(domain, version, cases, baseline_version, lo, hi))
         total_cases += len(cases)
         all_flips += found
         all_cases += cases
@@ -368,10 +369,10 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     # first did - including for the hundreds of cases the edit cannot reach.
     prompts = {c.case_id: build_prompt(c, domain, version) for c in all_cases}
     items = [{"case_id": c.case_id, "domain": domain_name,
-              "cache_key": cache.key(prompts[c.case_id], JUDGE_MODEL),
+              "cache_key": cache.judgment_key(c, domain, version, {"model": "offline"}),
               "prompt_chars": len(prompts[c.case_id])} for c in all_cases]
     misses, _ = cache.split(items)
-    cache.remember(domain_name, version, JUDGE_MODEL,
+    cache.remember(domain_name, version, "offline",
                    {i["case_id"]: (i["cache_key"], i["prompt_chars"],
                                    all_verdicts[i["case_id"]]) for i in misses})
     second_misses, second_hits = cache.split(items)

@@ -286,6 +286,80 @@ flips by money and would otherwise take the whole queue —
 
 ## Run it
 
+### Use your own history
+
+`manage.py` is the cross-platform runner for real imports. It defaults to
+`include/history.db`, separate from the synthetic demo's `include/ptm.db`.
+Install the engine first with `python -m pip install -e .`.
+
+```bash
+python manage.py import expenses examples/expenses.csv             # preview
+python manage.py import expenses examples/expenses.csv --write     # commit
+python manage.py replay expenses v2                               # offline rules
+python manage.py coverage expenses v2
+python manage.py snapshots expenses v2 -o evidence.json
+```
+
+Use `python manage.py --db PATH ...` to choose a database. The equivalent Make
+targets are `import-preview`, `import-cases`, `replay-history`, `replay-coverage`
+and `snapshots`; configure `D`, `POLICY`, `FILE` and `DATA_DB` as needed.
+These commands never seed or replace historical cases. `demo.py` and
+`ptm.selftest` are synthetic demonstrations and should use a separate database.
+
+CSV requires `case_id`, `subject_id`, `decided_at` and `actual_outcome`.
+Additional columns become payload fields; a `payload` column may contain a JSON
+object. JSON accepts an array of cases with those same fields and a `payload`
+object, or `{"cases": [...], "facts": [...]}`. Facts contain `subject_id`, `key`,
+`value` and `known_from`; only facts known by the decision date hydrate a case.
+Provide the fields used by the domain's `case_template`, either in the payload
+or in historical facts. Case IDs are globally unique; subject IDs must refer
+to the same person or entity across domains.
+
+Use `--map case_id=claim_number --map payload.amount_gbp=amount` for source column
+names. Imports check outcomes, required fields, timestamps, duplicate IDs and
+conflicting facts. Dates with offsets become UTC; naive dates are interpreted
+as UTC and reported in the preview. Any rejected row prevents the entire batch
+from being written. `--duplicates skip` explicitly skips existing IDs; imports
+never overwrite cases or human rulings. Preview and commit both print rejected
+row numbers and reasons.
+
+Offline replay accepts `--since`, `--until` (exclusive) and `--limit`. The limit
+selects the most recent cases in the requested interval. For an LLM-backed
+replay, point the Airflow deployment's `PTM_DB` at the imported database and
+trigger the normal replay DAG. The shipped Compose mount uses `include/ptm.db`;
+to use it, import with `python manage.py --db include/ptm.db import ...`.
+
+### Check completeness and review the evidence
+
+The Explorer shows replayed and missing case counts, requested intervals,
+selected versus eligible cases, run completion, and stale evidence. Each new
+replay archives the hydrated case inputs, candidate and baseline policy text,
+offline rules, prompt templates, output schema and judge configuration, with
+content hashes. Credentials are never included. A run is recorded before judging
+starts; a pending run has not published results and is not counted as complete.
+Old databases remain readable, but earlier runs have no snapshots: replay them
+to establish verifiable provenance. Snapshots contain case data and should be
+handled with the same access restrictions as the source history.
+
+Click **Review** beside a changed case to see facts known on its decision date,
+both policies and cited clauses, repeat-judgment results, recorded second-model
+disagreement, and current and superseded human rulings. Archived facts and policy
+text remain available after source files change. Record the ruling through the
+linked Airflow human review workflow. A missing disagreement is not proof that
+two models agreed.
+
+Case search runs on the server across all changed cases. Previous/Next controls
+page through results with explicit match and total counts. The authenticated API
+also exposes `/api/flip-page/{domain}/{version}`, `/api/coverage/{domain}/{version}`,
+`/api/snapshots/{domain}/{version}` and `/api/review/{domain}/{version}/{case_id}`.
+
+Replay identities include the domain and workflow, so monthly schedules cannot
+erase another domain's results. A later no-change replay removes obsolete flips
+from every current report and queue while retaining historical rows. Cache keys
+include the actual model connection identity, complete judge instructions,
+offline rules and case inputs. Changing those inputs forces fresh judgments.
+Adoption accepts only plain version names and refuses existing destination files.
+
 ```bash
 make up        # Airflow 3.1 at localhost:8080 (no login), history auto-seeded
 make demo      # backfill 24 months of replay
@@ -347,7 +421,7 @@ key. For the real thing:
 
 ```bash
 PTM_OFFLINE=0
-AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type":"pydanticai","host":"anthropic:claude-sonnet-5","password":"sk-ant-..."}'
+AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type":"pydanticai","extra":{"model":"anthropic:claude-sonnet-5"},"password":"sk-ant-..."}'
 ```
 
 `make cost` will tell you what that costs first.

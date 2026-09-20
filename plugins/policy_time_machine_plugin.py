@@ -136,6 +136,27 @@ def flips(domain: str, version: str, limit: int = Query(default=200, ge=1, le=50
     return found(report.flips, domain, version, limit)
 
 
+@app.get("/api/flip-page/{domain}/{version}")
+def flip_page(domain: str, version: str, limit: int = Query(default=200, ge=1, le=500),
+              offset: int = Query(default=0, ge=0), search: str = Query(default="", max_length=200)) -> dict:
+    return found(report.flip_page, domain, version, limit, offset, search)
+
+
+@app.get("/api/coverage/{domain}/{version}")
+def coverage(domain: str, version: str) -> dict:
+    return found(report.coverage, domain, version)
+
+
+@app.get("/api/snapshots/{domain}/{version}")
+def snapshots(domain: str, version: str) -> list[dict]:
+    return found(report.snapshots, domain, version)
+
+
+@app.get("/api/review/{domain}/{version}/{case_id}")
+def review_case(domain: str, version: str, case_id: str) -> dict:
+    return found(report.review_case, domain, version, case_id)
+
+
 @app.get("/api/clauses/{domain}/{version}")
 def clauses(domain: str, version: str) -> list[dict]:
     """Which clause is responsible for which share of the change."""

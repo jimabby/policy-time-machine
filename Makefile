@@ -18,6 +18,26 @@ ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
 # take a version the caller has to look up first, so the domain has to be
 # overridable in the same breath: make adopt D=refunds V=v2-draft1 BY="..."
 D ?= expenses
+.DEFAULT_GOAL := help
+POLICY ?= v2
+FILE ?= examples/expenses.csv
+DATA_DB ?= include/history.db
+
+.PHONY: import-preview import-cases replay-history replay-coverage snapshots
+import-preview: ## Validate a CSV/JSON import without writing cases (FILE=... D=...)
+	$(PY) manage.py --db "$(DATA_DB)" import $(D) "$(FILE)"
+
+import-cases: ## Import a validated CSV/JSON file atomically
+	$(PY) manage.py --db "$(DATA_DB)" import $(D) "$(FILE)" --write
+
+replay-history: ## Replay imported history offline without seeding
+	$(PY) manage.py --db "$(DATA_DB)" replay $(D) $(POLICY)
+
+replay-coverage: ## Inspect replay completeness and stale evidence
+	$(PY) manage.py --db "$(DATA_DB)" coverage $(D) $(POLICY)
+
+snapshots: ## Export the facts and policies archived with each replay
+	$(PY) manage.py --db "$(DATA_DB)" snapshots $(D) $(POLICY) -o "ptm-$(D)-$(POLICY)-snapshots.json"
 
 help:      ## List targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20

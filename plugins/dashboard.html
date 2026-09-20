@@ -216,6 +216,15 @@ a{color:var(--accent)}
       </div>
     </details>
   </section>
+<section aria-label="Replay coverage">
+  <h2>Replay coverage and evidence</h2>
+  <div id=replaycoverage aria-live=polite>Loading coverage...</div>
+  <a id=snapshotdownload target=_blank rel=noopener>Open archived replay inputs (JSON)</a>
+</section>
+<dialog id=reviewdialog aria-labelledby=reviewtitle style="width:min(1000px,90vw);max-height:85vh;overflow:auto">
+  <form method=dialog><button>Close review</button></form>
+  <h2 id=reviewtitle>Review case</h2><div id=reviewbody aria-live=polite></div>
+</dialog>
 <section id=plain>
   <div id=plainerror></div>
   <div class=verdict id=verdict></div>
@@ -311,6 +320,8 @@ a{color:var(--accent)}
 
   <h2 data-t="h.flips">Flipped decisions</h2>
   <div id=flips></div>
+  <nav aria-label="Case pages"><button id=flipprev type=button>Previous</button>
+  <span id=flipcount aria-live=polite></span> <button id=flipnext type=button>Next</button></nav>
 
   <h2 data-t="h.precedents">Established precedent</h2>
   <div id=precedents></div>
@@ -1569,6 +1580,7 @@ async function renderCompare() {
 
 // -------------------------------------------------------------- flips
 function renderFlips(rows, total, unit) {
+  SHOWN_FLIPS = rows;
   $("#flips").innerHTML = table(
     [{label: t("flips.col.case")}, {label: t("flips.col.decided")},
      {label: t("flips.col.was")}, {label: t("flips.col.becomes")},
@@ -1576,7 +1588,7 @@ function renderFlips(rows, total, unit) {
      {label: t("flips.col.impact"), num: 1}, {label: t("flips.col.conf"), num: 1},
      {label: t("flips.col.confirmed")}, {label: t("flips.col.precedent")}],
     rows.map((r, i) => `<tr class=row onclick="toggle(${i})">
-      <td>${esc(r.case_id)}${r.reviewed
+      <td><button type=button onclick="event.stopPropagation();openReview(${i})">Review</button> ${esc(r.case_id)}${r.reviewed
         ? ` <span class=reviewed>${t("flips.reviewed")}</span>` : ""}</td>
       <td>${esc(r.decided_at.slice(0, 10))}</td>
       <td><span class=pill>${esc(r.actual_outcome)}</span></td>
@@ -2452,8 +2464,12 @@ function renderPlain(data) {
 
 // --------------------------------------------------------------- boot
 let renderSequence = 0;
+let flipSequence = 0, reviewSequence = 0, flipOffset = 0, SHOWN_FLIPS = [];
 async function render() {
   const sequence = ++renderSequence;
+  ++flipSequence;
+  flipOffset = 0;
+  $("#reviewdialog").close();
   $("#prediction").innerHTML = "";
   const domain = $("#domain").value, version = $("#version").value;
   // Before the request, not after: the address bar should describe what the
@@ -2471,7 +2487,7 @@ async function render() {
      supersededDetail, powerDetail] =
       await Promise.all([
         api(`/api/summary/${seg(domain)}/${seg(version)}`),
-        api(`/api/flips/${seg(domain)}/${seg(version)}`),
+        api(`/api/flip-page/${seg(domain)}/${seg(version)}?search=${seg($("#search").value.trim())}`),
         api(`/api/precedents/${seg(domain)}`),
         api(`/api/clauses/${seg(domain)}/${seg(version)}`),
         api(`/api/segments/${seg(domain)}/${seg(version)}`),
@@ -2497,9 +2513,11 @@ async function render() {
     return;
   }
   if (sequence !== renderSequence) return;
+  const page = flipRows;
+  flipRows = page.items;
   LAST = {summary, flipRows, version};
-
-  applyFilter();
+  showFlipPage(page);
+  renderEvidence(domain, version, sequence);
 
   const draftnote = $("#draftnote");
   draftnote.hidden = !summary.is_draft;
@@ -2537,16 +2555,84 @@ async function render() {
 
 // The flip table is the one panel a keystroke can change, so it is the only
 // one the filter redraws. LAST holds what the last render() fetched.
-function applyFilter() {
+function showFlipPage(page) {
   if (!LAST) return;
-  const {summary, flipRows} = LAST;
-  const query = $("#search").value.trim().toLowerCase();
-  const shown = query ? flipRows.filter(r => r.case_id.toLowerCase().includes(query)) : flipRows;
-  $("#status").textContent =
-    t("status.runs", {n: summary.runs, s: plural(summary.runs)}) + ` - ${shown.length}` +
-    (shown.length === flipRows.length ? t("status.flips") : t("status.shown"));
-  renderFlips(shown, flipRows.length, summary.impact_unit);
+  LAST.flipRows = page.items;
+  renderFlips(page.items, page.matched, LAST.summary.impact_unit);
+  const first = page.items.length ? page.offset + 1 : 0;
+  const label = `Showing ${first}-${page.offset + page.items.length} of ${page.matched} matches (${page.total} changes)`;
+  $("#flipcount").textContent = label;
+  $("#status").textContent = t("status.runs", {n: LAST.summary.runs, s: plural(LAST.summary.runs)}) + " - " + label + " " + t("status.shown");
+  $("#flipprev").disabled = page.offset === 0;
+  $("#flipnext").disabled = page.offset + page.items.length >= page.matched;
 }
+async function applyFilter(reset = true) {
+  if (!LAST) return;
+  if (reset) flipOffset = 0;
+  const ticket = ++flipSequence, sequence = renderSequence;
+  const domain = $("#domain").value, version = $("#version").value;
+  try {
+    const page = await api(`/api/flip-page/${seg(domain)}/${seg(version)}?offset=${flipOffset}&search=${seg($("#search").value.trim())}`);
+    if (ticket !== flipSequence || sequence !== renderSequence) return;
+    showFlipPage(page);
+  } catch (error) {
+    if (ticket === flipSequence && sequence === renderSequence)
+      $("#status").textContent = "Case search failed. Please try again.";
+  }
+}
+async function renderEvidence(domain, version, sequence) {
+  $("#replaycoverage").textContent = "Loading coverage...";
+  $("#snapshotdownload").href = `/ptm/api/snapshots/${seg(domain)}/${seg(version)}`;
+  try {
+    const result = await api(`/api/coverage/${seg(domain)}/${seg(version)}`);
+    if (sequence !== renderSequence) return;
+    $("#replaycoverage").innerHTML = `<p><strong>${result.replayed} of ${result.eligible} cases replayed</strong>; ${result.missing} missing.
+      ${result.complete ? "Complete, with current archived evidence." : "Coverage or provenance needs attention."}</p>
+      <details><summary>Run coverage and freshness</summary>${result.runs.length ? table(
+        [{label:"Requested period"},{label:"Selected / eligible"},{label:"Judged"},{label:"State"},{label:"Evidence"}],
+        result.runs.map(r => `<tr><td>${esc(r.since || "all")} - ${esc(r.until || "all")}</td>
+        <td>${r.selected} / ${r.eligible}</td><td>${r.judged || 0}</td><td>${esc(r.status)}</td>
+        <td>${esc(r.stale_reasons.join("; ") || "Inputs unchanged")}</td></tr>`), "") : "No snapshots recorded. Replay to capture evidence."}
+      <p>${esc(result.note)}</p></details>`;
+  } catch (error) {
+    if (sequence === renderSequence) $("#replaycoverage").textContent = "Coverage unavailable. Other results remain available.";
+  }
+}
+async function openReview(index) {
+  const row = SHOWN_FLIPS[index];
+  if (!row) return;
+  const sequence = renderSequence, ticket = ++reviewSequence, dialog = $("#reviewdialog");
+  const domain = $("#domain").value, version = $("#version").value, case_id = row.case_id;
+  $("#reviewtitle").textContent = `Review ${row.case_id}`;
+  $("#reviewbody").textContent = "Loading evidence...";
+  dialog.showModal();
+  try {
+    const result = await api(`/api/review/${seg(domain)}/${seg(version)}/${seg(case_id)}`);
+    if (sequence !== renderSequence || ticket !== reviewSequence || !dialog.open) return;
+    const side = (label, s) => `<article><h3>${label}: ${esc(s.version)}</h3>
+      <p>${esc(s.verdict ? s.verdict.outcome : "Not judged")}</p>
+      <p>${esc(s.verdict ? s.verdict.rationale : "")}</p>
+      <h4>Clause ${esc(s.clause || "not cited")}</h4><pre style="white-space:pre-wrap">${esc(s.clause_text || "No clause text available")}</pre>
+      <details><summary>Full policy</summary><pre style="white-space:pre-wrap">${esc(s.policy_text)}</pre></details></article>`;
+    $("#reviewbody").innerHTML = `<p>${result.archived_inputs ? "Facts and policies archived with this replay." : "No archived replay inputs: facts reconstructed from the current historical records."}</p>
+      <p>Decided ${esc(result.case.decided_at)} - Recorded outcome: ${esc(result.case.actual_outcome)}</p>
+      <h3>Facts known on the decision date</h3><pre>${esc(JSON.stringify(result.case.payload, null, 2))}</pre>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px">${side("Baseline", result.baseline)}${side("Candidate", result.candidate)}</div>
+      <h3>Judge disagreement</h3><p>Measurement: ${esc(result.cross_check_at || "not measured")}</p>
+      <p>${result.disagreement ? `The first judge chose <strong>${esc(result.disagreement.primary_outcome)}</strong>;
+        the second chose <strong>${esc(result.disagreement.secondary_outcome)}</strong>.` : "No disagreement recorded for this case; this does not establish agreement."}</p>
+      <h3>Repeat judgments</h3><p>${result.stability ? `${result.stability.samples} judgments;
+        ${esc(Object.entries(result.stability.outcomes).map(([outcome, count]) => `${outcome}: ${count}`).join(", "))}.
+        ${result.stability.stable ? "The recorded outcome reproduced." : "The recorded outcome did not reproduce reliably."}` : "Not measured"}</p>
+      <h3>Current ruling and earlier rulings</h3>${[...result.rulings.map(r => ({...r, current:true})), ...result.history]
+        .map(r => `<article><strong>${r.current ? "Current" : "Earlier"}: ${esc(r.correct_outcome)}</strong>
+        <p>${esc(r.ruled_by)} on ${esc(r.established_at)}</p><p>${esc(r.note || "No explanation recorded.")}</p></article>`).join("") || "No human rulings recorded."}
+      <p>${esc(result.note)}</p><a href="/dags/${seg(result.review_dag)}" target=_blank rel=noopener>Open human review workflow</a>`;
+  } catch (error) {
+    if (sequence === renderSequence && ticket === reviewSequence) $("#reviewbody").textContent = "Could not load this case. Close and retry.";
+  }
+}
+window.openReview = openReview;
 
 function onDomainChange() {
   const d = DOMAINS.find(x => x.name === $("#domain").value);
@@ -2590,6 +2676,8 @@ async function boot() {
   $("#domain").onchange = onDomainChange;
   $("#version").onchange = render;
   let filterTimer;
+  $("#flipprev").onclick = () => { flipOffset = Math.max(0, flipOffset - 200); applyFilter(false); };
+  $("#flipnext").onclick = () => { flipOffset += 200; applyFilter(false); };
   $("#search").oninput = () => {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(applyFilter, 120);

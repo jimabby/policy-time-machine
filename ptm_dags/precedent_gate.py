@@ -212,7 +212,7 @@ def build(ctx: DomainDags) -> None:
             print(diff.describe_stale(stale, version))
             # Stored so the dashboard can show the gate's answer without paying
             # to judge these cases all over again.
-            store.save_verdicts(ctx["run_id"], domain_name, version, by_case)
+            store.save_verdicts(f"{ctx['dag'].dag_id}::{ctx['run_id']}", domain_name, version, by_case)
 
             # The gate asks whether the policy agrees with the humans. The same
             # verdicts answer a question nothing else in this pipeline asks:
@@ -257,7 +257,7 @@ def build(ctx: DomainDags) -> None:
                 base = {i["case_id"]: _as_verdict(v) for i, v in zip(items, baseline_verdicts)}
                 for verdict in base.values():
                     domain.validate_outcome(verdict.outcome)
-                store.save_verdicts(ctx["run_id"] + store.BASELINE_RUN_SUFFIX,
+                store.save_verdicts(f"{ctx['dag'].dag_id}::{ctx['run_id']}" + store.BASELINE_RUN_SUFFIX,
                                     domain_name, baseline_version, base)
                 pre_existing = {v["case_id"]
                                 for v in diff.precedent_violations(base, precedents)}

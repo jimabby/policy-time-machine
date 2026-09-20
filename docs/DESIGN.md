@@ -1159,7 +1159,7 @@ ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1158 tests; the engine's 985 need nothing but Python
+tests/                          1197 tests; the engine's 1022 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1276,7 +1276,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 985 tests,
+  so a skip there means something has genuinely changed. The engine's 1022 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.
@@ -1421,3 +1421,45 @@ Built and run against `apache/airflow:3.1.0` with
   it on shared storage. The single-container demo and the compose file already
   mount it.
 
+
+
+## Replay evidence and imported history
+
+`manage.py` wraps the import, offline replay and evidence CLIs with explicit local
+paths. Its default database is `include/history.db`; the demo continues to use
+`include/ptm.db`. CSV and JSON imports validate the whole batch before committing
+cases and point-in-time subject facts in one transaction. Duplicate IDs are errors
+unless the caller explicitly chooses to skip them. Existing cases are never
+replaced by an import. The replay CLI does not seed data or simulate human rulings.
+
+Storage namespaces run IDs by domain and operation; Airflow callers additionally
+include the DAG ID. Native Airflow run IDs are only unique within a DAG. Existing
+rows keep their old IDs. An additive migration builds `replay_cases`, the latest
+replay pointer for each case and policy, from the historical verdicts joined to
+replay runs. Every current flip read uses `current_flips`, so a later replay that
+finds no change supersedes an earlier flip. Gate-only judgments do not rewrite
+those replay pointers.
+
+`replay_snapshots` records the requested interval, eligible and selected counts,
+hydrated inputs, policy text, rules, domain configuration, prompt templates, output
+schema and judge identity before fan-out. Successful persistence adds candidate
+and baseline verdicts in the same transaction as the replay results. The Airflow
+failure callback marks an unpublished snapshot failed; interrupted work can remain
+pending and is never presented as complete. Snapshots retain archived outputs even
+when retention removes superseded verdict rows. Routine pruning preserves snapshots;
+explicitly clearing or re-seeding a domain clears these derived records as well.
+
+Coverage counts cases rather than adding overlapping run totals. Completeness
+requires current snapshots for the active replay results, no missing cases and no
+pending replay. Older superseded snapshots remain inspectable without making a newer
+complete replay stale. Source policy, configuration or historical-input changes
+are flagged through content hashes. The model configuration describes what was
+recorded during execution; an unchanged vendor model name does not prove the vendor
+has kept the same weights. The existing cache epoch remains the manual control for
+that uncertainty.
+
+The review workspace prefers archived facts, policy text and verdicts, and labels
+legacy results without snapshots. Secondary-model disagreements and repeated
+judgments are separately dated measurements. It links to the existing Airflow
+human review workflow rather than creating a second ruling-write API. Search and
+pagination operate on the complete current flip set at the server.

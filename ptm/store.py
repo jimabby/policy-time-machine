@@ -20,6 +20,21 @@ from .diff import DEVIATION
 from .models import Case, Flip, FlipConfirmation, Precedent, Verdict
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS replay_cases (
+    domain TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    case_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (domain, policy_version, case_id)
+);
+CREATE TABLE IF NOT EXISTS replay_snapshots (
+    run_id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    snapshot TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS cases (
     case_id          TEXT PRIMARY KEY,
     domain           TEXT NOT NULL,
@@ -408,6 +423,19 @@ def init_db() -> None:
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(SCHEMA)
         _migrate(c)
+        # Upgrade existing databases without losing the last no-change result.
+        c.execute("""INSERT OR IGNORE INTO replay_cases
+            SELECT v.domain, v.policy_version, v.case_id, v.run_id FROM verdicts v
+            JOIN (SELECT MAX(v.rowid) rid FROM verdicts v JOIN runs r
+                  ON r.run_id=v.run_id AND r.domain=v.domain
+                  AND r.policy_version=v.policy_version
+                  GROUP BY v.domain, v.policy_version, v.case_id) latest
+              ON latest.rid=v.rowid""")
+        c.execute("""CREATE VIEW IF NOT EXISTS current_flips AS
+            SELECT f.rowid AS rowid, f.* FROM flips f
+            LEFT JOIN replay_cases r ON r.domain=f.domain
+              AND r.policy_version=f.policy_version AND r.case_id=f.case_id
+            WHERE r.run_id IS NULL OR r.run_id=f.run_id""")
 
 
 def _migrate(c: sqlite3.Connection) -> None:
@@ -706,9 +734,9 @@ def flips_for_policy(domain: str, policy_version: str) -> list[dict]:
     """
     return query(
         """SELECT f.*, c.payload, c.decided_at, c.actual_rationale
-           FROM flips f JOIN cases c ON c.case_id = f.case_id
+           FROM current_flips f JOIN cases c ON c.case_id = f.case_id
            JOIN (
-             SELECT case_id, MAX(rowid) AS latest_rowid FROM flips
+             SELECT case_id, MAX(rowid) AS latest_rowid FROM current_flips
              WHERE domain = ? AND policy_version = ? GROUP BY case_id
            ) latest ON latest.latest_rowid = f.rowid
            ORDER BY f.impact DESC""",
@@ -733,6 +761,11 @@ def mark_reviewed(domain: str, policy_version: str, case_ids: list[str]) -> None
 #: keeping both is what lets two policy versions be compared later without
 #: paying to judge either of them again.
 BASELINE_RUN_SUFFIX = "::baseline"
+
+
+def scoped_run_id(domain: str, run_id: str, kind: str = "replay") -> str:
+    """Airflow run IDs are unique within a DAG, never across a deployment."""
+    return json.dumps([domain, kind, run_id], separators=(",", ":"))
 
 
 def _confirmations(c: sqlite3.Connection, domain: str,
@@ -760,12 +793,17 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
                 verdicts: dict[str, Verdict], segments: list[dict] | None = None,
                 ledger: dict | None = None, baseline_version: str = "",
                 baseline_verdicts: dict[str, Verdict] | None = None,
-                case_segments: list[dict] | None = None) -> None:
+                case_segments: list[dict] | None = None,
+                snapshot: dict | None = None) -> None:
     """Persist one replay atomically, including an idempotent re-run cleanup."""
     now = _stamp()
+    run_id = scoped_run_id(domain, run_id)
     ledger = ledger or {}
     baseline_run = run_id + BASELINE_RUN_SUFFIX
     with conn() as c:
+        c.execute("DELETE FROM replay_cases WHERE run_id=?", (run_id,))
+        c.executemany("INSERT OR REPLACE INTO replay_cases VALUES (?,?,?,?)",
+                      [(domain, policy_version, case_id, run_id) for case_id in verdicts])
         # Airflow retries use the same run id. Clear old rows first so a
         # policy edit cannot leave a no-longer-flipped case visible in the UI.
         c.execute("DELETE FROM verdicts WHERE run_id IN (?, ?)", (run_id, baseline_run))
@@ -847,6 +885,15 @@ def save_replay(run_id: str, domain: str, policy_version: str, baseline: str,
              ledger.get("actual_output_tokens", 0), ledger.get("actual_cost_usd", 0.0),
              ledger.get("judge_model", "")),
         )
+        if snapshot is not None:
+            completed = {**snapshot, "judged": len(verdicts),
+                         "verdicts": {k: v.model_dump(mode="json") for k, v in verdicts.items()},
+                         "baseline_verdicts": {k: v.model_dump(mode="json")
+                                               for k, v in (baseline_verdicts or {}).items()},
+                         "missing_case_ids": sorted(set(snapshot.get("case_ids", [])) - set(verdicts))}
+            status = "complete" if not completed["missing_case_ids"] else "partial"
+            c.execute("INSERT OR REPLACE INTO replay_snapshots VALUES (?,?,?,?,?,?)",
+                      (run_id, domain, policy_version, now, status, json.dumps(completed)))
 
 
 def save_verdicts(run_id: str, domain: str, policy_version: str,
@@ -857,6 +904,7 @@ def save_verdicts(run_id: str, domain: str, policy_version: str,
     the dashboard show the gate's answer without paying to re-judge it.
     """
     now = _stamp()
+    run_id = scoped_run_id(domain, run_id, "judge")
     with conn() as c:
         c.execute("DELETE FROM verdicts WHERE run_id = ?", (run_id,))
         c.executemany(
@@ -914,7 +962,7 @@ def flip_stability(domain: str, policy_version: str) -> dict[str, dict]:
 #: what an earlier ruling said is part of it - so both survive a re-seed. The
 #: verdict cache goes: its keys are hashes of prompts built from the *old*
 #: cases, so after a re-seed not one of them can ever be hit again.
-DERIVED_TABLES = ("verdicts", "flips", "segment_stats", "case_segments", "runs",
+DERIVED_TABLES = ("replay_cases", "replay_snapshots", "verdicts", "flips", "segment_stats", "case_segments", "runs",
                   "judge_samples", "stability_runs", "flip_stability", "verdict_cache",
                   "cross_checks")
 
@@ -1225,6 +1273,7 @@ def save_stability(run_id: str, domain: str, policy_version: str, samples: list[
                    report: dict, ledger: dict | None = None) -> None:
     """Persist one stability measurement and the samples that produced it."""
     ledger = ledger or {}
+    run_id = scoped_run_id(domain, run_id, "stability")
     with conn() as c:
         c.execute("DELETE FROM judge_samples WHERE run_id = ?", (run_id,))
         c.executemany(
@@ -1272,8 +1321,8 @@ def clause_breakdown(domain: str, policy_version: str) -> list[dict]:
                   SUM(CASE WHEN f.direction = 'loosening' THEN f.impact ELSE 0 END) AS impact_loosening,
                   SUM(CASE WHEN f.direction = 'tightening' THEN f.impact ELSE 0 END) AS impact_tightening,
                   AVG(f.confidence) AS mean_confidence
-           FROM flips f
-           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM flips
+           FROM current_flips f
+           JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM current_flips
                  WHERE domain=? AND policy_version=? GROUP BY case_id) latest
              ON latest.latest_rowid = f.rowid
            GROUP BY clause
@@ -1307,8 +1356,8 @@ def segment_breakdown(domain: str, policy_version: str) -> list[dict]:
                     AS impact_tightening
            FROM case_segments s
            LEFT JOIN (
-             SELECT g.case_id, g.direction, g.impact FROM flips g
-             JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM flips
+             SELECT g.case_id, g.direction, g.impact FROM current_flips g
+             JOIN (SELECT case_id, MAX(rowid) latest_rowid FROM current_flips
                    WHERE domain=? AND policy_version=? GROUP BY case_id) latest
                ON latest.latest_rowid = g.rowid
            ) f ON f.case_id = s.case_id
@@ -1357,8 +1406,8 @@ def version_totals(domain: str) -> dict[str, dict]:
                     AS impact_tightening,
                   SUM(CASE WHEN f.attribution <> ? THEN 1 ELSE 0 END) AS policy_driven,
                   AVG(f.confidence) AS mean_confidence
-           FROM flips f
-           JOIN (SELECT policy_version, case_id, MAX(rowid) latest_rowid FROM flips
+           FROM current_flips f
+           JOIN (SELECT policy_version, case_id, MAX(rowid) latest_rowid FROM current_flips
                  WHERE domain=? GROUP BY policy_version, case_id) latest
              ON latest.latest_rowid = f.rowid
            GROUP BY f.policy_version""",
@@ -1514,6 +1563,7 @@ def save_cross_check(run_id: str, domain: str, policy_version: str, report: dict
     thing worth keeping is the list of cases underneath it. A rate on its own
     cannot be turned back into the sentences somebody has to go and rewrite.
     """
+    run_id = scoped_run_id(domain, run_id, "crosscheck")
     with conn() as c:
         c.execute(
             """INSERT OR REPLACE INTO cross_checks
