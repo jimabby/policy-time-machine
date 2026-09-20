@@ -387,16 +387,24 @@ def check_domain(name: str) -> list[Problem]:
         # A rule stating a band rather than a threshold. Not a fault in the rule
         # - a band is often exactly what the policy says - but ptm.sweep moves
         # every literal a field is compared against, so sweeping this dial
-        # rewrites both ends to the same number and the rule then matches
-        # nothing at any point on the curve. The sweep refuses such a dial
-        # outright; this is where somebody finds out before they ask for one.
+        # without naming an end rewrites both of them to the same number and the
+        # rule then matches nothing at any point on the curve. The sweep refuses
+        # that; this is where somebody finds out before they ask for one, and
+        # where they are pointed at the form that does work.
         for row in sweep_engine.collapsing(domain, version):
+            ends = sweep_engine.sweepable_edges(row["expression"], row["field"])
+            route = (f"Sweep one end of it with --edge "
+                     f"{' or --edge '.join(ends)}, or split it across two rules to move "
+                     f"them independently."
+                     if ends else
+                     "No single end of it can be told from the others, so split it across "
+                     "two rules before either end can be swept.")
             warn(f"{where}[{row['rule_index']}]",
                  f"compares {row['field']!r} against {row['values']} in one rule. That is "
-                 f"a band, not a threshold, so {row['field']!r} cannot be swept in clause "
-                 f"{row['clause'] or '-'} - ptm.sweep would collapse both ends onto one "
-                 f"number and draw a curve for a rule that fires on nothing. Split it "
-                 f"across two rules if you want to move either end.")
+                 f"a band, not a threshold, so {row['field']!r} cannot be swept as one "
+                 f"dial in clause {row['clause'] or '-'} - ptm.sweep would collapse both "
+                 f"ends onto one number and draw a curve for a rule that fires on "
+                 f"nothing. {route}")
 
         # A rule an earlier rule makes unreachable. Every other check in this
         # module passes it - it parses, it reads real fields, it cites a real

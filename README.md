@@ -123,6 +123,14 @@ required above GBP 75" has exactly one dial on it. `ptm.sweep` turns it.
 Free, offline, six full replays: it is pure rule evaluation over cases already
 on file.
 
+**A clause that states a range gets the same treatment, one end at a time.**
+"Reimbursed between GBP 40 and GBP 100" is two thresholds in one sentence, and
+moving both of them to the same number leaves a rule that fires on nothing — so
+`--edge lower` and `--edge upper` move one bound and leave the other where the
+policy put it. Push one past the other and the sweep says which clause you just
+switched off, rather than drawing the flat stretch of curve that reads as a
+threshold nobody cares about.
+
 ## 5. One curve holds every other dial still, and never says so
 
 ![A joint sweep of two clauses at once, reporting that the two dials interact](docs/grid.gif)
@@ -518,7 +526,9 @@ that change how you read the clips above:
 - **The sweep and the grid are fixture arithmetic.** They report what the
   *rule evaluator* would do, not what a model reading a reworded policy would
   do. Free way to narrow a range; then confirm the shortlist with one real
-  replay.
+  replay. A clause stating a band is swept one end at a time (`--edge lower`,
+  `--edge upper`); what stays refused is moving both ends together, which would
+  collapse the rule onto a single number.
 - **Judge accuracy is measured on the precedent set**, which is by construction
   the *contested* flips. It does not establish accuracy over all cases,
   and on eight rulings the band is very wide.

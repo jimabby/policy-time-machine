@@ -282,13 +282,17 @@ def _rules_check(domain: str, version: str) -> dict:
 
 
 def sweep(domain: str, version: str, field: str, values: list[float] | str,
-          clause: str = "") -> dict:
+          clause: str = "", edge: str = "") -> dict:
     """Re-run the replay at each candidate threshold. See :mod:`ptm.sweep`.
 
     ``values`` may be a list or the raw comma-separated string a query string
     carries. Parsing it here rather than in the plugin is what keeps the plugin
     to routing alone, and therefore keeps this endpoint covered by a test suite
     that does not install FastAPI.
+
+    ``edge`` names one end of a band - ``lower`` or ``upper``. Without it a
+    banded dial is refused rather than swept, because moving both of its ends to
+    the same number leaves a rule that fires on nothing.
 
     Refuses outright when the rules have drifted past the domain's
     ``rules.gate`` of ``fail``. A sweep is arithmetic over the offline rules, so
@@ -308,7 +312,8 @@ def sweep(domain: str, version: str, field: str, values: list[float] | str,
     check = _rules_check(domain, version)
     if check["problems"] and config.rules.gate == "fail":
         raise LookupError("; ".join(check["problems"]))
-    return {**sweep_engine.sweep(domain, version, field, values, clause=clause),
+    return {**sweep_engine.sweep(domain, version, field, values, clause=clause,
+                                 edge=edge),
             "rules_check": check}
 
 
@@ -320,12 +325,19 @@ MAX_GRID_POINTS = 64
 
 def joint_sweep(domain: str, version: str, first_field: str, first_values: list | str,
                 second_field: str, second_values: list | str,
-                first_clause: str = "", second_clause: str = "") -> dict:
-    """Two dials at once. See :func:`ptm.sweep.joint` for why a grid, not two curves."""
+                first_clause: str = "", second_clause: str = "",
+                first_edge: str = "", second_edge: str = "") -> dict:
+    """Two dials at once. See :func:`ptm.sweep.joint` for why a grid, not two curves.
+
+    Each axis carries its own ``edge``, because the two ends of one band are the
+    grid worth running most often and naming them with a single flag could not
+    say that.
+    """
     _checked(domain, version)
     axes = []
-    for field, raw, clause in ((first_field, first_values, first_clause),
-                               (second_field, second_values, second_clause)):
+    for field, raw, clause, edge in (
+            (first_field, first_values, first_clause, first_edge),
+            (second_field, second_values, second_clause, second_edge)):
         values = raw
         if isinstance(values, str):
             try:
@@ -335,7 +347,7 @@ def joint_sweep(domain: str, version: str, first_field: str, first_values: list 
                     f"values for {field} must be comma-separated numbers: {exc}") from exc
         if not values:
             raise LookupError(f"the {field} axis needs at least one value")
-        axes.append({"field": field, "values": values, "clause": clause})
+        axes.append({"field": field, "values": values, "clause": clause, "edge": edge})
     points = len(axes[0]["values"]) * len(axes[1]["values"])
     if points > MAX_GRID_POINTS:
         raise LookupError(

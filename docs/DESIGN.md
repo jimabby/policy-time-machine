@@ -1159,7 +1159,7 @@ ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1259 tests; the engine's 1082 need nothing but Python
+tests/                          1309 tests; the engine's 1128 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1276,7 +1276,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 1082 tests,
+  so a skip there means something has genuinely changed. The engine's 1128 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.
@@ -1338,18 +1338,42 @@ Built and run against `apache/airflow:3.1.0` with
 - The threshold sweep is computed from `offline_rules`, so it answers what the
   rule evaluator would do. Treat it as a free way to narrow a range, then
   confirm the shortlist with a real replay.
-- **A dial that states a band cannot be swept, and says so rather than lying.**
-  The rewrite moves *every* number a field is compared against, which is right
-  for the one-sided threshold a clause normally states and destructive for
+- **A band is swept one end at a time, and never both at once.** The rewrite
+  moves *every* number a field is compared against, which is right for the
+  one-sided threshold a clause normally states and destructive for
   `40 < amount <= 100` — both ends land on the same value and the rule then
   matches nothing at any point of the curve. Nothing raised: the rewrite
   reported two hits and drew a confident curve for a rule that had stopped
   existing. That is the worst failure this module can have, so the sweep and the
-  grid now refuse such a dial by name, `ptm.lint` warns about it before anybody
-  asks, and the Explorer lists it as un-sweepable instead of dropping it — a
-  field that vanished from the menu reads as a policy with no such threshold,
-  which is a different and equally wrong thing to believe. Split the band across
-  two rules to move either end.
+  grid refuse that dial by name, `ptm.lint` warns about it before anybody asks,
+  and the Explorer lists it instead of dropping it — a field that vanished from
+  the menu reads as a policy with no such threshold, which is a different and
+  equally wrong thing to believe.
+
+  Refusing was right and it was not enough. "Reimbursed between GBP 40 and
+  GBP 100" is an ordinary sentence for a policy to contain, and a tool whose
+  headline question is *so what should the number actually be* cannot answer
+  "not that one" to the most common two-sided clause there is. A band is two
+  thresholds written in one sentence, so each of them is nameable: `--edge
+  lower` and `--edge upper` move one bound and leave the other where the policy
+  put it, a grid axis spells the same thing as `2.1:amount@lower=30,45`, and the
+  Explorer offers a band's floor and ceiling as two separate dials. What stays
+  refused is the pair moving together, and a rule whose numbers cannot be told
+  apart at all — two floors in one rule, or a literal that sits on neither end —
+  where `--edge` would still not name a single threshold. Split those across two
+  rules.
+
+  It brings one new way to be wrong, and it is reported rather than plotted
+  quietly: pushing a floor past its own ceiling gives `150 < amount <= 100`,
+  which parses, evaluates, and is false for every case there has ever been. On a
+  curve that arrives as a flat run of rows reading *this threshold is not very
+  sensitive* rather than *this clause has stopped existing*. So the sweep marks
+  those settings, names the clauses they switched off, and says to read them as
+  the end of the band rather than as points on the curve. The test for it is
+  sound rather than complete, like `ptm.safe_eval.implies`: it reasons over the
+  top-level `and` terms and declines to answer about a shape it cannot read,
+  because being wrong in that direction costs a warning nobody sees and being
+  wrong in the other would refuse a live rule.
 - Flip confirmation shares the judge's own sampling behaviour, so offline it
   confirms everything by construction — the same caveat as the stability
   figure, and for the same reason.

@@ -281,9 +281,12 @@ a{color:var(--accent)}
   <div id=disparity></div>
 
   <h2 data-t="h.sweep">Where should the threshold be? <span class=note data-t="h.sweep.note">re-runs the replay at each value, from the offline rules</span></h2>
-  <!-- Dials the sweep refuses, named above the controls that no longer offer
-       them. A field that simply vanished from the list would read as a policy
-       with no such threshold. See ptm/sweep.py:collapsing. -->
+  <!-- Dials the sweep still refuses, named above the controls that do not
+       offer them. A field that simply vanished from the list would read as a
+       policy with no such threshold. A band is no longer one of these: its two
+       ends appear in the menu as separate dials, because each end is a
+       threshold even though the pair cannot move together.
+       See ptm/sweep.py:collapsing and :sweepable_edges. -->
   <div id=swbanded></div>
   <div class=cmp>
     <select id=swdial aria-label="Threshold to sweep"></select>
@@ -541,10 +544,15 @@ en: {
   "dials.none": "no numeric dials in this version",
   "dials.nosweep": "This version's <code>offline_rules</code> compare no fields against numbers, so there is nothing to sweep.",
   "dials.option": "clause {c} · {f} (now {v})",
+  "dials.optionEdge": "clause {c} · {f}, {e} end (now {v})",
+  "dials.end.lower": "lower",
+  "dials.end.upper": "upper",
   "dials.pick": "Pick a dial and press Sweep.",
   "dials.nosecond": "no second dial in this version",
-  "dials.banded": "<strong class=warn>{n} dial{s} cannot be swept.</strong> {list} compared against more than one number in a single rule &mdash; that is a band, not a threshold, so moving it would collapse both ends onto one value and draw a curve for a rule that fires on nothing. Split it across two rules to sweep either end.",
-  "dials.allbanded": "Every dial in this version states a band rather than a threshold, so there is nothing here a sweep can move honestly.",
+  "dials.banded": "<strong class=warn>{n} dial{s} cannot be swept.</strong> {list} compared against more than one number in a single rule, and no single end of that rule can be told from the others &mdash; so there is no one threshold here to move. Split it across two rules to sweep either end. (A plain band is not one of these: its floor and ceiling appear above as separate dials.)",
+  "dials.allbanded": "Every dial in this version compares its field against several numbers that cannot be told apart, so there is nothing here a sweep can move honestly.",
+  "sweep.empties": "clause matches nothing",
+  "sweep.emptied": "<strong class=warn>At {settings} this end crosses the other one,</strong> so clause {clauses} matches no case at all. Those rows count a policy with that clause switched off &mdash; they are the end of the band, not points on a threshold curve.",
   "grid.invite": "A single curve holds every other threshold still and never says so. Press <strong>Sweep both</strong> to find out whether that assumption survives.",
   "sweep.pickvalues": "pick a dial and some values", "sweep.running": "running...",
   "sweep.failed": "That sweep could not be run. Values must be comma-separated numbers, and the dial must exist in this version.",
@@ -955,10 +963,15 @@ zh: {
   "dials.none": "该版本没有数值型刻度",
   "dials.nosweep": "该版本的 <code>offline_rules</code> 没有把任何字段与数字比较，因此无可扫描。",
   "dials.option": "条款 {c} · {f}（当前 {v}）",
+  "dials.optionEdge": "条款 {c} · {f}，{e}（当前 {v}）",
+  "dials.end.lower": "下端",
+  "dials.end.upper": "上端",
   "dials.pick": "请选择一个刻度并按「扫描」。",
   "dials.nosecond": "该版本没有第二个刻度",
-  "dials.banded": "<strong class=warn>有 {n} 个刻度无法扫描。</strong>{list} 在同一条规则中与不止一个数字比较——那是一个区间，而不是一个阈值。移动它会把区间两端压成同一个值，画出的曲线所描述的规则对任何案例都不生效。要扫描任一端，请先拆成两条规则。",
-  "dials.allbanded": "该版本的每个刻度都是区间而非阈值，因此没有任何刻度能被诚实地扫描。",
+  "dials.banded": "<strong class=warn>有 {n} 个刻度无法扫描。</strong>{list} 在同一条规则中与不止一个数字比较，且无法分辨其中哪一个是单独的一端——因此这里没有可移动的单一阈值。要扫描任一端，请先拆成两条规则。（普通区间不在此列：它的下端与上端已作为两个独立刻度列在上方。）",
+  "dials.allbanded": "该版本的每个刻度都与多个无法分辨的数字比较，因此没有任何刻度能被诚实地扫描。",
+  "sweep.empties": "该条款不匹配任何案例",
+  "sweep.emptied": "<strong class=warn>在 {settings} 处，这一端越过了另一端，</strong>因此条款 {clauses} 不匹配任何案例。那些行统计的是该条款被关闭后的政策——它们是区间的尽头，而不是阈值曲线上的点。",
   "grid.invite": "单条曲线会把其余所有阈值固定不动，而且从不说明这一点。按<strong>同时扫描两个</strong>，看看这个假设是否成立。",
   "sweep.pickvalues": "请选择刻度并填入取值", "sweep.running": "运行中…",
   "sweep.failed": "该扫描无法运行。取值必须是以逗号分隔的数字，且该刻度必须存在于此版本中。",
@@ -1687,6 +1700,21 @@ function renderConflicts(rows) {
 }
 
 // ----------------------------------------------------- threshold sweep
+// A dial's identity in a <select>. The end is part of it: the floor and the
+// ceiling of one band are two different dials sharing a clause and a field, and
+// a key that dropped the end would make them the same option twice.
+function dialKey(d) {
+  return `${d.clause}|${d.field}|${d.edge || ""}`;
+}
+
+function dialOption(d) {
+  const label = d.edge
+    ? t("dials.optionEdge", {c: esc(d.clause || "-"), f: esc(d.field),
+                             e: t(`dials.end.${d.edge}`), v: esc(d.value)})
+    : t("dials.option", {c: esc(d.clause || "-"), f: esc(d.field), v: esc(d.value)});
+  return `<option value="${esc(dialKey(d))}">${label}</option>`;
+}
+
 function renderDials(allDials) {
   const select = $("#swdial"), second = $("#swdial2");
   // A dial whose rule states a band rather than a threshold. The API refuses to
@@ -1695,8 +1723,14 @@ function renderDials(allDials) {
   // is offering a button whose only outcome is an error. Named rather than
   // silently dropped: a field that vanishes from the list reads as a policy
   // that has no such threshold. See ptm/sweep.py:collapsing.
-  const dials = allDials.filter(d => !d.collapses);
-  const banded = allDials.filter(d => d.collapses);
+  // A band is two thresholds written in one sentence. Moving them together
+  // destroys the rule, which is why the whole-rule sweep refuses it - but each
+  // end on its own is an ordinary dial, so it is offered as one. Only a rule
+  // whose numbers cannot be told apart at all is left with nothing to offer.
+  const dials = allDials.flatMap(d => d.collapses
+    ? (d.edges || []).map(edge => ({...d, edge, value: d.edge_values[edge]}))
+    : [{...d, edge: ""}]);
+  const banded = allDials.filter(d => d.collapses && !(d.edges || []).length);
   const bandNote = banded.length
     ? `<p class=hero>${t(dials.length ? "dials.banded" : "dials.allbanded", {
         n: num(banded.length), s: plural(banded.length),
@@ -1718,9 +1752,7 @@ function renderDials(allDials) {
   }
   select.disabled = $("#swgo").disabled = false;
   // Same field in two clauses is two different dials; label them as such.
-  select.innerHTML = dials.map(d =>
-    `<option value="${esc(d.clause)}|${esc(d.field)}">${t("dials.option",
-      {c: esc(d.clause || "-"), f: esc(d.field), v: esc(d.value)})}</option>`).join("");
+  select.innerHTML = dials.map(d => dialOption(d)).join("");
   const first = dials[0].value;
   $("#swvalues").value = [0.5, 0.75, 1, 1.5, 2]
     .map(m => Math.round(first * m * 100) / 100).join(",");
@@ -1737,11 +1769,9 @@ function renderDials(allDials) {
     return;
   }
   second.disabled = $("#swgo2").disabled = false;
-  second.innerHTML = others.map(d =>
-    `<option value="${esc(d.clause)}|${esc(d.field)}">${t("dials.option",
-      {c: esc(d.clause || "-"), f: esc(d.field), v: esc(d.value)})}</option>`).join("");
+  second.innerHTML = others.map(d => dialOption(d)).join("");
   const preferred = others.find(d => d.field !== dials[0].field) || others[0];
-  second.value = `${preferred.clause}|${preferred.field}`;
+  second.value = dialKey(preferred);
   $("#swvalues2").value = [0.5, 1, 1.5, 2]
     .map(m => Math.round(preferred.value * m * 100) / 100).join(",");
   $("#sweepgrid").innerHTML = `<div class=empty>${t("grid.invite")}</div>`;
@@ -1749,14 +1779,15 @@ function renderDials(allDials) {
 
 async function runSweep() {
   const domain = $("#domain").value, version = $("#version").value;
-  const [clause, field] = ($("#swdial").value || "|").split("|");
+  const [clause, field, edge] = ($("#swdial").value || "||").split("|");
   const values = $("#swvalues").value.trim();
   if (!field || !values) { $("#swnote").textContent = t("sweep.pickvalues"); return; }
   $("#swnote").textContent = t("sweep.running");
   let result;
   try {
     result = await api(`/api/sweep/${seg(domain)}/${seg(version)}?field=${encodeURIComponent(field)}` +
-                       `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}`);
+                       `&values=${encodeURIComponent(values)}&clause=${encodeURIComponent(clause)}` +
+                       `&edge=${encodeURIComponent(edge || "")}`);
   } catch (e) {
     $("#swnote").textContent = "";
     $("#sweep").innerHTML = `<div class=empty>${t("sweep.failed")}</div>`;
@@ -1771,7 +1802,19 @@ async function runSweep() {
         field: esc(inert.field),
         where: inert.clause ? `${t("sweep.clause")} ${esc(inert.clause)} ` : ""})}</p>`
     : "";
-  $("#sweep").innerHTML = inertNote +
+  // Settings that put the band's ends the wrong way round. The rows are real
+  // and their numbers are right; what they count is a policy with that clause
+  // switched off, which is not a point on a threshold curve. Above the table,
+  // because a reader scanning the column for a round number has to meet it
+  // before they pick one. See ptm/sweep.py:emptied.
+  const emptied = result.emptied || [];
+  const emptiedNote = emptied.length
+    ? `<p class=hero>${t("sweep.emptied", {
+        settings: esc(emptied.map(row => row.value).join(", ")),
+        clauses: esc([...new Set(emptied.flatMap(row =>
+          row.rules.map(r => r.clause || "-")))].join(", "))})}</p>`
+    : "";
+  $("#sweep").innerHTML = emptiedNote + inertNote +
     `<div class=spark>${result.points.map(p =>
       `<i class="${p.is_current ? "cur" : ""}" style="height:${(p.flips / max * 100).toFixed(1)}%"
         title="${esc(p.value)}: ${p.flips} flips"></i>`).join("")}</div>` +
@@ -1782,7 +1825,8 @@ async function runSweep() {
        {label: t("sweep.col.net"), num: 1}, {label: t("sweep.col.caused"), num: 1}],
       result.points.map(p => `<tr${p.is_current ? ' class=warn' : ""}>
         <td>${esc(p.value)}${p.is_current
-          ? ` <span class=sub>${t("sweep.current")}</span>` : ""}</td>
+          ? ` <span class=sub>${t("sweep.current")}</span>` : ""}${p.empties_rule
+          ? ` <span class=sub>${t("sweep.empties")}</span>` : ""}</td>
         <td class=num>${num(p.flips)}</td>
         <td class=num>${pct(p.flip_rate)}</td>
         <td class="num loose">${num(p.loosening)}</td>
@@ -1794,8 +1838,8 @@ async function runSweep() {
 
 async function runGrid() {
   const domain = $("#domain").value, version = $("#version").value;
-  const [clause, field] = ($("#swdial").value || "|").split("|");
-  const [clause2, field2] = ($("#swdial2").value || "|").split("|");
+  const [clause, field, edge] = ($("#swdial").value || "||").split("|");
+  const [clause2, field2, edge2] = ($("#swdial2").value || "||").split("|");
   const values = $("#swvalues").value.trim(), values2 = $("#swvalues2").value.trim();
   if (!field || !field2 || !values || !values2) {
     $("#swnote2").textContent = t("grid.pickvalues"); return;
@@ -1805,9 +1849,9 @@ async function runGrid() {
   try {
     result = await api(`/api/sweep-grid/${seg(domain)}/${seg(version)}` +
       `?field=${encodeURIComponent(field)}&values=${encodeURIComponent(values)}` +
-      `&clause=${encodeURIComponent(clause)}` +
+      `&clause=${encodeURIComponent(clause)}&edge=${encodeURIComponent(edge || "")}` +
       `&field2=${encodeURIComponent(field2)}&values2=${encodeURIComponent(values2)}` +
-      `&clause2=${encodeURIComponent(clause2)}`);
+      `&clause2=${encodeURIComponent(clause2)}&edge2=${encodeURIComponent(edge2 || "")}`);
   } catch (e) {
     $("#swnote2").textContent = "";
     $("#sweepgrid").innerHTML = `<div class=empty>${t("grid.failed")}</div>`;

@@ -1025,3 +1025,76 @@ class TestReplayEvidence:
         assert "came back the same" in text
         assert "historical cases: same" in text
         assert not page.errors
+
+
+# --------------------------------------------------------------------------
+# No browser, no Airflow, no FastAPI: this one reads the page as text, so it
+# runs on every checkout rather than only in the job that installs Chromium.
+
+
+class TestTheTwoLanguagesStayTheSameSize:
+    """Both translation tables hold the same keys, and each key once.
+
+    ``t()`` falls back to the key's English entry when the current language has
+    none, which is the right behaviour for a reader and the wrong one for a
+    build: a key added to ``en`` and forgotten in ``zh`` renders in English
+    inside a Chinese page and nothing anywhere says so. The browser suite
+    cannot catch it either - it asserts that named panels are non-empty and
+    contain particular Chinese words, and a panel that is half English is both.
+
+    A duplicate key is the same failure written the other way. The table is an
+    object literal, so the second entry silently wins and the first is dead
+    text that somebody translated.
+    """
+
+    def keys(self) -> dict:
+        """Every key in each language block, in source order."""
+        import re
+
+        text = (REPO / "plugins" / "dashboard.html").read_text(encoding="utf-8")
+        start = text.index("const I18N = {")
+        opening = text.index("{", start)
+        depth = 0
+        for end in range(opening, len(text)):
+            if text[end] == "{":
+                depth += 1
+            elif text[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+        body = text[opening + 1:end]
+        out = {}
+        for match in re.finditer(r"^(\w+):\s*\{$", body, re.M):
+            block = body.index("{", match.start())
+            depth = 0
+            for close in range(block, len(body)):
+                if body[close] == "{":
+                    depth += 1
+                elif body[close] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            out[match.group(1)] = re.findall(r'"([^"]+)"\s*:', body[block:close + 1])
+        return out
+
+    def test_both_languages_are_present(self):
+        assert set(self.keys()) == {"en", "zh"}
+
+    def test_neither_language_defines_a_key_twice(self):
+        for language, found in self.keys().items():
+            repeated = sorted({k for k in found if found.count(k) > 1})
+            assert not repeated, f"{language} defines these twice: {repeated}"
+
+    def test_every_english_string_has_a_chinese_one(self):
+        found = self.keys()
+        missing = sorted(set(found["en"]) - set(found["zh"]))
+        assert not missing, (
+            f"{len(missing)} key(s) would render in English inside a Chinese "
+            f"page: {missing}")
+
+    def test_no_chinese_string_is_left_without_an_english_one(self):
+        """The other direction is a dead entry rather than a visible fault, and
+        it is the shape a rename leaves behind."""
+        found = self.keys()
+        orphaned = sorted(set(found["zh"]) - set(found["en"]))
+        assert not orphaned, f"{len(orphaned)} key(s) no English table defines: {orphaned}"

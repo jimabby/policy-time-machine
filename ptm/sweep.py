@@ -29,13 +29,116 @@ from .judge import offline_verdict
 from .models import Case
 from .store import load_cases, now_utc
 
+#: Which side of the field a literal sits on, read from the operator between
+#: them. ``amount < 100`` puts 100 *above* the field and ``100 < amount`` puts
+#: it below, so the same operator means opposite things depending on which side
+#: of it the field was written. Both spellings are ordinary and a check that
+#: knew only one would move the wrong end of half the bands anybody writes.
+_FIELD_ON_LEFT = {ast.Lt: "upper", ast.LtE: "upper", ast.Gt: "lower",
+                  ast.GtE: "lower", ast.Eq: "point"}
+_FIELD_ON_RIGHT = {ast.Lt: "lower", ast.LtE: "lower", ast.Gt: "upper",
+                   ast.GtE: "upper", ast.Eq: "point"}
+
+#: Operators whose bound includes its own value, which is the difference
+#: between ``40 < x <= 40`` (empty) and ``40 <= x <= 40`` (one value).
+_CLOSED = (ast.LtE, ast.GtE, ast.Eq)
+
+#: The two ends a caller may ask for by name.
+EDGES = ("lower", "upper")
+
+#: Where a literal sits when the shape of the comparison does not say. A number
+#: in the same node as the field but not adjacent to it - ``5 < 10 < amount`` -
+#: is one, and so is anything else this cannot place. It is kept rather than
+#: dropped, because a bound nobody can classify is the one case where moving
+#: "the lower end" would move something else entirely.
+LOOSE = "loose"
+
+
+def _is_number(node: ast.AST) -> bool:
+    """A numeric literal, with ``True``/``False`` excluded as they are elsewhere here."""
+    return (isinstance(node, ast.Constant) and not isinstance(node.value, bool)
+            and isinstance(node.value, (int, float)))
+
+
+def _sides(node: ast.Compare, field: str) -> dict[int, tuple[str, bool]]:
+    """Which side of ``field`` each literal in one comparison sits on.
+
+    Keyed by position in ``[left, *comparators]``, valued ``(side, closed)``.
+    Chained and conjunctive spellings of a band land on the same answer, which
+    is the property :func:`compared_values` already has and the reason the two
+    are read together: ``40 < x <= 100`` is one node with two literals, and
+    ``x > 40 and x <= 100`` is two nodes with one each.
+
+    Only a comparison mentioning exactly one field is classified, which is the
+    same gate :func:`compared_values` applies - ``amount > other`` states a
+    relation between two unknowns and has no dial on it.
+    """
+    operands = [node.left, *node.comparators]
+    names = [n.id for n in operands if isinstance(n, ast.Name)]
+    if len(names) != 1 or names[0] != field:
+        return {}
+    out: dict[int, tuple[str, bool]] = {}
+    for i, op in enumerate(node.ops):
+        left, right = operands[i], operands[i + 1]
+        closed = isinstance(op, _CLOSED)
+        if isinstance(left, ast.Name) and left.id == field and _is_number(right):
+            side = _FIELD_ON_LEFT.get(type(op))
+            if side:
+                out[i + 1] = (side, closed)
+        elif isinstance(right, ast.Name) and right.id == field and _is_number(left):
+            side = _FIELD_ON_RIGHT.get(type(op))
+            if side:
+                out[i] = (side, closed)
+    return out
+
+
+def bounds_in(expression: str, field: str) -> dict[str, list[dict]]:
+    """Every number ``field`` is compared against, grouped by which end it states.
+
+    This is what makes a band sweepable one end at a time. ``compared_values``
+    answers *how many numbers is this field compared against*, which is all that
+    is needed to refuse a dial; moving one end of it needs to know **which**
+    number is the floor and which is the ceiling.
+
+    Four buckets: ``lower``, ``upper``, ``point`` (an ``==``, which is both ends
+    at once and therefore not an end anybody can move on its own) and
+    :data:`LOOSE` for a literal whose position this cannot establish. Callers
+    treat a non-empty ``loose`` bucket as "do not touch this rule" - see
+    :func:`collapsing`.
+    """
+    out: dict[str, list[dict]] = {"lower": [], "upper": [], "point": [], LOOSE: []}
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return out
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        names = [n.id for n in operands if isinstance(n, ast.Name)]
+        numbers = [i for i, n in enumerate(operands) if _is_number(n)]
+        if len(names) != 1 or names[0] != field or not numbers:
+            continue
+        sides = _sides(node, field)
+        for i in numbers:
+            side, closed = sides.get(i, (LOOSE, False))
+            out[side].append({"value": operands[i].value, "closed": closed})
+    return out
+
 
 class _Retarget(ast.NodeTransformer):
-    """Rewrite every numeric literal compared against ``field`` to ``value``."""
+    """Rewrite the numeric literals compared against ``field`` to ``value``.
 
-    def __init__(self, field: str, value: float) -> None:
+    ``edge`` narrows that to one end of a band - ``lower`` or ``upper`` - and
+    leaves the other where it is. Blank moves every literal, which is the
+    behaviour every caller had before ends could be named and the right one for
+    the one-sided threshold a clause normally states.
+    """
+
+    def __init__(self, field: str, value: float, edge: str = "") -> None:
         self.field = field
         self.value = value
+        self.edge = edge
         self.hits = 0
 
     def visit_Compare(self, node: ast.Compare) -> ast.Compare:
@@ -45,10 +148,13 @@ class _Retarget(ast.NodeTransformer):
                      if isinstance(n, ast.Name) and n.id == self.field}
         if not positions:
             return node
+        sides = _sides(node, self.field) if self.edge else {}
         for i, operand in enumerate(operands):
             if i in positions or not isinstance(operand, ast.Constant):
                 continue
             if isinstance(operand.value, bool) or not isinstance(operand.value, (int, float)):
+                continue
+            if self.edge and sides.get(i, (LOOSE, False))[0] != self.edge:
                 continue
             operands[i] = ast.Constant(value=self.value)
             self.hits += 1
@@ -56,19 +162,91 @@ class _Retarget(ast.NodeTransformer):
         return node
 
 
-def retarget(expression: str, field: str, value: float) -> tuple[str, int]:
-    """Move every number ``field`` is compared against, and say how many moved.
+def retarget(expression: str, field: str, value: float, edge: str = "") -> tuple[str, int]:
+    """Move the numbers ``field`` is compared against, and say how many moved.
 
-    A deliberately mechanical primitive: it moves *every* literal, which is
-    right for the one-sided threshold a clause normally states and wrong for a
-    two-sided one. ``40 < amount <= 100`` comes back as ``60 < amount <= 60``,
-    a condition no case can satisfy. Callers that are drawing a curve somebody
-    will act on must ask :func:`collapsing` first - see why there.
+    A deliberately mechanical primitive. Without ``edge`` it moves *every*
+    literal, which is right for the one-sided threshold a clause normally
+    states and wrong for a two-sided one: ``40 < amount <= 100`` comes back as
+    ``60 < amount <= 60``, a condition no case can satisfy. Callers that are
+    drawing a curve somebody will act on must ask :func:`collapsing` first -
+    see why there.
+
+    ``edge`` is the way to move a band rather than destroy it. ``"lower"``
+    moves only the floor and ``"upper"`` only the ceiling, so the same rule
+    comes back as ``60 < amount <= 100`` - which is the rule the policy owner
+    was actually asking about. It does not make the result *sensible* on its
+    own: pushing a floor past its ceiling still empties the rule, and that is a
+    real setting with a real meaning rather than a rewrite artefact, so it is
+    reported by :func:`emptied` rather than refused here.
     """
     tree = ast.parse(expression, mode="eval")
-    rewriter = _Retarget(field, value)
+    rewriter = _Retarget(field, value, edge)
     tree = ast.fix_missing_locations(rewriter.visit(tree))
     return ast.unparse(tree), rewriter.hits
+
+
+def _and_terms(node: ast.AST) -> list[ast.AST]:
+    """The top-level ``and`` terms of an expression, flattened."""
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        out: list[ast.AST] = []
+        for value in node.values:
+            out.extend(_and_terms(value))
+        return out
+    return [node]
+
+
+def _mentions(node: ast.AST, field: str) -> bool:
+    return any(isinstance(n, ast.Name) and n.id == field for n in ast.walk(node))
+
+
+def empty_for(expression: str, field: str) -> bool:
+    """Whether no value of ``field`` can satisfy this rule any more.
+
+    The failure this exists to catch is a floor pushed above its own ceiling.
+    ``40 < amount <= 100`` swept on its lower edge to 150 becomes
+    ``150 < amount <= 100``, which is a perfectly legal expression that matches
+    nothing - and a flat row of zeroes on a curve reads as "this threshold is
+    not very sensitive" rather than as "this clause has stopped existing".
+
+    Sound rather than complete, the same way :func:`ptm.safe_eval.implies` is.
+    It reasons only over the top-level ``and`` terms, because those are the ones
+    that must *all* hold; a term that mentions the field under an ``or`` or
+    inside anything else makes the question unanswerable here, and it answers
+    ``False`` rather than guessing. Being wrong in this direction costs a
+    warning nobody sees. Being wrong in the other would refuse a live rule.
+    """
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return False
+    low, low_closed = float("-inf"), True
+    high, high_closed = float("inf"), True
+    constrained = False
+    for term in _and_terms(tree.body):
+        if not isinstance(term, ast.Compare):
+            if _mentions(term, field):
+                return False  # a shape this cannot reason about soundly
+            continue
+        sides = _sides(term, field)
+        if not sides and _mentions(term, field):
+            continue
+        operands = [term.left, *term.comparators]
+        for i, (side, closed) in sides.items():
+            value = operands[i].value
+            if side in ("lower", "point") and (value > low or (value == low and not closed)):
+                low, low_closed = value, closed if side == "lower" else True
+                constrained = True
+            if side in ("upper", "point") and (value < high or (value == high and not closed)):
+                high, high_closed = value, closed if side == "upper" else True
+                constrained = True
+    if not constrained:
+        return False
+    if low > high:
+        return True
+    # Equal ends are empty unless both of them include the value itself:
+    # ``40 <= x <= 40`` admits exactly 40, ``40 < x <= 40`` admits nothing.
+    return low == high and not (low_closed and high_closed)
 
 
 def compared_values(expression: str) -> dict[str, list]:
@@ -99,7 +277,7 @@ def compared_values(expression: str) -> dict[str, list]:
 
 
 def collapsing(domain: DomainConfig, version: str, field: str = "",
-               clause: str = "") -> list[dict]:
+               clause: str = "", edge: str = "") -> list[dict]:
     """Rules a sweep would silently destroy rather than move.
 
     :func:`retarget` moves every literal a field is compared against, so a rule
@@ -113,6 +291,14 @@ def collapsing(domain: DomainConfig, version: str, field: str = "",
     So it is detected rather than caveated. ``field`` and ``clause`` narrow it
     to the dial somebody actually asked for; blank checks every dial in the
     version, which is what :mod:`ptm.lint` wants.
+
+    ``edge`` is what turns the refusal back into a sweep. A band has two ends
+    and each of them *is* a single threshold, so ``lower`` or ``upper`` asks for
+    one of them by name, and the rule is reported only when that end is still
+    ambiguous: two floors stated in one rule, or a literal :func:`bounds_in`
+    could not place on either end. Naming an end the rule does not state is not
+    reported here - it produces no rewrite, and :func:`sweep` already refuses a
+    dial it cannot move, with a message naming the dials that exist.
     """
     found: list[dict] = []
     for index, rule in enumerate(domain.offline_rules.get(version, [])):
@@ -122,19 +308,29 @@ def collapsing(domain: DomainConfig, version: str, field: str = "",
         for name, values in compared_values(expression).items():
             if field and name != field:
                 continue
-            if len(set(values)) > 1:
-                found.append({
-                    "clause": str(rule.get("clause", "")),
-                    "rule_index": index,
-                    "field": name,
-                    "values": sorted(set(values)),
-                    "expression": expression,
-                })
+            if len(set(values)) <= 1:
+                continue
+            if edge in EDGES:
+                sides = bounds_in(expression, name)
+                # One number on the end being moved, and every number in the
+                # rule placed on some end: the ambiguity that made this a
+                # refusal is gone, and what is left is an ordinary threshold.
+                if len({b["value"] for b in sides[edge]}) <= 1 and not sides[LOOSE]:
+                    continue
+            found.append({
+                "clause": str(rule.get("clause", "")),
+                "rule_index": index,
+                "field": name,
+                "values": sorted(set(values)),
+                "expression": expression,
+                "edge": edge,
+            })
     return found
 
 
 def describe_collapsing(found: list[dict], domain_name: str, version: str) -> str:
     """Why a sweep refused, in the terms the person who wrote the rule reads."""
+    edge = next((row.get("edge") for row in found if row.get("edge")), "")
     lines = [f"{len(found)} rule(s) in {domain_name}/{version} compare a field to more "
              f"than one number, so moving that dial would not move a threshold - it "
              f"would collapse the comparison:"]
@@ -142,9 +338,20 @@ def describe_collapsing(found: list[dict], domain_name: str, version: str) -> st
         lines.append(f"  clause {row['clause'] or '-'} rule[{row['rule_index']}]: "
                      f"{row['field']} is compared against {row['values']} in "
                      f"{row['expression']!r}")
-    lines.append("  every setting swept would rewrite all of them to the same number, and "
-                 "the rule would then match nothing at any point on the curve. Split the "
-                 "band across two rules, or sweep a dial that states one threshold.")
+    if edge:
+        # The caller has already named an end, so the advice below would be
+        # telling them to do the thing they just did. Say what is ambiguous
+        # about the end they asked for instead.
+        lines.append(f"  more than one {edge} bound is stated here, or one of these "
+                     f"numbers sits on neither end, so '--edge {edge}' does not name a "
+                     f"single threshold in this rule. Split the band across two rules to "
+                     f"move its ends independently.")
+    else:
+        lines.append("  every setting swept would rewrite all of them to the same number, "
+                     "and the rule would then match nothing at any point on the curve. "
+                     "Sweep one end of it instead: '--edge lower' and '--edge upper' each "
+                     "move one bound and leave the other where it is. Split the band "
+                     "across two rules to move them independently.")
     return "\n".join(lines)
 
 
@@ -166,24 +373,56 @@ def thresholds(domain: DomainConfig, version: str) -> list[dict]:
                 "value": values[0],
                 "outcome": rule.get("outcome", ""),
                 "expression": expression,
-                # A dial listed so it can be refused, not so it can be swept.
-                # The menu has to show it - a field that silently vanished from
-                # the list is a reader concluding the policy has no such
-                # threshold - and it has to say that sweeping it is not a thing
-                # this can do. See :func:`collapsing`.
+                # A dial the whole-rule rewrite cannot move. The menu has to
+                # show it - a field that silently vanished from the list is a
+                # reader concluding the policy has no such threshold - and it
+                # has to say so. See :func:`collapsing`.
                 "collapses": len(set(values)) > 1,
                 "values": sorted(set(values)),
+                # ...and which of its ends *can* be moved one at a time. A band
+                # is two thresholds written in one sentence, so "not sweepable"
+                # was always too strong a thing to say about it: it is the pair
+                # that cannot move together, not either end on its own.
+                "edges": sweepable_edges(expression, name),
+                # The number sitting on each of those ends. Reported rather than
+                # left to be inferred from the sorted pair above: "the lower end
+                # is the smaller number" is true of a band and not of a dial
+                # that states only a ceiling, and a caller that guessed would
+                # label the wrong column on exactly the rules this is for.
+                "edge_values": {edge: value for edge in EDGES
+                                if (value := _edge_value(expression, name, edge))
+                                is not None},
             })
     return found
 
 
+def sweepable_edges(expression: str, field: str) -> list[str]:
+    """Which ends of a dial ``--edge`` can move on their own, in menu order.
+
+    An end qualifies when the rule states exactly one bound there and every
+    number in the rule sits on one end or the other - the same test
+    :func:`collapsing` applies, asked in the affirmative so the dial list can
+    offer the route rather than only refuse the other one.
+
+    A plain one-sided threshold reports the single end it states. That is not
+    a suggestion to use ``--edge`` on it - the whole-rule rewrite already moves
+    it correctly - but it is true, and a dial list that said a threshold had no
+    ends would be a stranger thing to read.
+    """
+    sides = bounds_in(expression, field)
+    if sides[LOOSE]:
+        return []
+    return [edge for edge in EDGES if len({b["value"] for b in sides[edge]}) == 1]
+
+
 def variant(domain: DomainConfig, version: str, field: str, value: float,
-            clause: str = "") -> tuple[DomainConfig, int]:
+            clause: str = "", edge: str = "") -> tuple[DomainConfig, int]:
     """A copy of the domain whose ``version`` rules use ``value`` for ``field``.
 
     ``clause`` narrows the rewrite to the rules citing it, which is what you
     want when a field appears in two clauses not meant to move together. Blank
-    moves every occurrence in the version.
+    moves every occurrence in the version. ``edge`` narrows it to one end of a
+    band - see :func:`retarget`.
     """
     patched = domain.model_copy(deep=True)
     hits = 0
@@ -191,7 +430,7 @@ def variant(domain: DomainConfig, version: str, field: str, value: float,
         if clause and str(rule.get("clause", "")) != clause:
             continue
         try:
-            rewritten, n = retarget(rule.get("when") or "", field, value)
+            rewritten, n = retarget(rule.get("when") or "", field, value, edge)
         except SyntaxError:
             continue
         if n:
@@ -200,16 +439,61 @@ def variant(domain: DomainConfig, version: str, field: str, value: float,
     return patched, hits
 
 
+def emptied(before: DomainConfig, after: DomainConfig, version: str,
+            field: str) -> list[dict]:
+    """Rules this setting has just stopped from matching anything.
+
+    Moving one end of a band past the other is a legal rewrite that produces a
+    legal rule: ``150 < amount <= 100`` parses, evaluates, and is false for
+    every case there has ever been. On a curve that arrives as a row of zeroes,
+    which reads as *this threshold is not very sensitive* rather than as *this
+    clause no longer exists* - the same confident wrong answer
+    :func:`collapsing` refuses to make, arriving one step later.
+
+    So it is reported per setting rather than refused outright, because unlike
+    a collapse it is not an artefact: a floor above its own ceiling is what the
+    number the caller typed actually means, and somebody sweeping past the end
+    of a band is entitled to see where that happens. Only rules the rewrite
+    *changed* are reported - a rule already empty before the sweep is a lint
+    finding, not a fact about this setting.
+    """
+    old_rules = before.offline_rules.get(version, [])
+    new_rules = after.offline_rules.get(version, [])
+    found: list[dict] = []
+    for index, rule in enumerate(new_rules):
+        expression = rule.get("when") or ""
+        was = old_rules[index].get("when") or "" if index < len(old_rules) else ""
+        if expression == was or not empty_for(expression, field):
+            continue
+        if empty_for(was, field):
+            continue
+        found.append({
+            "clause": str(rule.get("clause", "")),
+            "rule_index": index,
+            "outcome": rule.get("outcome", ""),
+            "expression": expression,
+            "was": was,
+        })
+    return found
+
+
 def sweep(domain_name: str, version: str, field: str, values: list[float],
           clause: str = "", baseline_version: str | None = None,
-          cases: list[Case] | None = None) -> dict:
+          cases: list[Case] | None = None, edge: str = "") -> dict:
     """Re-run the replay at each candidate threshold.
 
     The baseline is judged once and reused: it is the policy already in force,
     which no candidate threshold changes, so re-judging it per value would only
     make the sweep slower and let the deviation counts drift between points that
     are supposed to be comparable.
+
+    ``edge`` sweeps one end of a band - ``lower`` or ``upper`` - leaving the
+    other where the policy put it. Without it a band is refused rather than
+    swept, because moving both ends to the same number destroys the rule; see
+    :func:`collapsing`.
     """
+    if edge and edge not in EDGES:
+        raise LookupError(f"edge must be one of {list(EDGES)}, not {edge!r}")
     domain = load_domain(domain_name)
     if cases is None:
         cases = load_cases(domain_name, until=now_utc())
@@ -223,24 +507,36 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
 
     # Before anything is measured: a band rule does not move, it collapses, and
     # a curve drawn over one is wrong rather than missing. See :func:`collapsing`.
-    broken = collapsing(domain, version, field, clause)
+    broken = collapsing(domain, version, field, clause, edge)
     if broken:
         raise LookupError(describe_collapsing(broken, domain_name, version))
 
     dials = thresholds(domain, version)
     current = next((t["value"] for t in dials
                     if t["field"] == field and (not clause or t["clause"] == clause)), None)
+    if edge:
+        # With an end named, "the setting in force" is the number on that end
+        # rather than the first number in the rule - otherwise the band's floor
+        # gets the <- current marker while the ceiling is being swept.
+        current = next((_edge_value(t["expression"], t["field"], edge) for t in dials
+                        if t["field"] == field and (not clause or t["clause"] == clause)
+                        and _edge_value(t["expression"], t["field"], edge) is not None),
+                       None)
 
     points = []
     signatures = []
+    dead: list[dict] = []
     for value in values:
-        patched, hits = variant(domain, version, field, value, clause)
+        patched, hits = variant(domain, version, field, value, clause, edge)
         if not hits:
             where = f" clause {clause}" if clause else ""
+            what = (f"states a {edge} bound on {field!r}" if edge
+                    else f"compares {field!r} to a number")
             raise LookupError(
-                f"no rule in {domain_name}/{version}{where} compares {field!r} to a number; "
+                f"no rule in {domain_name}/{version}{where} {what}; "
                 f"available dials: {sorted({(t['clause'], t['field']) for t in dials})}"
             )
+        gone = emptied(domain, patched, version, field) if edge else []
         verdicts = {c.case_id: offline_verdict(c, patched, version) for c in cases}
         found = diff.flips(cases, verdicts, patched, baseline=baseline)
         summary = diff.summarise(found, len(cases), patched)
@@ -248,6 +544,8 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
         # through different cases, and calling that "no effect" would be the same
         # confident wrong answer the collapsing check exists to prevent.
         signatures.append(_signature(found))
+        if gone:
+            dead.append({"value": value, "rules": gone})
         points.append({
             "value": value,
             "is_current": current is not None and float(value) == float(current),
@@ -259,6 +557,10 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
             "policy_driven_flips": summary["policy_driven_flips"],
             "policy_driven_net_impact": summary["policy_driven_net_impact"],
             "deviation_flips": summary["deviation_flips"],
+            # This setting put the band's ends the wrong way round, so the rule
+            # matched nothing. The row is real and the number is right; what it
+            # counts is a policy with that clause switched off.
+            "empties_rule": bool(gone),
         })
 
     return {
@@ -266,14 +568,33 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
         "version": version,
         "field": field,
         "clause": clause,
+        "edge": edge,
         "current_value": current,
         "baseline_version": baseline_version or "",
         "cases": len(cases),
         "impact_unit": domain.impact_unit,
         "points": points,
+        "emptied": dead,
         "inert": (_reading(len(set(signatures)) == 1, field, clause)
                   if len(signatures) > 1 else _unmeasured()),
     }
+
+
+def _edge_value(expression: str, field: str, edge: str):
+    """The number stated on one end of a dial, or None when it states no such end."""
+    values = {b["value"] for b in bounds_in(expression, field)[edge]}
+    return values.pop() if len(values) == 1 else None
+
+
+def describe_emptied(dead: list[dict], field: str, edge: str) -> str:
+    """The settings that switched a clause off, said rather than left in a column."""
+    settings = ", ".join(str(row["value"]) for row in dead)
+    clauses = sorted({r["clause"] or "-" for row in dead for r in row["rules"]})
+    return (f"at {settings} the {edge} bound crosses the other end, so clause(s) "
+            f"{', '.join(clauses)} match no case at all. Those rows count a policy with "
+            f"that clause switched off, not a threshold on {field} that stopped "
+            f"mattering - read them as the end of the band rather than as points on "
+            f"the curve.")
 
 
 def _signature(found: list) -> frozenset:
@@ -350,14 +671,18 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
     if not cases:
         raise LookupError(f"no {domain_name} cases on file; seed the history first")
     if first.get("field") == second.get("field") and \
-            str(first.get("clause") or "") == str(second.get("clause") or ""):
+            str(first.get("clause") or "") == str(second.get("clause") or "") and \
+            str(first.get("edge") or "") == str(second.get("edge") or ""):
         raise LookupError(
             "both axes name the same dial, so every point on the diagonal would be the "
             "only real measurement. Sweep one axis on its own instead.")
 
     for axis in (first, second):
+        edge = str(axis.get("edge") or "")
+        if edge and edge not in EDGES:
+            raise LookupError(f"edge must be one of {list(EDGES)}, not {edge!r}")
         broken = collapsing(domain, version, axis.get("field", ""),
-                            str(axis.get("clause") or ""))
+                            str(axis.get("clause") or ""), edge)
         if broken:
             raise LookupError(describe_collapsing(broken, domain_name, version))
 
@@ -370,8 +695,16 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
 
     def current_of(axis: dict):
         clause = str(axis.get("clause") or "")
-        return next((d["value"] for d in dials
-                     if d["field"] == axis["field"] and (not clause or d["clause"] == clause)),
+        edge = str(axis.get("edge") or "")
+        matching = [d for d in dials if d["field"] == axis["field"]
+                    and (not clause or d["clause"] == clause)]
+        if not edge:
+            return next((d["value"] for d in matching), None)
+        # With an end named, the setting in force is the number on *that* end.
+        # Reading d["value"] instead would mark the column at the band's floor
+        # while its ceiling is the thing being moved.
+        return next((value for d in matching
+                     if (value := _edge_value(d["expression"], d["field"], edge)) is not None),
                     None)
 
     current_first, current_second = current_of(first), current_of(second)
@@ -379,12 +712,14 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
     signatures: dict[tuple, frozenset] = {}
     for a in first["values"]:
         patched_a, hits_a = variant(domain, version, first["field"], a,
-                                    str(first.get("clause") or ""))
+                                    str(first.get("clause") or ""),
+                                    str(first.get("edge") or ""))
         if not hits_a:
             raise LookupError(_no_dial(domain_name, version, first, dials))
         for b in second["values"]:
             patched, hits_b = variant(patched_a, version, second["field"], b,
-                                      str(second.get("clause") or ""))
+                                      str(second.get("clause") or ""),
+                                      str(second.get("edge") or ""))
             if not hits_b:
                 raise LookupError(_no_dial(domain_name, version, second, dials))
             verdicts = {c.case_id: offline_verdict(c, patched, version) for c in cases}
@@ -459,8 +794,10 @@ def _axis_inert(signatures: dict, first: dict, second: dict, axis: str) -> dict:
 
 def _no_dial(domain_name: str, version: str, axis: dict, dials: list[dict]) -> str:
     where = f" clause {axis['clause']}" if axis.get("clause") else ""
-    return (f"no rule in {domain_name}/{version}{where} compares {axis['field']!r} to a "
-            f"number; available dials: {sorted({(d['clause'], d['field']) for d in dials})}")
+    what = (f"states a {axis['edge']} bound on {axis['field']!r}" if axis.get("edge")
+            else f"compares {axis['field']!r} to a number")
+    return (f"no rule in {domain_name}/{version}{where} {what}; available dials: "
+            f"{sorted({(d['clause'], d['field']) for d in dials})}")
 
 
 def _interaction(points: list[dict], firsts: list, seconds: list) -> dict:
@@ -521,19 +858,38 @@ USAGE = (
     "<clause>:<field>=<v1,v2,...>\n"
     "           two dials at once, as a grid. The clause is optional: ':field=..' or "
     "'field=..' moves every\n"
-    "           occurrence of the field in the version."
+    "           occurrence of the field in the version.\n"
+    "\n"
+    "options:\n"
+    "  --edge lower|upper   move one end of a band and leave the other alone. A rule "
+    "like\n"
+    "                       '40 < amount <= 100' states two thresholds, and without "
+    "this the\n"
+    "                       sweep refuses it rather than rewriting both ends to the "
+    "same number.\n"
+    "                       On a grid, name the end on the axis instead: "
+    "'2.1:amount@lower=30,45'."
 )
 
 
 def parse_axis(raw: str) -> dict:
-    """``1.1:amount=25,50,75`` - or ``amount=25,50`` for every clause using it."""
+    """``1.1:amount=25,50,75`` - or ``amount=25,50`` for every clause using it.
+
+    ``1.1:amount@lower=25,50`` moves one end of a band, the same thing
+    ``--edge`` does for a single sweep. It is spelled on the axis rather than as
+    a flag because a grid has two of them and they need not be the same end.
+    """
     if "=" not in raw:
-        raise ValueError(f"axis {raw!r} needs the form [clause:]field=v1,v2,...")
+        raise ValueError(f"axis {raw!r} needs the form [clause:]field[@edge]=v1,v2,...")
     head, values = raw.split("=", 1)
+    head, _, edge = head.partition("@")
     clause, _, field = head.rpartition(":")
     if not field:
         raise ValueError(f"axis {raw!r} names no field")
-    return {"clause": clause, "field": field, "values": parse_values(values)}
+    if edge and edge not in EDGES:
+        raise ValueError(f"axis {raw!r} names edge {edge!r}; it must be one of {list(EDGES)}")
+    return {"clause": clause, "field": field, "edge": edge,
+            "values": parse_values(values)}
 
 
 def _print_joint(result: dict) -> None:
@@ -612,6 +968,33 @@ def _warn_about_the_rules(domain_name: str, version: str) -> None:
         print(f"  WARNING {problem}")
 
 
+def _take_edge(args: list[str]) -> tuple[list[str], str]:
+    """Pull ``--edge lower`` (or ``--edge=lower``) out of argv, with its value.
+
+    Returns the remaining arguments and the end named, which is ``""`` when the
+    flag was not given. Raising rather than defaulting on a bad value: ``--edge
+    higher`` is somebody reaching for the feature and missing, and silently
+    sweeping both ends is the exact failure the flag exists to prevent.
+    """
+    out: list[str] = []
+    edge = ""
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--edge":
+            if not rest:
+                raise ValueError("--edge needs a value: lower or upper")
+            edge = rest.pop(0)
+        elif arg.startswith("--edge="):
+            edge = arg.split("=", 1)[1]
+        else:
+            out.append(arg)
+            continue
+        if edge not in EDGES:
+            raise ValueError(f"--edge must be lower or upper, not {edge!r}")
+    return out, edge
+
+
 def _is_option(arg: str) -> bool:
     """Whether an argument is a flag rather than a value.
 
@@ -635,10 +1018,24 @@ def main(argv: list[str] | None = None) -> int:
     # argv by its raw length, which is why `--joint` had to be filtered out of
     # the axis list by hand and why a stray flag shifted `field` onto `values`.
     joint_mode = "--joint" in args
+    # --edge takes a value, so it cannot simply be filtered out of the
+    # positional list the way --joint is: doing that would leave 'lower'
+    # sitting where the sweep expects a field name. Taken out with its
+    # argument, before anything else reads argv.
+    try:
+        args, edge = _take_edge(args)
+    except ValueError as exc:
+        print(f"ERROR {exc}\n\n{USAGE}", file=sys.stderr)
+        return 2
     positional = [a for a in args if not _is_option(a)]
     unknown = [a for a in args if _is_option(a) and a != "--joint"]
     if unknown:
         print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    if edge and joint_mode:
+        print("ERROR a grid names its ends on the axes, not with --edge: "
+              "'2.1:amount@lower=30,45'. The two axes need not use the same end, "
+              f"which one flag could not say.\n\n{USAGE}", file=sys.stderr)
         return 2
     if len(positional) < 2:
         print(USAGE)
@@ -687,8 +1084,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"numeric dials in {domain_name}/{version}:")
         found = thresholds(domain, version)
         for t in found:
-            note = (f"  [not sweepable: compared against {t['values']}]"
-                    if t["collapses"] else "")
+            note = ""
+            if t["collapses"]:
+                # Listed with the route rather than only the refusal. "Not
+                # sweepable" was true of the whole-rule rewrite and never true
+                # of the band itself, which is two thresholds and has each of
+                # them movable on its own.
+                ends = t["edges"]
+                note = (f"  [a band, compared against {t['values']}: sweep one end with "
+                        f"--edge {' or --edge '.join(ends)}]" if ends else
+                        f"  [not sweepable: compared against {t['values']}, and no single "
+                        f"end of it can be told from the others]")
             print(f"  clause {t['clause'] or '-':<6} {t['field']:<24} = {t['value']:<10} "
                   f"-> {t['outcome']}{note}")
         if not found:
@@ -717,21 +1123,31 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     try:
-        result = sweep(domain_name, version, field, values, clause=clause)
+        result = sweep(domain_name, version, field, values, clause=clause, edge=edge)
     except LookupError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     unit = result["impact_unit"]
     where = f"clause {clause} " if clause else ""
-    print(f"sweeping {where}{field} in {domain_name}/{version} over {result['cases']} cases "
-          f"(baseline {result['baseline_version'] or 'none'})")
+    end = f"the {edge} end of " if edge else ""
+    print(f"sweeping {end}{where}{field} in {domain_name}/{version} over "
+          f"{result['cases']} cases (baseline {result['baseline_version'] or 'none'})")
     header = f"{field:>14}{'flips':>8}{'rate':>8}{'loosen':>8}{'tighten':>9}"
     print(header + f"{'net ' + unit:>13}{'policy-driven':>15}")
     for p in result["points"]:
         mark = "  <- current" if p["is_current"] else ""
+        # The marker goes on the row rather than only in the note below it: a
+        # reader scanning the column for a round number has to meet it there.
+        if p.get("empties_rule"):
+            mark = f"{mark}  [clause matches nothing at this setting]"
         print(f"{p['value']:>14}{p['flips']:>8}{p['flip_rate']:>7.1%}{p['loosening']:>8}"
               f"{p['tightening']:>9}{p['net_impact']:>13,.0f}"
               f"{p['policy_driven_flips']:>15}{mark}")
+    # Before the inert reading, which would otherwise describe a flat run of
+    # rows as an insensitive threshold when what it actually is is a clause
+    # that stopped applying.
+    if result.get("emptied"):
+        print(f"\n  WARNING {describe_emptied(result['emptied'], field, edge)}")
     # Ahead of the caveat about the rules, because it is the stronger statement:
     # a flat curve is not a curve anybody should be picking a round number off.
     inert = result.get("inert") or {}

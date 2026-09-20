@@ -75,13 +75,28 @@ class TestTheGrid:
 
 class TestTheAxisSyntax:
     @pytest.mark.parametrize("raw,expected", [
-        ("1.1:amount_gbp=25,50", {"clause": "1.1", "field": "amount_gbp",
+        ("1.1:amount_gbp=25,50", {"clause": "1.1", "field": "amount_gbp", "edge": "",
                                   "values": [25, 50]}),
-        ("amount_gbp=25,50", {"clause": "", "field": "amount_gbp", "values": [25, 50]}),
-        (":amount_gbp=1.5", {"clause": "", "field": "amount_gbp", "values": [1.5]}),
+        ("amount_gbp=25,50", {"clause": "", "field": "amount_gbp", "edge": "",
+                              "values": [25, 50]}),
+        (":amount_gbp=1.5", {"clause": "", "field": "amount_gbp", "edge": "",
+                             "values": [1.5]}),
+        # One end of a band, named on the axis. A grid has two axes and they
+        # need not move the same end, which is why this is spelled here rather
+        # than as the single sweep's --edge flag.
+        ("2.1:amount_gbp@lower=30,45", {"clause": "2.1", "field": "amount_gbp",
+                                        "edge": "lower", "values": [30, 45]}),
+        ("amount_gbp@upper=100,250", {"clause": "", "field": "amount_gbp",
+                                      "edge": "upper", "values": [100, 250]}),
     ])
     def test_it_parses(self, raw, expected):
         assert sweep.parse_axis(raw) == expected
+
+    def test_an_end_that_is_not_an_end_is_refused(self):
+        """'higher' is somebody reaching for the feature and missing. Defaulting
+        to both ends would be the collapse the flag exists to prevent."""
+        with pytest.raises(ValueError, match="lower"):
+            sweep.parse_axis("2.1:amount_gbp@higher=30,45")
 
     @pytest.mark.parametrize("raw", ["amount_gbp", "=25,50"])
     def test_it_refuses_nonsense(self, raw):

@@ -292,9 +292,14 @@ def thresholds(domain: str, version: str) -> list[dict]:
 def sweep(domain: str, version: str,
           field: str = Query(..., min_length=1, max_length=64),
           values: str = Query(..., min_length=1, max_length=256),
-          clause: str = Query(default="", max_length=16)) -> dict:
-    """Re-run the replay at each candidate threshold. ``values`` is comma-separated."""
-    return found(report.sweep, domain, version, field, values, clause)
+          clause: str = Query(default="", max_length=16),
+          edge: str = Query(default="", pattern="^(lower|upper)?$")) -> dict:
+    """Re-run the replay at each candidate threshold. ``values`` is comma-separated.
+
+    ``edge`` moves one end of a banded rule; blank moves the single threshold a
+    clause normally states.
+    """
+    return found(report.sweep, domain, version, field, values, clause, edge)
 
 
 @app.get("/api/sweep-grid/{domain}/{version}")
@@ -304,10 +309,12 @@ def sweep_grid(domain: str, version: str,
                field2: str = Query(..., min_length=1, max_length=64),
                values2: str = Query(..., min_length=1, max_length=256),
                clause: str = Query(default="", max_length=16),
-               clause2: str = Query(default="", max_length=16)) -> dict:
+               clause2: str = Query(default="", max_length=16),
+               edge: str = Query(default="", pattern="^(lower|upper)?$"),
+               edge2: str = Query(default="", pattern="^(lower|upper)?$")) -> dict:
     """Two thresholds at once, as a grid. Single sweeps cannot show them interacting."""
     return found(report.joint_sweep, domain, version, field, values, field2, values2,
-                 clause, clause2)
+                 clause, clause2, edge, edge2)
 
 
 @app.get("/api/export/{domain}/{version}.json")
