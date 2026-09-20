@@ -1159,7 +1159,7 @@ ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1197 tests; the engine's 1022 need nothing but Python
+tests/                          1259 tests; the engine's 1082 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1276,7 +1276,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 1022 tests,
+  so a skip there means something has genuinely changed. The engine's 1082 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.
@@ -1288,6 +1288,29 @@ Built and run against `apache/airflow:3.1.0` with
   aggregates behind the dashboard are never touched. SQLite does not hand freed
   pages back to the filesystem, so the file does not shrink until it is
   rewritten — which is what `--vacuum` and the DAG's third step are for.
+- **`replay_snapshots` is the heaviest table in the schema and the last to get
+  retention.** A snapshot archives every hydrated case input and both sets of
+  verdicts, so twenty-four backfill runs over the shipped six-hundred-case
+  fixture come to 800 KB of a 3.2 MB database — a quarter of the file, from
+  twenty-four rows. It cannot simply be deleted: coverage reports an active run
+  without its snapshot as provenance nothing can verify, so dropping one would
+  turn a complete history into a warning. So it is handled twice. A run a later
+  replay has superseded entirely loses its snapshot; a run still current keeps
+  the row, the status, the case ids and all three hashes and loses the bodies.
+  **What that costs is real**: a trimmed run's archived case inputs and policy
+  text are gone, so `--snapshots` and the review workspace fall back to the live
+  files for it, and `archived_inputs` reports false rather than labelling
+  today's data as the record of what the judge was shown. That is why it is on
+  the same ninety-day clock as everything else — recent evidence, which is the
+  evidence anybody opens, is untouched.
+- **A replay records its run before judging starts, so an interrupted one is
+  visible.** That is deliberate and it has a cost: coverage refuses to call a
+  version complete while a run is outstanding, and until `--resolve` existed
+  there was no way to clear one. A single Ctrl-C left a row nothing aged out,
+  nothing pruned and nothing could mark failed. `python -m ptm.provenance
+  <domain> --resolve` is the way out, and `--older-than HOURS` is what keeps it
+  from marking a replay still in flight as failed. Retention never touches a
+  pending run at any age: deleting the question is not answering it.
 - Manual runs have no meaningful data interval, so they replay all of history
   capped by the `max_cases` param (default 250). When that cap bites they keep
   the **most recent** cases: slowly-changing facts have not changed yet at the

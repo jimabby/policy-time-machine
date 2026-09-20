@@ -108,7 +108,7 @@ jobs:
         run: |
           for m in preflight calibration rules lint prune sweep report proposal \
                    selftest seed pit_check gate precedents stability crosscheck \
-                   disparity; do
+                   disparity ingest provenance replay; do
             python -m ptm.$m --help > /dev/null
           done
         env:
@@ -229,6 +229,56 @@ jobs:
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The other artefact that could leave a database and not enter one. A
+      # regression suite travelling between environments while the evidence for
+      # how it was established stays behind is half a migration, and the
+      # precedent step above makes exactly this argument about exports nobody
+      # has read back. The re-import must be a no-op: every run already on file.
+      - name: Evidence round-trip
+        run: |
+          python -m ptm.provenance expenses v2 --export -o /tmp/evidence-set.json
+          python -c "import json; d=json.load(open('/tmp/evidence-set.json'));             assert d['format'] == 'ptm-snapshots/1', d['format'];             print(len(d['snapshots']), 'archived run(s)')"
+          python -m ptm.provenance expenses v2 --import /tmp/evidence-set.json
+          python -m ptm.provenance expenses --resolve
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # Two runs of one version, which is a different question from two
+      # versions. Run against the imported database from the first step rather
+      # than the shipped fixture, and deliberately: the fixture's runs come
+      # from a backfill, so every one of them covers a *disjoint* month and no
+      # two of them share a case. Comparing two of those is a comparison over
+      # nothing, which is exactly the answer this reports and exactly the wrong
+      # thing to assert a feature works from. Replaying one window twice is
+      # what makes the comparison mean something.
+      #
+      # The assertions are the two halves of the claim: every case reproduces,
+      # and the causes come back *decided* rather than unknown - an unknown here
+      # would mean the snapshots stopped carrying the hashes they are for.
+      - name: Two runs of one version
+        run: |
+          python -m ptm.replay expenses v2 > /dev/null
+          python -m ptm.report expenses v2 --runs
+          python -m ptm.report expenses v2 --rerun
+          python -m ptm.report expenses v2 --rerun --json |
+            python -c "import json,sys; d=json.load(sys.stdin); \
+              assert d['compared'], 'the two runs shared no cases'; \
+              assert d['changed_between'] == {'policy':'same','baseline_policy':'same','inputs':'same'}, d['changed_between']; \
+              assert d['differ'] == 0, d['differences']; \
+              print('reproducible over', d['compared'], 'shared case(s)')"
+          # And the fixture's own backfill, where the honest answer is a
+          # refusal. A version replayed only in slices cannot be compared with
+          # itself, and saying 'every case agreed' about no cases is the one
+          # reading this must never produce.
+          PTM_DB=./include/ptm.db python -m ptm.report expenses v2 --rerun |
+            grep -q "no case in common"
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: /tmp/ptm-import.db
           PTM_OFFLINE: "1"
 
       # The bundle is the one artefact built to *leave* the dashboard, so it is

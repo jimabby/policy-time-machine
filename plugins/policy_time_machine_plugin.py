@@ -169,6 +169,21 @@ def segments(domain: str, version: str) -> list[dict]:
     return found(report.segments, domain, version)
 
 
+@app.get("/api/runs/{domain}/{version}")
+def replay_runs(domain: str, version: str) -> list[dict]:
+    """Every replay recorded for this version: when, how many cases, still current?"""
+    return found(report.replay_runs, domain, version)
+
+
+@app.get("/api/rerun/{domain}/{version}")
+def rerun(domain: str, version: str,
+          left: str = Query(default="", max_length=400),
+          right: str = Query(default="", max_length=400),
+          limit: int = Query(default=200, ge=1, le=500)) -> dict:
+    """Two runs of the same version: did the answers move, and what moved them?"""
+    return found(report.rerun, domain, version, left or None, right or None, limit)
+
+
 @app.get("/api/compare/{domain}/{left}/{right}")
 def compare(domain: str, left: str, right: str,
             limit: int = Query(default=200, ge=1, le=500)) -> dict:

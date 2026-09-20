@@ -32,14 +32,29 @@ def replay(domain_name: str, version: str, since: datetime | None = None,
     snapshot = provenance.capture(domain, version, cases, domain.in_force, since, until, eligible)
     run_id = f"cli::{uuid4()}"
     provenance.begin(run_id, domain_name, version, snapshot)
-    verdicts = {c.case_id: offline_verdict(c, domain, version) for c in cases}
-    baseline = {c.case_id: offline_verdict(c, domain, domain.in_force) for c in cases}
-    flips = diff.flips(cases, verdicts, domain, baseline=baseline)
-    summary = diff.summarise(flips, len(cases), domain)
-    store.save_replay(run_id, domain_name, version, "actual", len(cases), flips,
-                      summary["net_impact"], verdicts, diff.segment_stats(cases, flips, domain),
-                      cost.zero(), domain.in_force, baseline, diff.case_segment_rows(cases, domain),
-                      snapshot=snapshot)
+    # Everything between begin() and save_replay() runs under this, because a
+    # run recorded as started and never resolved is worse here than a traceback.
+    # replay_<domain> has an on_failure_callback doing exactly this; the CLI was
+    # written without one, and a RuleError in a drafted rule set - or a Ctrl-C -
+    # left a 'pending' row that nothing ages out and nothing can clear, which
+    # makes `manage.py coverage` report the version incomplete forever. See
+    # ptm.provenance.failed and `manage.py resolve`.
+    try:
+        verdicts = {c.case_id: offline_verdict(c, domain, version) for c in cases}
+        baseline = {c.case_id: offline_verdict(c, domain, domain.in_force) for c in cases}
+        flips = diff.flips(cases, verdicts, domain, baseline=baseline)
+        summary = diff.summarise(flips, len(cases), domain)
+        store.save_replay(run_id, domain_name, version, "actual", len(cases), flips,
+                          summary["net_impact"], verdicts,
+                          diff.segment_stats(cases, flips, domain),
+                          cost.zero(), domain.in_force, baseline,
+                          diff.case_segment_rows(cases, domain), snapshot=snapshot)
+    except BaseException:
+        # BaseException, not Exception: KeyboardInterrupt is the single most
+        # likely way a six-hundred-case replay stops half way through, and it is
+        # the one that would otherwise walk straight past this.
+        provenance.failed(run_id, domain_name)
+        raise
     return {"run_id": store.scoped_run_id(domain_name, run_id), "eligible": eligible,
             "selected": len(cases), "capped": len(cases) < eligible, **summary}
 

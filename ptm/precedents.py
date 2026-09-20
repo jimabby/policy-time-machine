@@ -34,7 +34,6 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-from datetime import datetime
 
 from . import cli, store
 from .config import available_domains, load_domain
@@ -54,7 +53,12 @@ def export_precedents(domain_name: str) -> dict:
     return {
         "format": FORMAT,
         "domain": domain_name,
-        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        # Aware UTC, offset and all. Every timestamp *column* in this project is
+        # naive UTC because SQLite sorts them as text and one zone had to be
+        # picked; this is not a column, it is a line in a file that leaves the
+        # system, and a bare "2026-09-20T03:34:47" in a ruling export is a time
+        # nobody downstream can place. It was the machine's local time, too.
+        "exported_at": store.now_utc().isoformat(timespec="seconds"),
         "precedents": [p.model_dump(mode="json") for p in precedents],
         "superseded": history,
         "note": "The only durable output of a Policy Time Machine. Each entry is one "

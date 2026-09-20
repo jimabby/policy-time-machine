@@ -45,7 +45,6 @@ from __future__ import annotations
 import string
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 
 from . import cli, preflight
 from . import sweep as sweep_engine
@@ -138,8 +137,8 @@ def probe_cases(domain: DomainConfig, limit: int = PROBE_CASES) -> list:
     measured is not a finding of zero.
     """
     try:
-        from .store import load_cases
-        return load_cases(domain.name, until=datetime.now(), limit=limit,
+        from .store import load_cases, now_utc
+        return load_cases(domain.name, until=now_utc(), limit=limit,
                           newest_first=True)
     except Exception:
         return []

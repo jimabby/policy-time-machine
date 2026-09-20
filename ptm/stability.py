@@ -239,7 +239,7 @@ def run(domain_name: str, version: str, target: str = "sample", cases: int = 25,
                  for r in rows]
         chosen = flips_to_confirm(flips, cases)
         ids = [f.case_id for f in chosen]
-        picked = store.load_cases(domain_name, until=datetime.now(), case_ids=ids)
+        picked = store.load_cases(domain_name, until=store.now_utc(), case_ids=ids)
         if len(picked) != len(ids):
             # The DAG refuses here and so does this: a confirmation pass over a
             # subset marks the flips it reached as measured and leaves the rest
@@ -250,7 +250,7 @@ def run(domain_name: str, version: str, target: str = "sample", cases: int = 25,
                 f"refusing to report a confirmation pass over a subset")
         recorded = {f.case_id: f.new_outcome for f in chosen}
     else:
-        loaded = store.load_cases(domain_name, until=datetime.now())
+        loaded = store.load_cases(domain_name, until=store.now_utc())
         if not loaded:
             raise LookupError(f"no {domain_name} cases on file; seed the history first")
         picked = sample_cases(loaded, cases, seed=seed)
@@ -262,7 +262,7 @@ def run(domain_name: str, version: str, target: str = "sample", cases: int = 25,
         for c in picked for i in range(repeats)
     ]
     result = analyse(samples, repeats)
-    run_id = run_id or f"cli__{domain_name}__{version}__{datetime.now():%Y%m%dT%H%M%S}"
+    run_id = run_id or f"cli__{domain_name}__{version}__{store.now_utc():%Y%m%dT%H%M%S}"
     store.save_stability(run_id, domain_name, version, samples, result.model_dump(),
                          cost.zero() if OFFLINE else {})
 

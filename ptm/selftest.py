@@ -192,7 +192,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
                   "for a claim of this size." if keeps_history else
                   "The proposed reading is correct - the original decision applied a "
                   "restriction this policy no longer makes."),
-            established_at=datetime.now(), established_by_run="selftest",
+            established_at=store.now_utc(), established_by_run="selftest",
             policy_version=version, judged_outcome=f.new_outcome,
             judged_clause=f.policy_clause,
         ))
@@ -230,7 +230,7 @@ def main(domain_name: str = "expenses", version: str = "v2") -> None:
     ids = [p.case_id for p in precedents]
     # By id, not "load everything and filter": a default limit truncating the
     # set would make the gate check fewer precedents than exist and still pass.
-    cases = store.load_cases(domain_name, until=datetime.now(), case_ids=ids)
+    cases = store.load_cases(domain_name, until=store.now_utc(), case_ids=ids)
     assert len(cases) == len(ids), "the gate would silently skip a precedent"
     verdicts = {c.case_id: offline_verdict(c, domain, version) for c in cases}
     violations = diff.precedent_violations(verdicts, precedents)

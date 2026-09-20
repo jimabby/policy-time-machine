@@ -91,6 +91,72 @@ class TestTheTestCountsAreReal:
         assert quoted == [counts["total"], counts["engine"]]
 
 
+@pytest.fixture(scope="module")
+def story(replayed) -> dict:
+    """The four headline figures, computed from a real replay of the fixture."""
+    from ptm import diff
+
+    summary = diff.summarise(replayed["flips"], len(replayed["cases"]), replayed["domain"])
+    return {
+        "cases": len(replayed["cases"]),
+        "flips": summary["flips"],
+        "policy_driven": summary["policy_driven_flips"],
+        "deviations": summary["deviation_flips"],
+    }
+
+
+class TestTheThirtySecondStoryIsReal:
+    """The four numbers the README opens with, checked against the fixture.
+
+    This file exists because a stale checkable number invites doubt about the
+    uncheckable ones, and it guarded the test count and the caveat count - two
+    figures about the repository - while leaving the four figures about the
+    *product* unchecked. Those are the first thing a reader meets, the ones
+    quoted back in the demo, and the only ones a change to the shipped policy or
+    the seed can silently falsify.
+
+    Computed from a real replay rather than read from the database, so this
+    fails when the fixture, the policy or the rules move - which is the point.
+    It is the same argument the project makes everywhere else: a number carries
+    its provenance, or it is a number somebody will have to re-derive under
+    pressure in front of an audience.
+    """
+
+    def test_the_case_count_and_the_flip_count(self, story):
+        quoted = numbers_in("README.md", r"\| (\d{2,5}) historical decisions")
+        assert quoted == [story["cases"]], "README's case count"
+        quoted = numbers_in("README.md", r"\| (\d{2,5}) different answers")
+        assert quoted == [story["flips"]], "README's flip count"
+
+    def test_the_split_between_the_policy_and_the_reviewers(self, story):
+        """The line the project says costs the most to produce and matters most.
+
+        Both halves in one test because they are one claim: 109 of 147 are the
+        proposal's doing and the other 38 are not. A README that updated one and
+        not the other would be arithmetic that does not add up, which is worse
+        than either number being stale on its own.
+        """
+        attributed = numbers_in(
+            "README.md", r"\| (\d{2,5}) changes attributed to the proposal")
+        other = numbers_in("README.md", r"The other (\d{2,5}) differ from the old rulebook")
+        assert attributed == [story["policy_driven"]], "README's policy-driven count"
+        assert other == [story["deviations"]], "README's deviation count"
+        assert story["policy_driven"] + story["deviations"] == story["flips"]
+
+    def test_the_ruling_count(self, story):
+        """Established by the selftest, which the ``replayed`` fixture does not run.
+
+        So this asserts the README against ``review.max_reviews`` - what the
+        domain says a human queue holds - rather than against whatever happens
+        to be in the database when the suite runs. The number in the README is a
+        claim about the shipped configuration, and that is where it lives.
+        """
+        from ptm.config import load_domain
+
+        quoted = numbers_in("README.md", r"\| (\d{1,4}) simulated human rulings")
+        assert quoted == [load_domain("expenses").review.max_reviews]
+
+
 WORDS = {20: "twenty", 30: "thirty", 40: "forty"}
 
 

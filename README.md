@@ -298,11 +298,22 @@ python manage.py import expenses examples/expenses.csv --write     # commit
 python manage.py replay expenses v2                               # offline rules
 python manage.py coverage expenses v2
 python manage.py snapshots expenses v2 -o evidence.json
+python manage.py export expenses v2 -o bundle.json                # the whole bundle
+python manage.py rulings expenses -o rulings.json                 # the human rulings
+python manage.py evidence expenses v2 --export -o evidence-set.json
+python manage.py evidence expenses v2 --import evidence-set.json  # into another database
+python manage.py resolve expenses                                 # clear interrupted runs
+python manage.py prune --dry-run                                  # reclaim disk
 ```
 
 Use `python manage.py --db PATH ...` to choose a database. The equivalent Make
-targets are `import-preview`, `import-cases`, `replay-history`, `replay-coverage`
-and `snapshots`; configure `D`, `POLICY`, `FILE` and `DATA_DB` as needed.
+targets are `import-preview`, `import-cases`, `replay-history`, `replay-coverage`,
+`snapshots`, `history-export`, `history-rulings`, `history-resolve` and
+`history-prune`; configure `D`, `POLICY`, `FILE` and `DATA_DB` as needed.
+
+Every other Make target reads `DB`, which defaults to the demo's
+`include/ptm.db`. Point it at your own history to measure that instead:
+`make gate DB=include/history.db`.
 These commands never seed or replace historical cases. `demo.py` and
 `ptm.selftest` are synthetic demonstrations and should use a separate database.
 
@@ -353,6 +364,27 @@ page through results with explicit match and total counts. The authenticated API
 also exposes `/api/flip-page/{domain}/{version}`, `/api/coverage/{domain}/{version}`,
 `/api/snapshots/{domain}/{version}` and `/api/review/{domain}/{version}/{case_id}`.
 
+**Did the number move because the policy moved?** `python -m ptm.report
+<domain> <version> --runs` lists every replay recorded for a version, and
+`--rerun` compares two of them case by case — the last two by default. It
+reports whether the policy text, the judge configuration or the historical
+cases changed between the runs, each read from the hashes those runs archived.
+When none of them did and the answers moved anyway, that is the judge's noise
+arriving as a policy finding, and it says so. `--json` for the full list.
+
+A replay records its run before judging starts, so an interrupted one is
+visible rather than invisible; coverage reports the version incomplete while
+that run is outstanding. `python -m ptm.provenance <domain> --resolve` marks
+stranded runs failed, and `--older-than HOURS` spares a replay still in flight.
+
+Retention covers the archived evidence as well. An old snapshot whose run is
+still the current answer for its cases keeps its row, its status and all three
+hashes — so coverage can still tell whether it has gone stale — and loses the
+archived case inputs, policy text and verdicts; one whose run has been
+superseded entirely is dropped. A pending run is never touched at any age.
+`python -m ptm.provenance <domain> <version> --export` and `--import` move that
+evidence between databases, the way `ptm.precedents` moves the rulings.
+
 Replay identities include the domain and workflow, so monthly schedules cannot
 erase another domain's results. A later no-change replay removes obsolete flips
 from every current report and queue while retaining historical rows. Cache keys
@@ -393,6 +425,7 @@ make second    # what a second judge made of it (needs PTM_OFFLINE=0 to make one
 make blast     # which segments carry more of the change than the rest
 make versions  # every version replayed, side by side — did the edit help?
 make compare L=v1 R=v2                  # the two of them, case by case
+make reruns    # two runs of *one* version — policy, data, or the judge?
 make propose   # draft the next version of the policy (writes nothing)
 make export    # everything the Explorer shows, as one file
 make vacuum    # drop the rows that stopped earning their disk, and shrink the file
@@ -474,7 +507,7 @@ list: [docs/DESIGN.md](docs/DESIGN.md#layout).
 ## Caveats
 
 The [full list is in the design notes](docs/DESIGN.md#caveats) — there are
-twenty-seven of them, and each one is a claim this project declines to make. The six
+twenty-nine of them, and each one is a claim this project declines to make. The six
 that change how you read the clips above:
 
 - **Single-container Airflow on SQLite.** Fine for a demo, not a topology.

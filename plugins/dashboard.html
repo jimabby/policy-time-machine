@@ -219,6 +219,7 @@ a{color:var(--accent)}
 <section aria-label="Replay coverage">
   <h2>Replay coverage and evidence</h2>
   <div id=replaycoverage aria-live=polite>Loading coverage...</div>
+  <div id=rerun aria-live=polite></div>
   <a id=snapshotdownload target=_blank rel=noopener>Open archived replay inputs (JSON)</a>
 </section>
 <dialog id=reviewdialog aria-labelledby=reviewtitle style="width:min(1000px,90vw);max-height:85vh;overflow:auto">
@@ -2597,6 +2598,63 @@ async function renderEvidence(domain, version, sequence) {
   } catch (error) {
     if (sequence === renderSequence) $("#replaycoverage").textContent = "Coverage unavailable. Other results remain available.";
   }
+  await renderRerun(domain, version, sequence);
+}
+// Two runs of one version. Deliberately separate from the coverage call above:
+// a version replayed once has nothing to compare and that is the normal case,
+// so this must be able to come back empty without taking the panel with it.
+async function renderRerun(domain, version, sequence) {
+  const panel = $("#rerun");
+  panel.innerHTML = "";
+  let result, recorded;
+  try {
+    recorded = await api(`/api/runs/${seg(domain)}/${seg(version)}`);
+    result = await api(`/api/rerun/${seg(domain)}/${seg(version)}`);
+  } catch (error) {
+    // 404 is "fewer than two runs on file", which is not a failure to report.
+    return;
+  }
+  if (sequence !== renderSequence) return;
+  if (result.available === false) {
+    // One run on file. Not a failure and not agreement - there is simply
+    // nothing to compare yet, and the panel says which of those it is.
+    panel.innerHTML = `<p class=hint>${esc(result.hint)}</p>`;
+    return;
+  }
+  const causes = result.changed_between;
+  // No shared cases is a refusal, not agreement. Saying "every case agreed"
+  // about no cases is the one reading this panel must never produce.
+  const verdict = !result.compared
+    ? `These two runs share no case, so nothing was compared - they cover different
+       windows. That is not agreement.`
+    : result.differ
+      ? `${result.outcome_changed} outcome(s) moved and ${result.clause_only_changed}
+         kept the outcome while citing a different clause.`
+      : `All ${result.compared} shared case(s) came back the same, citing the same clause.`;
+  const why = !result.compared ? "" :
+    `<ul><li>Policy and judge configuration: ${esc(causes.policy)}</li>
+     <li>Historical cases: ${esc(causes.inputs)}</li></ul>` +
+    (result.differ && causes.policy === "same" && causes.inputs === "same"
+      ? `<p><strong>Nothing the run was given changed, and the answers moved anyway.</strong>
+         That is the judge's noise arriving as a policy finding - measure it before
+         reading anything into a difference this size.</p>`
+      : "");
+  // 'current' is how many cases still take their answer from that run, so a run
+  // at zero has been superseded entirely - which is the column that explains why
+  // an old run is still listed and no longer counted anywhere.
+  const runRows = table(
+    [{label: "Started"}, {label: "Cases"}, {label: "Flips"},
+     {label: "Still current"}, {label: "Evidence"}],
+    recorded.map(r => `<tr><td>${esc(r.started_at.slice(0, 19))}</td>
+      <td>${r.cases_replayed}</td><td>${r.flips}</td>
+      <td>${r.current_cases}</td>
+      <td>${esc(r.status || "no snapshot")}</td></tr>`), "");
+  panel.innerHTML = `<details><summary>Re-run comparison: did the answers move, and why?</summary>
+    <p>${verdict}</p>${why}
+    <p class=hint>Comparing ${esc(result.left_started_at.slice(0, 19) || result.left)}
+    with ${esc(result.right_started_at.slice(0, 19) || result.right)}.</p>
+    <details><summary>All ${recorded.length} recorded run(s)</summary>${runRows}</details>
+    </details>`;
 }
 async function openReview(index) {
   const row = SHOWN_FLIPS[index];

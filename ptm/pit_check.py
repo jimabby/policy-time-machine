@@ -11,13 +11,12 @@ backtest does). Prints how many cases the naive version gets wrong.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 
 from . import cli
 from .config import available_domains, load_domain
 from .diff import flips
 from .judge import offline_verdict
-from .store import load_cases, query
+from .store import load_cases, now_utc, query
 
 USAGE = """usage:
   python -m ptm.pit_check [domain] [version]
@@ -41,7 +40,7 @@ def run(domain_name: str = "expenses", version: str = "v2") -> None:
     if version not in domain.policies:
         raise SystemExit(f"unknown policy version {version!r} for {domain_name}; "
                          f"have {sorted(domain.policies)}")
-    cases = load_cases(domain_name, until=datetime.now())
+    cases = load_cases(domain_name, until=now_utc())
     if not cases:
         raise SystemExit("no cases - run `python -m ptm.seed` first")
 

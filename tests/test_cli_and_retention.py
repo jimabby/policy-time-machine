@@ -151,6 +151,29 @@ class TestEveryEntryPointAnswersHelp:
             f"entry points not covered by the --help sweep: {sorted(found - listed)}; "
             f"listed but no longer entry points: {sorted(listed - found)}")
 
+    def test_the_workflow_sweeps_exactly_these_modules(self):
+        """The list in CI and the list above are the same list.
+
+        This file's whole argument is that the ``--help`` sweep must not
+        silently cover less than it claims, and it proved that against its own
+        list while the workflow kept a *second copy* of it in a shell loop.
+        The two drifted the moment three modules were added: ``ptm.ingest``,
+        ``ptm.provenance`` and ``ptm.replay`` were asserted here and swept by
+        nothing. So the workflow is read rather than trusted.
+        """
+        import pathlib
+        import re
+
+        workflow = (pathlib.Path(__file__).resolve().parents[1]
+                    / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        match = re.search(r"for m in ((?:[\w\s\\]|\n)+?); do", workflow)
+        assert match, "the --help sweep is no longer a `for m in ...` loop"
+        swept = {f"ptm.{name}" for name in match.group(1).replace("\\", "").split()}
+        listed = {name for name, _ in ENTRY_POINTS}
+        assert swept == listed, (
+            f"the workflow sweeps {sorted(swept - listed)} that are not entry points, "
+            f"and misses {sorted(listed - swept)} that are")
+
     def test_a_domain_named_help_would_still_be_reachable(self):
         """Only the dashed spellings count.
 

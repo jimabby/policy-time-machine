@@ -22,13 +22,12 @@ from __future__ import annotations
 
 import ast
 import sys
-from datetime import datetime
 
 from . import cli, diff
 from .config import DomainConfig, load_domain
 from .judge import offline_verdict
 from .models import Case
-from .store import load_cases
+from .store import load_cases, now_utc
 
 
 class _Retarget(ast.NodeTransformer):
@@ -213,7 +212,7 @@ def sweep(domain_name: str, version: str, field: str, values: list[float],
     """
     domain = load_domain(domain_name)
     if cases is None:
-        cases = load_cases(domain_name, until=datetime.now())
+        cases = load_cases(domain_name, until=now_utc())
     if not cases:
         raise LookupError(f"no {domain_name} cases on file; seed the history first")
 
@@ -347,7 +346,7 @@ def joint(domain_name: str, version: str, first: dict, second: dict,
     """
     domain = load_domain(domain_name)
     if cases is None:
-        cases = load_cases(domain_name, until=datetime.now())
+        cases = load_cases(domain_name, until=now_utc())
     if not cases:
         raise LookupError(f"no {domain_name} cases on file; seed the history first")
     if first.get("field") == second.get("field") and \

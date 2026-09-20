@@ -960,3 +960,68 @@ class TestReplayEvidence:
         assert page.locator("#flipnext").is_disabled()
         assert page.locator("#flipprev").is_disabled()
         assert page.get_attribute("#snapshotdownload", "href") == "/ptm/api/snapshots/expenses/v2"
+
+    def test_the_rerun_panel_says_there_is_nothing_to_compare_yet(self, page):
+        """One run on file, which is the ordinary state of a fresh database.
+
+        The panel has to distinguish that from agreement. It raised a 404 at
+        first, which the page rendered as nothing at all - the shape of a broken
+        panel rather than of a measurement nobody has taken yet.
+        """
+        page.wait_for_function(
+            "document.querySelector('#rerun').textContent.length > 0", timeout=10_000)
+        text = page.text("#rerun")
+        assert "1 recorded run" in text and "needs two" in text
+        assert "reproducible" not in text, "one run is not evidence of reproducing"
+        assert not page.errors
+
+    def test_the_rerun_panel_compares_a_second_run_when_there_is_one(self, page):
+        """The other half, with a real pair.
+
+        Writes a second replay of the same cases and reloads, because the
+        module fixture deliberately builds one run and the comparison path is
+        the half a reader actually reads. This is the last class in the file
+        and the write is additive - a second run of the same version - so the
+        state it leaves behind is the state a second replay leaves behind.
+        """
+        import datetime
+
+        from ptm import cost, diff, provenance, store
+        from ptm.config import load_domain
+        from ptm.judge import offline_verdict
+
+        domain = load_domain("expenses")
+        cases = store.load_cases("expenses", until=datetime.datetime(2026, 9, 1))
+        candidate = {c.case_id: offline_verdict(c, domain, "v2") for c in cases}
+        baseline = {c.case_id: offline_verdict(c, domain, "v1") for c in cases}
+        flips = diff.flips(cases, candidate, domain, baseline=baseline)
+        # Two runs, not one. The module fixture's run predates snapshots, so
+        # pairing against it would report every cause as 'unknown' - which is
+        # the honest answer for a run that archived no hashes, and not the path
+        # this test is for. A pair that both captured evidence is.
+        for run in ("browsertest__rerun_a", "browsertest__rerun_b"):
+            store.save_replay(
+                run, "expenses", "v2", "actual", len(cases), flips,
+                diff.summarise(flips, len(cases), domain)["net_impact"], candidate,
+                ledger=cost.zero(), baseline_version="v1", baseline_verdicts=baseline,
+                snapshot=provenance.capture(domain, "v2", cases, "v1"))
+
+        page.reload()
+        page.wait_for_function(
+            "document.querySelector('#rerun').textContent.includes('recorded run')",
+            timeout=15_000)
+        # Both panels ship collapsed, and a collapsed <details> renders none of
+        # its content - so inner_text returns the summary alone until something
+        # opens it, exactly as it would for a reader. See TestTheInstructions.
+        page.click("#rerun > details > summary")
+        page.wait_for_function(
+            "() => document.querySelector('#rerun details').open", timeout=5_000)
+        page.click("#rerun details details > summary")
+        text = page.text("#rerun")
+        assert "3 recorded run(s)" in text
+        assert "still current" in text, "the run list renders its columns"
+        # The offline judge is deterministic and nothing about the inputs moved,
+        # so the honest answer is that this version reproduces.
+        assert "came back the same" in text
+        assert "historical cases: same" in text
+        assert not page.errors

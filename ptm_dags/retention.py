@@ -33,6 +33,13 @@ def build() -> None:
     shell, on a schedule somebody had to remember. In a project whose argument is
     that Airflow is the engine rather than the wrapper, that was the one chore
     left outside it.
+
+    It also carries the replay evidence now, which is the heaviest thing in the
+    schema and was the last to get retention: a superseded run's snapshot is
+    dropped and a current run's is trimmed to its hashes, so coverage can still
+    tell whether it has gone stale. A **pending** run is never touched at any
+    age - it is an unresolved question, and deleting the question is not an
+    answer. ``python -m ptm.provenance <domain> --resolve`` is.
     """
     @dag(
         dag_id="ptm_retention",

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
 
 from . import cli, diff, store
 from .config import load_domain
@@ -74,7 +73,7 @@ def check(domain_name: str, version: str, baseline_version: str | None = None,
 
     precedents = store.load_precedents(domain_name)
     wanted = {p.case_id for p in precedents}
-    cases = store.load_cases(domain_name, until=datetime.now(),
+    cases = store.load_cases(domain_name, until=store.now_utc(),
                              case_ids=sorted(wanted)) if wanted else []
     on_file = {c.case_id: c for c in cases}
 

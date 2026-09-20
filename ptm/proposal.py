@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import re
 import sys
-from datetime import datetime
 
 import yaml
 
@@ -313,7 +312,7 @@ def offline_patch(domain: DomainConfig, version: str, found: dict) -> PolicyPatc
     number the rules compare against. An empty patch is a real answer.
     """
     precedents = store.load_precedents(domain.name)
-    cases = store.load_cases(domain.name, until=datetime.now())
+    cases = store.load_cases(domain.name, until=store.now_utc())
     if not cases or not found["dials"]:
         return PolicyPatch(
             summary="no amendment proposed",
@@ -419,7 +418,7 @@ def apply_to_markdown(domain: DomainConfig, version: str, patch: PolicyPatch,
     """
     text = domain.policy_text(version)
     header = (f"<!-- Drafted by ptm.proposal from {domain.name}/{version} on "
-              f"{datetime.now():%Y-%m-%d}. Not approved by anyone. -->\n"
+              f"{store.now_utc():%Y-%m-%d}. Not approved by anyone. -->\n"
               f"<!-- {patch.summary} -->\n")
     for edit in patch.edits:
         clause = edit.clause.strip()
@@ -534,6 +533,10 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
             f"{draft_version!r} is not a draft version name. A draft is one path "
             f"segment - no slashes, no '..' - because this deletes files, and the "
             f"only files it may delete are in include/{DRAFTS_DIR}/{domain_name}/.")
+    # Both halves of the path, not just the version. The sentence above says the
+    # only files this may delete are the ones under include/drafts/<domain>/,
+    # and that promise is only worth as much as the weaker of the two segments.
+    load_domain(domain_name)
     folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
     removed = []
     for path in (folder / f"{draft_version}.md", folder / f"{draft_version}.rules.yaml"):
@@ -544,11 +547,10 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
     return removed
 
 
-def _is_draft_name(version: str) -> bool:
-    """Whether a string can name a draft file rather than reach out of its folder."""
-    version = (version or "").strip()
-    return bool(version) and version not in {".", ".."} and not (
-        set(version) & set("/\\") or version.startswith("."))
+#: Whether a string can name a draft file rather than reach out of its folder.
+#: One definition, in :mod:`ptm.config`, because a domain name needs the very
+#: same check and had none - see :func:`ptm.config.is_safe_name`.
+_is_draft_name = config.is_safe_name
 
 
 def drafts_on_disk(domain_name: str) -> list[dict]:
@@ -735,7 +737,7 @@ def adopt(domain_name: str, draft_version: str, by: str,
 
     folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
     markdown = (folder / f"{draft_version}.md").read_text(encoding="utf-8")
-    adopted = (f"Adopted as {version} by {by} on {datetime.now():%Y-%m-%d}, "
+    adopted = (f"Adopted as {version} by {by} on {store.now_utc():%Y-%m-%d}, "
                f"from draft {draft_version}.")
     if DRAFT_STAMP in markdown:
         markdown = markdown.replace(DRAFT_STAMP, adopted)
@@ -870,7 +872,7 @@ def verify(domain_name: str, draft_version: str, base_version: str,
                 "hint_key": "hint.draft_unchecked"}
 
     ids = [p.case_id for p in precedents]
-    cases = store.load_cases(domain_name, until=datetime.now(), case_ids=ids)
+    cases = store.load_cases(domain_name, until=store.now_utc(), case_ids=ids)
     missing = sorted(set(ids) - {c.case_id for c in cases})
     if verdicts is None:
         verdicts = {c.case_id: offline_verdict(c, domain, draft_version) for c in cases}

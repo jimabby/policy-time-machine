@@ -18,6 +18,9 @@ import pathlib
 import sys
 from datetime import datetime
 
+import yaml
+from pydantic import ValidationError
+
 from . import calibration as calibration_engine
 from . import cli, cost, diff, provenance, stats, store
 from . import crosscheck as crosscheck_engine
@@ -30,10 +33,21 @@ from .models import Flip, Verdict
 
 
 def _domain(name: str) -> DomainConfig:
+    """The domain config, or a :class:`LookupError` the plugin turns into a 404.
+
+    ``ValidationError`` and ``YAMLError`` are caught alongside the missing file
+    because from a caller's side they are the same answer - this domain is not
+    usable - and only one of the three used to say so. A YAML with a typo in it
+    came back as an unhandled 500 with a pydantic traceback in the response,
+    which tells a reader that the server is broken rather than that their
+    domain file is.
+    """
     try:
         return load_domain(name)
     except FileNotFoundError as exc:
         raise LookupError(f"Unknown domain: {name}") from exc
+    except (ValidationError, yaml.YAMLError) as exc:
+        raise LookupError(f"Domain {name} is configured but unreadable: {exc}") from exc
 
 
 def _checked(name: str, version: str) -> DomainConfig:
@@ -362,7 +376,10 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
     """
     config = _checked(domain, version)
     return {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        # Aware UTC - see the same line in ptm/precedents.py. A bundle is built
+        # to leave the dashboard, so the one timestamp on it says which zone it
+        # is in rather than making a reader guess at the machine that wrote it.
+        "generated_at": store.now_utc().isoformat(timespec="seconds"),
         "domain": domain,
         "label": config.label,
         "policy_version": version,
@@ -472,7 +489,13 @@ def review_case(domain: str, version: str, case_id: str) -> dict:
     archived = store.query("SELECT snapshot FROM replay_snapshots WHERE run_id=?", (run,)) if run else []
     snap = json.loads(archived[0]["snapshot"]) if archived else None
     if snap:
-        case = next((c for c in snap["inputs"] if c["case_id"] == case_id), case)
+        # .get, because retention trims the archived bodies off a snapshot once
+        # it is old while keeping the run verifiable - see store.trim_snapshots.
+        # A trimmed run falls back to the case as it stands today, which is what
+        # this did before snapshots existed at all; `archived_inputs` below is
+        # what tells a reader which of the two they are looking at.
+        case = next((c for c in snap.get("inputs") or []
+                     if c["case_id"] == case_id), case)
     candidate = store.latest_verdicts(domain, version).get(case_id)
     baseline_version = snap["baseline_version"] if snap else config.in_force
     baseline = store.latest_verdicts(domain, baseline_version).get(case_id)
@@ -500,8 +523,15 @@ def review_case(domain: str, version: str, case_id: str) -> dict:
 
     cross = store.latest_cross_check(domain, version)
     disagreements = (cross or {}).get("report", {}).get("disagreements", [])
-    return {"case": case, "run_id": run, "archived_inputs": bool(snap),
-            "candidate": policy_side(candidate, version, snap["policy"] if snap else None),
+    # A trimmed snapshot has a row and hashes but no archived bodies, so it is
+    # not archived *inputs* - saying otherwise would label live case data as the
+    # record of what the judge was shown.
+    archived_inputs = bool(snap) and not snap.get("trimmed")
+    archived_policy = snap.get("policy") if snap else None
+    if archived_policy is not None and "policy_text" not in archived_policy:
+        archived_policy = None  # trimmed to its judge; fall back to the live text
+    return {"case": case, "run_id": run, "archived_inputs": archived_inputs,
+            "candidate": policy_side(candidate, version, archived_policy),
             "baseline": policy_side(baseline, baseline_version, snap.get("baseline") if snap else None),
             "rulings": [p.model_dump(mode="json") for p in store.load_precedents(domain) if p.case_id == case_id],
             "history": store.precedent_history(domain, case_id),
@@ -538,6 +568,169 @@ def compare(domain: str, left: str, right: str, limit: int = 200) -> dict:
     result["differences"] = result["differences"][:limit]
     result["impact_unit"] = config.impact_unit
     return result
+
+
+def replay_runs(domain: str, version: str) -> list[dict]:
+    """Every replay run recorded for this version, newest first.
+
+    What a reader needs before asking :func:`rerun` anything: which runs exist,
+    when each one happened, how many cases it judged and whether it is still the
+    current answer for any of them. The snapshot blob itself is dropped here -
+    it is megabytes and this is a list.
+
+    Named for the store function it wraps rather than ``runs``, which would
+    shadow the local of that name in :func:`summary` and read as the count it
+    holds there.
+    """
+    _checked(domain, version)
+    out = []
+    for row in store.replay_runs(domain, version):
+        row.pop("snapshot", None)
+        out.append(row)
+    return out
+
+
+def describe_runs(rows: list[dict], domain: str, version: str) -> str:
+    """The run list as the CLI prints it."""
+    if not rows:
+        return (f"no replay of {domain}/{version} is on file; run one with "
+                f"`python -m ptm.replay {domain} {version}` or trigger replay_{domain}")
+    lines = [f"{len(rows)} replay run(s) of {domain}/{version}, newest first:",
+             f"  {'started':<20} {'cases':>7} {'flips':>7} {'current':>8}  status  run"]
+    for row in rows:
+        lines.append(
+            f"  {row['started_at'][:19]:<20} {row['cases_replayed']:>7,} "
+            f"{row['flips']:>7,} {row['current_cases']:>8,}  "
+            f"{row['status'] or 'no snapshot':<11} {row['run_id']}")
+    lines.append("  'current' is how many cases still take their answer from that run; a "
+                 "run at 0 has been superseded entirely.")
+    if len(rows) > 1:
+        lines.append(f"  compare the last two with: python -m ptm.report {domain} "
+                     f"{version} --rerun")
+    return "\n".join(lines)
+
+
+#: What a cause reads as in prose, keyed by what :func:`ptm.store.compare_runs`
+#: found. "unknown" is a real answer and the one worth saying out loud: a run
+#: recorded before snapshots existed, or one whose evidence retention has
+#: trimmed, cannot rule a cause in or out.
+_CAUSE = {
+    "policy": {"changed": "the policy text or the judge configuration changed between them",
+               "same": "the policy text and judge configuration were identical",
+               "unknown": "one of these runs archived no policy hash, so this cannot be checked"},
+    "inputs": {"changed": "the historical cases changed between them",
+               "same": "the historical cases were identical",
+               "unknown": "one of these runs archived no input hash, so this cannot be checked"},
+}
+
+
+def rerun(domain: str, version: str, left: str | None = None,
+          right: str | None = None, limit: int = 200) -> dict:
+    """Two runs of the same version, and what moved between them.
+
+    ``compare`` answers *did my edit help?*. This answers the question beside
+    it, which nothing here could: **I ran the same version again and the number
+    moved - was that the policy, the data, or the judge?**
+
+    Defaults to the two most recent runs, because that is the form the question
+    actually arrives in. Runs are named by the ids :func:`runs` lists.
+    """
+    _checked(domain, version)
+    recorded = store.replay_runs(domain, version)
+    if len(recorded) < 2 and not (left and right):
+        # Reported, not raised. A version replayed once is the ordinary state of
+        # a version replayed once, and every other read model here answers "not
+        # measured" rather than erroring - confirmation_summary and the
+        # stability panel both do. Raising made the dashboard's own panel 404 on
+        # a fresh database, which is the shape of a broken page rather than of a
+        # measurement nobody has taken yet.
+        return {
+            "domain": domain, "policy_version": version, "available": False,
+            "runs_available": len(recorded),
+            "left": "", "right": "", "left_started_at": "", "right_started_at": "",
+            "judged_left": 0, "judged_right": 0, "compared": 0, "agree": 0, "differ": 0,
+            "outcome_changed": 0, "clause_only_changed": 0,
+            "only_left": [], "only_right": [],
+            "changed_between": {"policy": "unknown", "baseline_policy": "unknown",
+                                "inputs": "unknown"},
+            "differences": [], "impact_unit": _domain(domain).impact_unit,
+            "hint": f"{domain}/{version} has {len(recorded)} recorded run(s); comparing "
+                    f"two runs needs two. Replay it again to find out whether it "
+                    f"reproduces.",
+        }
+    # Newest first, so the default pair reads left=older, right=newer - which is
+    # the direction the prose below assumes and the direction time runs in.
+    #
+    # The older half is the most recent run that *shares cases* with the newer
+    # one, not simply the next row down. A backfill writes one run per month,
+    # all stamped within the same second and each covering a disjoint window, so
+    # "the last two runs" on any backfilled history means two adjacent months
+    # with no case in common - and the comparison then has nothing to compare.
+    # Where nothing overlaps this still falls through to the next row down and
+    # reports zero shared cases, which is the honest answer rather than an
+    # error: it is what a version replayed only in slices looks like.
+    right = right or recorded[0]["run_id"]
+    if left is None:
+        overlapping = store.runs_overlapping(domain, version, right)
+        left = next((r["run_id"] for r in recorded[1:] if overlapping.get(r["run_id"])),
+                    recorded[1]["run_id"])
+    known = {r["run_id"] for r in recorded}
+    for name in (left, right):
+        if name not in known:
+            raise LookupError(f"{name!r} is not a recorded run of {domain}/{version}")
+    result = store.compare_runs(domain, version, left, right)
+    result["differences"] = result["differences"][:limit]
+    result["impact_unit"] = _domain(domain).impact_unit
+    result["available"] = True
+    result["runs_available"] = len(recorded)
+    return result
+
+
+def describe_rerun(result: dict, digits: int = 1) -> str:
+    """The re-run comparison as the CLI prints it, cause first."""
+    if not result.get("available", True):
+        return (f"{result['domain']}/{result['policy_version']}: {result['hint']}")
+    causes = result["changed_between"]
+    lines = [f"{result['domain']}/{result['policy_version']}: two runs compared over "
+             f"{result['compared']:,} case(s) judged by both"]
+    if not result["compared"]:
+        # Not a clean bill of health, and it read as one: "every case came back
+        # the same" is true of no cases and says nothing whatsoever. Two
+        # adjacent months of a backfill land here by construction.
+        lines.append("  these two runs have no case in common, so nothing was compared. "
+                     "That is not agreement - it is two different windows. Name a pair "
+                     "that overlaps, or replay the same window twice.")
+        lines.append(f"  {len(result['only_left']):,} case(s) in the first, "
+                     f"{len(result['only_right']):,} in the second")
+        return "\n".join(lines)
+    if not result["differ"]:
+        lines.append("  every case came back the same, citing the same clause. "
+                     "This version is reproducible over this history.")
+    else:
+        lines.append(f"  {result['outcome_changed']:,} case(s) got a different outcome; "
+                     f"{result['clause_only_changed']:,} kept the outcome and cited a "
+                     f"different clause")
+    for key in ("policy", "inputs"):
+        lines.append(f"  {_CAUSE[key][causes[key]]}")
+    if result["differ"] and causes["policy"] == "same" and causes["inputs"] == "same":
+        # The finding this whole comparison exists to make available.
+        lines.append("  so nothing the run was given changed, and the answers moved "
+                     "anyway. That is the judge's noise arriving as a policy finding - "
+                     "measure it with `python -m ptm.stability` before reading anything "
+                     "into a difference this size.")
+    if result["only_left"] or result["only_right"]:
+        lines.append(f"  {len(result['only_left']):,} case(s) only the first run judged, "
+                     f"{len(result['only_right']):,} only the second - a different window, "
+                     f"not a disagreement; they are excluded from every count above")
+    for row in result["differences"][:10]:
+        change = (f"{row['left_outcome']} -> {row['right_outcome']}"
+                  if row["outcome_changed"] else f"{row['left_outcome']} (unchanged)")
+        lines.append(f"    {row['case_id']}: {change}  "
+                     f"clause {row['left_clause'] or '-'} -> {row['right_clause'] or '-'}")
+    if len(result["differences"]) > 10:
+        lines.append(f"    ... and {len(result['differences']) - 10:,} more; "
+                     f"--json for all of them")
+    return "\n".join(lines)
 
 
 def cost_report(domain: str, version: str) -> dict:
@@ -862,7 +1055,7 @@ def rule_agreement(domain: str, version: str) -> dict:
                          confidence=row["confidence"], policy_clause=row["policy_clause"] or "")
         for case_id, row in stored.items()
     }
-    cases = store.load_cases(domain, until=datetime.now())
+    cases = store.load_cases(domain, until=store.now_utc())
     result = rules_engine.agreement(config, version, rules, cases, verdicts)
     result["rules"] = len(rules)
     result["judged_by"] = models
@@ -1116,6 +1309,12 @@ def main(argv: list[str] | None = None) -> int:
     as_power = "--power" in args
     as_history = "--history" in args
     as_json = "--json" in args
+    # --runs lists the replays of one version; --rerun compares two of them.
+    # Both are about a (domain, version) pair, so unlike --compare they take
+    # their names from the positionals after the version rather than instead
+    # of it, and --rerun with none defaults to the two most recent.
+    listing_runs = "--runs" in args
+    comparing_runs = "--rerun" in args
     # --compare takes two versions rather than one, so it cannot go through
     # _flag; both are read off the positionals below, after the option scan has
     # had its say about anything dashed.
@@ -1154,7 +1353,8 @@ def main(argv: list[str] | None = None) -> int:
             skip = True
             continue
         # --target's value is popped above, so only the flag itself is left.
-        if arg in {"--csv", "--power", "--target", "--history", "--json", "--compare"}:
+        if arg in {"--csv", "--power", "--target", "--history", "--json", "--compare",
+                   "--runs", "--rerun"}:
             continue
         if arg.startswith("-"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
@@ -1204,7 +1404,18 @@ def main(argv: list[str] | None = None) -> int:
 
     store.init_db()
     try:
-        if as_power:
+        if listing_runs:
+            recorded = replay_runs(domain, version)
+            body = (json.dumps(recorded, indent=2, default=str) if as_json
+                    else describe_runs(recorded, domain, version))
+        elif comparing_runs:
+            # positional[2:] are the two run ids, when given. Naming neither is
+            # the common case and means "the last two".
+            names = positional[2:4]
+            result = rerun(domain, version, *(names + [None, None])[:2], limit=5000)
+            body = (json.dumps(result, indent=2, default=str) if as_json
+                    else describe_rerun(result))
+        elif as_power:
             result = power(domain, version, target)
             body = result["summary"] or result["hint"]
             if result["measured"]:

@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan
+.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -12,7 +12,20 @@ else
 PY        ?= .venv/bin/python
 BOOTSTRAP ?= python3
 endif
-ENV = PTM_INCLUDE_DIR=./include PTM_DB=./include/ptm.db PTM_OFFLINE=1
+# Which database every target below reads. Overridable, and it has to be: the
+# import targets default to include/history.db while this hardcoded
+# include/ptm.db, so after `make import-cases` the whole measurement half of
+# this file - export, gate, power, sweep, blast, versions - silently went on
+# reading the synthetic demo. Somebody importing two years of their own
+# decisions then measured the fixture and had no way to tell from the output.
+#
+#     make export DB=include/history.db
+#     make gate   DB=include/history.db
+#
+# The demo default stays what it was, so `make tour` and every target in the
+# README behave identically to before.
+DB ?= ./include/ptm.db
+ENV = PTM_INCLUDE_DIR=./include PTM_DB=$(DB) PTM_OFFLINE=1
 # Which domain the draft-lifecycle targets act on. Every other target names
 # `expenses` inline because it is demonstrating one thing; adopt and discard
 # take a version the caller has to look up first, so the domain has to be
@@ -21,9 +34,13 @@ D ?= expenses
 .DEFAULT_GOAL := help
 POLICY ?= v2
 FILE ?= examples/expenses.csv
+# The import targets' own default. Separate from DB above because these are the
+# targets about *your* history and the rest are about the shipped demo; point
+# DB at this to measure what you imported.
 DATA_DB ?= include/history.db
 
 .PHONY: import-preview import-cases replay-history replay-coverage snapshots
+.PHONY: history-export history-rulings history-resolve history-prune
 import-preview: ## Validate a CSV/JSON import without writing cases (FILE=... D=...)
 	$(PY) manage.py --db "$(DATA_DB)" import $(D) "$(FILE)"
 
@@ -38,6 +55,18 @@ replay-coverage: ## Inspect replay completeness and stale evidence
 
 snapshots: ## Export the facts and policies archived with each replay
 	$(PY) manage.py --db "$(DATA_DB)" snapshots $(D) $(POLICY) -o "ptm-$(D)-$(POLICY)-snapshots.json"
+
+history-export: ## Everything the Explorer shows for your imported history, as one file
+	$(PY) manage.py --db "$(DATA_DB)" export $(D) $(POLICY) -o "ptm-$(D)-$(POLICY).json"
+
+history-rulings: ## Export the human rulings held against your imported history
+	$(PY) manage.py --db "$(DATA_DB)" rulings $(D) -o "ptm-$(D)-precedents.json"
+
+history-resolve: ## Clear replay runs left pending by an interrupted import or replay
+	$(PY) manage.py --db "$(DATA_DB)" resolve $(D)
+
+history-prune: ## Reclaim disk in your own database. Add ARGS="--days 30 --vacuum"
+	$(PY) manage.py --db "$(DATA_DB)" prune --dry-run $(ARGS)
 
 help:      ## List targets
 	@grep -hE '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
@@ -133,6 +162,14 @@ blast:     ## Which segments carry more of the change than the rest of their fie
 
 versions:  ## Every version replayed, side by side. Did the edit help?
 	$(ENV) $(PY) -m ptm.report expenses --history
+
+# The question next to `versions` and `compare`, which both ask about two
+# *policies*. This asks about two runs of one policy: the number moved, and the
+# answer is the policy text, the history underneath it, or the judge - each read
+# from the hashes those runs archived rather than guessed at from a count.
+reruns:    ## Two runs of one version. Was it the policy, the data, or the judge?
+	$(ENV) $(PY) -m ptm.report expenses $(POLICY) --runs
+	$(ENV) $(PY) -m ptm.report expenses $(POLICY) --rerun
 
 # The pair the loop exists to produce. `make versions` says what each version
 # does; this says which cases the two of them actually disagree about, which is

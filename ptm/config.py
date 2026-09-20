@@ -462,8 +462,41 @@ def _fingerprint(name: str) -> tuple:
     return tuple(stamp)
 
 
+def is_safe_name(name: str) -> bool:
+    """Whether a string can name a file in a folder rather than reach out of it.
+
+    One path segment: non-empty, no separator in either dialect, not ``.`` or
+    ``..``, and not starting with a dot. Every name this project builds a path
+    from goes through here - a domain, and a draft version in
+    :mod:`ptm.proposal` - because the two are the same check and they were not
+    the same code.
+
+    A domain reaches :func:`load_domain` from an Airflow path parameter, from a
+    ``--conf`` blob and from five CLIs, and until this existed it went straight
+    into ``INCLUDE_DIR / "domains" / f"{name}.yaml"``. ``../../secrets``
+    resolves out of ``include/`` and ``..\\..\\secrets`` does too - a backslash
+    is an ordinary character in a URL path segment, so FastAPI's ``{domain}``
+    happily matches one and Windows reads it as a separator. Nothing was
+    exploitable in the shipped Linux demo, which is exactly the kind of thing
+    that stops being true when somebody deploys it somewhere else.
+    """
+    name = (name or "").strip()
+    return bool(name) and name not in {".", ".."} and not (
+        set(name) & set("/\\") or name.startswith("."))
+
+
 def load_domain(name: str) -> DomainConfig:
-    """The domain config, re-read whenever the files behind it have changed."""
+    """The domain config, re-read whenever the files behind it have changed.
+
+    An unusable name is a :class:`FileNotFoundError` like a missing one, so
+    every caller's existing ``except FileNotFoundError`` - and the 404 that
+    :func:`ptm.report._domain` turns it into - covers it with no new path.
+    """
+    if not is_safe_name(name):
+        raise FileNotFoundError(
+            f"{name!r} is not a domain name. A domain is one path segment - no "
+            f"slashes, no '..' - because it names a file in "
+            f"{INCLUDE_DIR / 'domains'}; available: {available_domains()}")
     stamp = _fingerprint(name)
     cached = _LOADED.get(name)
     if cached is not None and cached[0] == stamp:

@@ -374,6 +374,32 @@ def _bound(value: datetime) -> str:
     return value.isoformat()
 
 
+def now_utc() -> datetime:
+    """Now, as an aware UTC datetime, for every caller that needs an interval bound.
+
+    Public, and the one thing in this module that callers outside it are
+    *expected* to reach for, because the mistake it exists to stop was made in
+    six of them at once. :func:`load_cases` takes ``until`` as a bound and
+    :func:`_bound` deliberately treats a naive datetime as already-UTC - that is
+    what makes a pendulum bound and a seeded ``decided_at`` comparable. So a
+    caller passing ``datetime.now()`` hands it the *machine's local time*
+    labelled UTC, and every case decided inside the offset disappears from the
+    query without a word.
+
+    West of UTC that is silent data loss in the read path: on a UTC-5 host the
+    precedent gate, the rule-agreement score, the proposal's threshold search
+    and ``pit_check`` all stopped five hours short of the present. East of UTC
+    the bound merely runs generous, which is why a fixture of historical cases
+    and a developer in UTC+10 never saw it.
+
+    Aware rather than naive-UTC because :func:`_bound` normalises an aware value
+    correctly and cannot tell a naive local one from a naive UTC one. Handing it
+    something it can check beats handing it something it has to trust. See
+    :func:`_stamp` for the same argument about the write path.
+    """
+    return datetime.now(timezone.utc)
+
+
 def _stamp() -> str:
     """Now, in the one format every timestamp column here is written in.
 
@@ -1145,7 +1171,119 @@ _PRUNE: list[tuple[str, str]] = [
      """run_id IN (SELECT run_id FROM runs WHERE started_at < ?{domain})
         AND rowid NOT IN (
           SELECT MAX(rowid) FROM flips GROUP BY domain, policy_version, case_id)"""),
+    # Snapshots belonging to a run that no longer backs a single case.
+    #
+    # The fifth table, and the one that arrived after this list was written -
+    # which is why the module docstring above said "four". It is also the
+    # heaviest per row by an order of magnitude: a snapshot archives every
+    # hydrated case input and both sets of verdicts, so twenty-four backfill
+    # runs over the shipped six-hundred-case fixture come to 800 KB of a 3.2 MB
+    # database. Twenty-four rows, a quarter of the file.
+    #
+    # A run is kept while any case still points at it (replay_cases), because
+    # coverage() reports an active run with no snapshot as provenance it cannot
+    # verify - dropping one would turn a complete history into a warning. A
+    # 'pending' run is kept at any age too: it is an unresolved question, and
+    # deleting the question is not an answer. See resolve_pending.
+    #
+    # What that leaves is snapshots for runs a later replay has superseded
+    # entirely, which nothing reads. The active ones are handled by
+    # :func:`trim_snapshots` instead, which keeps them and drops their bodies.
+    ("replay_snapshots",
+     """created_at < ?{domain} AND status <> 'pending'
+        AND run_id NOT IN (SELECT run_id FROM replay_cases)"""),
 ]
+
+#: Where :func:`prune` reports the snapshots it slimmed rather than deleted.
+#: Named, because :func:`ptm.prune.describe` has to keep it out of the "rows
+#: removed" total - a trimmed row was not removed, and a retention pass that
+#: overstates what it dropped is the one kind of dishonesty this module cannot
+#: afford.
+TRIMMED_KEY = "replay_snapshots (trimmed)"
+
+#: The keys a snapshot carries only so the evidence can be *read back* - the
+#: hydrated case inputs, the archived baseline text, and both sets of verdicts.
+#: Everything :func:`ptm.provenance.coverage` and the staleness check actually
+#: compute from is a hash beside them, so these can go while the run stays
+#: verifiable.
+#:
+#: ``policy`` is deliberately **not** in this list, and finding out why is what
+#: the first draft of :func:`trim_snapshots` was for. The staleness check
+#: recomputes the policy digest against the *judge configuration the run
+#: recorded* - that is the whole point of pinning it - and that configuration
+#: lives at ``policy.judge``. Dropping the key outright left every trimmed run
+#: reporting "candidate policy is unavailable", so a retention pass turned
+#: twenty-four verifiable runs into twenty-four warnings. It is reduced to its
+#: judge instead; see :data:`SNAPSHOT_POLICY_KEEP`.
+SNAPSHOT_BODIES = ("inputs", "baseline", "verdicts", "baseline_verdicts")
+
+#: What survives of ``policy`` when a snapshot is trimmed: the judge
+#: configuration, because the hashes beside it are meaningless without it.
+SNAPSHOT_POLICY_KEEP = ("judge",)
+
+#: Rows :func:`trim_snapshots` acts on: old, still active, still carrying a
+#: body. ``instr`` rather than a length test, so the predicate means the same
+#: thing to the preview and to the write, and so a second pass is a no-op.
+_TRIM_WHERE = """created_at < ?{domain}
+    AND run_id IN (SELECT run_id FROM replay_cases)
+    AND instr(snapshot, '"inputs":') > 0"""
+
+
+def _trim_plan(domain: str | None, days: int) -> tuple[str, str, tuple]:
+    """The cutoff and the one (where, params) :func:`trim_snapshots` uses."""
+    cutoff = (now_utc().replace(tzinfo=None) - timedelta(days=max(days, 0))).isoformat()
+    suffix = " AND domain = ?" if domain else ""
+    params: tuple = (cutoff, domain) if domain else (cutoff,)
+    return cutoff, _TRIM_WHERE.format(domain=suffix), params
+
+
+def trim_snapshots(domain: str | None = None, days: int = 90) -> int:
+    """Drop the archived bodies from old snapshots, keeping the run verifiable.
+
+    The counterpart to the ``replay_snapshots`` entry in :data:`_PRUNE`, and the
+    one that reclaims the space. A snapshot's bulk is its ``inputs`` and its two
+    verdict sets; its *value* to everything that reads it routinely is the
+    hashes beside them, which are what ``coverage`` compares against the policy
+    and the cases on file to decide whether a run has gone stale. So an old run
+    that is still the current answer for its cases keeps its row, its status,
+    its case ids and all three hashes, and loses the bodies.
+
+    What that costs is the ability to inspect a trimmed run's archived case
+    inputs and policy text later - ``--snapshots`` and the review workspace fall
+    back to the live files for those runs. That is a real loss and it is why
+    this is on a ninety-day clock rather than automatic: recent evidence, which
+    is the evidence anybody actually opens, is untouched.
+
+    Returns rows changed. Running it twice changes nothing the second time.
+    """
+    _, where, params = _trim_plan(domain, days)
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT run_id, snapshot FROM replay_snapshots WHERE {where}", params
+        ).fetchall()
+        trimmed = []
+        for row in rows:
+            snapshot = json.loads(row["snapshot"])
+            for key in SNAPSHOT_BODIES:
+                snapshot.pop(key, None)
+            # Reduced, not removed - the hashes are computed against the judge
+            # configuration this run recorded, so dropping it would make every
+            # trimmed run report its own policy as unavailable.
+            policy = snapshot.get("policy") or {}
+            snapshot["policy"] = {k: policy[k] for k in SNAPSHOT_POLICY_KEEP if k in policy}
+            snapshot["trimmed"] = True
+            trimmed.append((json.dumps(snapshot), row["run_id"]))
+        c.executemany("UPDATE replay_snapshots SET snapshot=? WHERE run_id=?", trimmed)
+    return len(trimmed)
+
+
+def trim_snapshots_preview(domain: str | None = None, days: int = 90) -> int:
+    """How many snapshots :func:`trim_snapshots` would slim, same clause."""
+    _, where, params = _trim_plan(domain, days)
+    with conn() as c:
+        return c.execute(
+            f"SELECT COUNT(*) n FROM replay_snapshots WHERE {where}", params
+        ).fetchone()["n"]
 
 
 def _prune_plan(domain: str | None, days: int,
@@ -1168,7 +1306,7 @@ def prune(domain: str | None = None, days: int = 90,
           keep_unhit: bool = False) -> dict[str, int]:
     """Drop the bulk rows that have stopped earning their disk, and say what went.
 
-    Four tables grow without bound and none of them is ever read once it is old.
+    Five tables grow without bound and none of them is ever read once it is old.
     ``verdict_cache`` holds one row per prompt ever judged, so the edit-and-
     re-measure loop this project is built around adds a generation of entries
     per edit and never removes the ones the edit invalidated - they can never be
@@ -1178,6 +1316,17 @@ def prune(domain: str | None = None, days: int = 90,
     ``flips`` are the same failure one order of magnitude larger: one row per
     case per run, and every reader of both collapses to the newest row per case,
     so a superseded one is unreachable the moment it is written.
+    ``replay_snapshots`` is the fifth and the heaviest per row - it archives
+    every hydrated case input and both verdict sets - and is handled in two
+    halves: a superseded run's snapshot is deleted here, and an active run's is
+    slimmed to its hashes by :func:`trim_snapshots`, which this calls and
+    reports separately under :data:`TRIMMED_KEY`.
+
+    ``replay_cases`` is deliberately absent and is the one table here that
+    looks like it belongs and does not: its primary key is
+    ``(domain, policy_version, case_id)``, so it is bounded by cases times
+    versions rather than growing per run, and a row in it is what makes its run
+    the current answer. Pruning it would unpick the thing it exists to record.
 
     Until this existed the only levers were all-or-nothing:
     :func:`clear_domain_results` drops every derived table including the ones
@@ -1202,7 +1351,10 @@ def prune(domain: str | None = None, days: int = 90,
         for table, clause, params in plan:
             cleared[table] = c.execute(
                 f"DELETE FROM {table} WHERE {clause}", params).rowcount
-    return {"cutoff": cutoff, **cleared}
+    # Reported under its own key rather than folded into the counts above,
+    # because it is not a deletion: these rows stay and stay verifiable. See
+    # :func:`trim_snapshots` and :data:`TRIMMED_KEY`.
+    return {"cutoff": cutoff, **cleared, TRIMMED_KEY: trim_snapshots(domain, days)}
 
 
 def prune_preview(domain: str | None = None, days: int = 90,
@@ -1214,7 +1366,8 @@ def prune_preview(domain: str | None = None, days: int = 90,
         for table, clause, params in plan:
             counted[table] = c.execute(
                 f"SELECT COUNT(*) n FROM {table} WHERE {clause}", params).fetchone()["n"]
-    return {"cutoff": cutoff, **counted}
+    return {"cutoff": cutoff, **counted,
+            TRIMMED_KEY: trim_snapshots_preview(domain, days)}
 
 
 def vacuum() -> dict:
@@ -1552,6 +1705,170 @@ def compare_versions(domain: str, left: str, right: str) -> dict:
         "compared": len(shared),
         "agree": len(shared) - len(differences),
         "differ": len(differences),
+        "differences": differences,
+    }
+
+
+def import_snapshots(rows: list[dict]) -> dict[str, int]:
+    """Merge exported replay snapshots in, never overwriting one already here.
+
+    ``INSERT OR IGNORE`` on ``run_id``, for the reason
+    :func:`import_precedent_history` gives about archived rulings: a snapshot is
+    the record of what one run was actually given, and a run id is unique to the
+    run that made it. Two databases holding the same id hold the same run, so
+    there is nothing to choose between them; two databases holding different
+    ids hold different runs, and both are worth having. Either way, replacing is
+    never the right answer.
+
+    Returns added and skipped counts rather than a total, because "this import
+    changed nothing" is the expected result of re-importing an export and needs
+    to be distinguishable from "this import found nothing".
+    """
+    if not rows:
+        return {"added": 0, "already_here": 0}
+    with conn() as c:
+        before = c.execute("SELECT COUNT(*) n FROM replay_snapshots").fetchone()["n"]
+        c.executemany(
+            """INSERT OR IGNORE INTO replay_snapshots
+               (run_id, domain, policy_version, created_at, status, snapshot)
+               VALUES (?,?,?,?,?,?)""",
+            [(r["run_id"], r["domain"], r["policy_version"], r["created_at"],
+              r["status"], json.dumps(r["snapshot"])) for r in rows],
+        )
+        after = c.execute("SELECT COUNT(*) n FROM replay_snapshots").fetchone()["n"]
+    return {"added": after - before, "already_here": len(rows) - (after - before)}
+
+
+def replay_runs(domain: str, policy_version: str) -> list[dict]:
+    """Every replay run recorded for one version, newest first.
+
+    The join is to ``replay_snapshots`` for the status and the hashes, and to
+    ``replay_cases`` for whether this run is still the current answer for any
+    case. A run with no snapshot is one from before snapshots existed; it is
+    listed with an empty status rather than hidden, because a reader comparing
+    two runs needs to know which of them cannot be checked for provenance.
+    """
+    return query(
+        """SELECT r.run_id, r.started_at, r.cases_replayed, r.flips, r.impact,
+                  r.baseline_version, r.judge_model,
+                  COALESCE(s.status, '') AS status,
+                  COALESCE(s.snapshot, '') AS snapshot,
+                  (SELECT COUNT(*) FROM replay_cases rc WHERE rc.run_id = r.run_id) AS current_cases
+           FROM runs r
+           LEFT JOIN replay_snapshots s ON s.run_id = r.run_id
+           WHERE r.domain = ? AND r.policy_version = ?
+           ORDER BY r.started_at DESC, r.run_id""",
+        (domain, policy_version),
+    )
+
+
+def runs_overlapping(domain: str, policy_version: str, run_id: str) -> dict[str, int]:
+    """Other runs of this version that judged any of ``run_id``'s cases, and how many.
+
+    What makes a default pair for :func:`ptm.report.rerun` choosable at all. The
+    obvious default - the two most recent runs - is wrong precisely where this
+    project generates most of its runs: a backfill writes one run per month,
+    all within the same second, each covering a *disjoint* window. Picking the
+    two newest then compares two adjacent months, which share no cases, and the
+    answer is a comparison over nothing.
+    """
+    rows = query(
+        """SELECT run_id, COUNT(*) n FROM verdicts
+           WHERE domain = ? AND policy_version = ? AND run_id <> ?
+             AND case_id IN (SELECT case_id FROM verdicts WHERE run_id = ?)
+           GROUP BY run_id""",
+        (domain, policy_version, run_id, run_id))
+    return {r["run_id"]: r["n"] for r in rows}
+
+
+def compare_runs(domain: str, policy_version: str, left: str, right: str) -> dict:
+    """Two runs of the *same* version, case by case.
+
+    :func:`compare_versions` asks whether an edit to the policy helped.
+    This asks the question next to it, which nothing here could answer: **I ran
+    the same version again and the number moved - what moved it?**
+
+    That question has exactly three answers and they have different owners. The
+    policy text or the judge configuration changed underneath the re-run; the
+    historical cases changed underneath it (a correction, a late import, a fact
+    backfilled with an earlier ``known_from``); or neither did and the judge
+    simply answered differently, which is the judge's noise showing up as a
+    policy finding. The first two are decided by the hashes each run archived -
+    that is what they were captured for - so this reports them alongside the
+    per-case diff rather than leaving a reader to infer a cause from a count.
+
+    Verdicts come from the ``verdicts`` table keyed by run, not from the
+    snapshots, so a run whose snapshot retention has trimmed is still
+    comparable. Only cases both runs judged are compared: a case one run never
+    saw is a different window, not a disagreement.
+    """
+    def verdicts_for(run_id: str) -> dict[str, dict]:
+        return {r["case_id"]: r for r in query(
+            """SELECT case_id, outcome, policy_clause, confidence, rationale
+               FROM verdicts WHERE run_id = ? AND domain = ? AND policy_version = ?""",
+            (run_id, domain, policy_version))}
+
+    def snapshot_for(run_id: str) -> dict:
+        rows = query("SELECT snapshot FROM replay_snapshots WHERE run_id = ?", (run_id,))
+        return json.loads(rows[0]["snapshot"]) if rows and rows[0]["snapshot"] else {}
+
+    a, b = verdicts_for(left), verdicts_for(right)
+    left_snap, right_snap = snapshot_for(left), snapshot_for(right)
+    actual = {r["case_id"]: r["actual_outcome"] for r in query(
+        "SELECT case_id, actual_outcome FROM cases WHERE domain=?", (domain,))}
+
+    shared = sorted(set(a) & set(b))
+    differences = []
+    for case_id in shared:
+        same_outcome = a[case_id]["outcome"] == b[case_id]["outcome"]
+        same_clause = a[case_id]["policy_clause"] == b[case_id]["policy_clause"]
+        if same_outcome and same_clause:
+            continue
+        differences.append({
+            "case_id": case_id,
+            "actual_outcome": actual.get(case_id, ""),
+            "left_outcome": a[case_id]["outcome"],
+            "right_outcome": b[case_id]["outcome"],
+            "left_clause": a[case_id]["policy_clause"],
+            "right_clause": b[case_id]["policy_clause"],
+            "left_confidence": a[case_id]["confidence"],
+            "right_confidence": b[case_id]["confidence"],
+            # Separated because they are different findings. A changed outcome
+            # moves a decision; a changed clause moves the attribution panel and
+            # every threshold curve drawn from it while the decision stands.
+            "outcome_changed": not same_outcome,
+            "clause_changed": not same_clause,
+        })
+
+    # What the two runs archived about their own inputs. Absent on either side
+    # means the comparison cannot rule that cause in or out, which is reported
+    # as unknown rather than as "no change" - the whole reason these are here.
+    def compare_hash(key: str) -> str:
+        first, second = left_snap.get(key), right_snap.get(key)
+        if not first or not second:
+            return "unknown"
+        return "same" if first == second else "changed"
+
+    causes = {"policy": compare_hash("policy_hash"),
+              "baseline_policy": compare_hash("baseline_hash"),
+              "inputs": compare_hash("input_hash")}
+    outcome_moves = sum(1 for d in differences if d["outcome_changed"])
+    return {
+        "domain": domain, "policy_version": policy_version,
+        "left": left, "right": right,
+        "left_started_at": next((r["started_at"] for r in replay_runs(domain, policy_version)
+                                 if r["run_id"] == left), ""),
+        "right_started_at": next((r["started_at"] for r in replay_runs(domain, policy_version)
+                                  if r["run_id"] == right), ""),
+        "judged_left": len(a), "judged_right": len(b),
+        "compared": len(shared),
+        "agree": len(shared) - len(differences),
+        "differ": len(differences),
+        "outcome_changed": outcome_moves,
+        "clause_only_changed": len(differences) - outcome_moves,
+        "only_left": sorted(set(a) - set(b)),
+        "only_right": sorted(set(b) - set(a)),
+        "changed_between": causes,
         "differences": differences,
     }
 
