@@ -3,6 +3,47 @@
 A three-minute demo for people who care about decisions, not DAG syntax.
 The audience's question throughout: **“Would you ship this rule?”**
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/story-dark.svg">
+  <img alt="600 historical decisions as one bar: 109 changed because of policy v2, 38 were already off the old rulebook, 453 came out the same" src="docs/charts/story.svg">
+</picture>
+
+**That bar is the whole demo.** Everything below is the three minutes it takes
+to earn each of its three numbers in front of a room.
+
+## The run of show
+
+```mermaid
+gantt
+    dateFormat  mm:ss
+    axisFormat  %M:%S
+    title       Three minutes, seven beats
+    section Ask
+    The bet — how many change?        :a1, 00:00, 25s
+    section Reveal
+    The twist — who actually caused it :a2, 00:25, 30s
+    No spoilers from the future        :a3, 00:55, 25s
+    section Explain
+    Open the machine                   :a4, 01:20, 30s
+    The person gets a say              :a5, 01:50, 30s
+    section Decide
+    Let the room choose the number     :a6, 02:20, 25s
+    Pay off the opening question       :a7, 02:45, 15s
+```
+
+| Beat | On screen | The one thing they should leave with |
+|---|---|---|
+| **0:00** The bet | Dashboard, prediction slider | 147 of 600. Almost one in four. |
+| **0:25** The twist | Attribution, clause 1.1 | 38 of them were never the proposal's doing. |
+| **0:55** No spoilers | Terminal, `ptm.pit_check` | Use today's facts and 39 answers are wrong. |
+| **1:20** The machine | Engine room diagram | Rewind, try both, ask a person, remember. |
+| **1:50** The person | Human rulings, the gate | Their answer becomes a check the next proposal faces. |
+| **2:20** The number | Threshold sweep | The choice is a curve, not an argument. |
+| **2:45** The payoff | Impact summary | *Would you ship this rule?* |
+
+Cut in this order if you overrun: the threshold vote at 2:20, then the
+point-in-time check at 0:55. Never cut 0:25 — the twist is the demo.
+
 ## Set the stage
 
 Start Docker, then run `docker compose up --build -d`. Once Airflow is ready,
@@ -29,6 +70,8 @@ people answer the review requests.” No model call or API key is needed.
 
 ## 0:00–0:25 · The bet
 
+![The Policy Diff Explorer: the plain-language summary first, the evidence one click behind it](docs/explorer.gif)
+
 **Show:** the dashboard's opening question and **Place your prediction**.
 Keep the impact chart below the fold until the audience has guessed.
 
@@ -45,6 +88,8 @@ not a policy setting; the reveal uses the selected replay's actual counts.
 
 ## 0:25–0:55 · The plot twist
 
+![The replay printing its summary, then attributing every change to the clause responsible](docs/attribution.gif)
+
 **Click:** **Find the cause**. Point to clause 1.1 and the deviation row.
 
 > “Which sentence did it? This receipt clause accounts for 48 changes. But
@@ -55,7 +100,17 @@ not a policy setting; the reveal uses the selected replay's actual counts.
 
 Say “different answer”; explain once that the tables call these “flips”.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/attribution-dark.svg">
+  <img alt="Changed decisions by clause: clause 1.1 relaxed accounts for 48, the reviewers' own deviations for 38, clause 2.1 relaxed for 22" src="docs/charts/attribution.svg">
+</picture>
+
+If you need one slide for this beat, it is the one above: the second bar is not
+a clause, it is the reviewers, and it is the second largest thing in the chart.
+
 ## 0:55–1:20 · No spoilers from the future
+
+![Point-in-time replay against a naive one: 39 of 600 cases come out wrong](docs/pit.gif)
 
 **Show:** the terminal. With the project's virtual environment active, run:
 
@@ -70,6 +125,20 @@ python -m ptm.pit_check
 Let the result sit for a beat. These numbers apply to the shipped expenses fixture.
 
 ## 1:20–1:50 · Open the machine
+
+```mermaid
+flowchart LR
+    Past["Yesterday's decisions<br/>Facts known on the day"] --> Try["Try both rulebooks"]
+    Try --> Explain["See what changes<br/>and which clause explains it"]
+    Explain --> Review["A person reviews<br/>selected cases"]
+    Review --> Remember["Remember the ruling"]
+    Remember --> Check["Check the next proposal"]
+    Check -. "Revise and rehearse again" .-> Try
+```
+
+That loop is what **Look under the hood** draws on the dashboard. Trace it with
+the pointer while you say the four sentences below; do not read it out — the
+diagram already says what it says, and faster than you can.
 
 **Click:** **Look under the hood** on the dashboard.
 
@@ -88,6 +157,8 @@ For a technical audience, briefly show the monthly runs in Airflow.
 
 ## 1:50–2:20 · The person gets a say
 
+![The precedent gate failing, and reporting that the candidate policy introduced none of the reversals](docs/gate.gif)
+
 **Click:** **Meet the human decisions**. Point to a ruling and its reason.
 
 > “We don't ask someone to read 600 cases. The demo selects eight. Each answer
@@ -104,6 +175,8 @@ do not present simulated rulings as live reviewer activity.
 
 ## 2:20–2:45 · Let the room choose
 
+![Sweeping the amount threshold in clause 1.1 across six settings](docs/sweep.gif)
+
 **Switch to Full detail. Show:** **Where should the threshold be?** Select the expenses receipt threshold
 (clause 1.1, `amount_gbp`), enter `25,50,75,100,150`, and click **Sweep**.
 
@@ -113,6 +186,20 @@ do not present simulated rulings as live reviewer activity.
 
 Ask for one vote, then point to that setting's result. Keep the caveat visible.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/sweep-dark.svg">
+  <img alt="Decisions that change against the receipt threshold: 93 at GBP 25, 147 at the 75 in force, 212 at 250, with the policy-driven share tracking below it" src="docs/charts/sweep.svg">
+</picture>
+
+**If the dashboard is unavailable,** this chart is the beat. It is the same
+sweep, drawn from the same fixture — `make charts` regenerates it, and the
+suite fails if it has stopped being true.
+
+**If somebody asks whether the curve is the whole story,** it is not, and that
+is worth thirty seconds you do not have: a single sweep holds every other
+threshold still and never says so. `make grid` moves two at once. Keep it for
+the Q&A.
+
 ## 2:45–3:00 · Pay off the opening question
 
 **Show:** the impact summary again.
@@ -120,6 +207,29 @@ Ask for one vote, then point to that setting's result. Keep the caveat visible.
 > “Would you ship this rule? Now we can discuss who it affects, what it costs,
 > and which human decisions it must respect. Try tomorrow's rules on yesterday's
 > decisions—before tomorrow becomes a surprise.”
+
+**The two slides for the questions that always come.** *Who does it land on?*
+and *how sure are you?* — neither belongs in the three minutes, and both are
+asked within a minute of finishing.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/segments-dark.svg">
+  <img alt="Flip rate by expense category with 95% intervals: meals at 52.6% against 17.8% for the rest of the field, every other category overlapping" src="docs/charts/segments.svg">
+</picture>
+
+> “One category moves more than the rest and four do not. That is a question
+> somebody should be able to answer before the rule ships — it is not a finding
+> of unfairness, because categories differ in what they contain.”
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/power-dark.svg">
+  <img alt="The measured 24.5% flip rate with the band 17.9% to 31.8% shaded: anything inside it is this sample's noise" src="docs/charts/power.svg">
+</picture>
+
+> “And this is the one that runs before you spend anything. Two years of
+> expense decisions cannot separate 24.5% from 20%. If the next version lands
+> inside that band, we have not measured a change — we have measured the
+> sample.”
 
 ## Keep the show moving
 

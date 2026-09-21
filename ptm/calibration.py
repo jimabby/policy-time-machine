@@ -27,6 +27,8 @@ quoting it wrong.
 
 from __future__ import annotations
 
+import functools
+import json
 import sys
 from collections import Counter
 
@@ -251,7 +253,7 @@ def gate(report: CalibrationReport, domain: DomainConfig) -> list[str]:
 
 
 USAGE = """usage:
-  python -m ptm.calibration [domain] [version]
+  python -m ptm.calibration [domain] [version] [--json]
 
 Score the judge against the humans who ruled on the same cases, and gate on it.
 The only measurement here that scores the judge against an answer rather than
@@ -259,6 +261,10 @@ against itself.
 
   domain    defaults to 'expenses'
   version   defaults to 'v2'
+  --json    the whole score on stdout and the prose on stderr, with the gate's
+            verdict and the exit code in it. This is a gate, and a gate that
+            can only say pass or fail leaves a CI step reporting that something
+            breached a threshold rather than which threshold and by how much.
 
 Exits non-zero when the domain's calibration.gate is 'fail' and a threshold is
 breached. Inert with PTM_OFFLINE=1, where the verdicts came from the offline
@@ -271,30 +277,61 @@ def main(argv: list[str] | None = None) -> int:
     if cli.wants_help(args):
         print(USAGE)
         return 0
-    domain_name = args[0] if args else "expenses"
-    version = args[1] if len(args) > 1 else "v2"
+    as_json = "--json" in args
+    # Same contract as ptm.gate: stdout is the document and nothing else, so
+    # the prose has one destination picked here rather than at each call.
+    say = functools.partial(print, file=sys.stderr if as_json else sys.stdout)
+    positional = [a for a in args if not a.startswith("-")]
+    # Taking the flags out of the positional list means a misspelled one would
+    # otherwise be dropped on the floor: `--jsonn` would run and print prose,
+    # and the caller parsing stdout would see the table it asked not to get.
+    # Every other entry point here refuses an option it does not know, and this
+    # one used to get that for free by reading argv[0] as the domain.
+    unknown = [a for a in args if a.startswith("-") and a != "--json"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    domain_name = positional[0] if positional else "expenses"
+    version = positional[1] if len(positional) > 1 else "v2"
 
     from . import report as report_module
+
+    def answer(result: dict, code: int, problems: list[str]) -> int:
+        if as_json:
+            # The domain and version are stated here rather than taken from the
+            # read model, which does not carry them: the plugin knows what it
+            # asked for and a file on somebody's disk does not.
+            json.dump({"domain": domain_name, "version": version, **result,
+                       "code": code, "passed": not problems,
+                       "gate_problems": problems}, sys.stdout, indent=2, default=str)
+            print()
+        return code
 
     try:
         result = report_module.calibration(domain_name, version)
     except LookupError as exc:
+        if as_json:
+            json.dump({"error": str(exc), "domain": domain_name, "version": version,
+                       "code": 2, "measured": False, "passed": False},
+                      sys.stdout, indent=2)
+            print()
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     if not result.get("measured"):
-        print(result.get("hint", "nothing to score the judge against"))
-        return 0
+        say(result.get("hint", "nothing to score the judge against"))
+        return answer(result, 0, [])
     report = CalibrationReport(**result["report"])
-    print(describe(report))
+    say(describe(report))
     if result.get("inert"):
-        print("  scored against verdicts the offline rules produced, so this measures the "
-              "fixture rather than a judge - the gate is held off until PTM_OFFLINE=0")
-        return 0
+        say("  scored against verdicts the offline rules produced, so this measures the "
+            "fixture rather than a judge - the gate is held off until PTM_OFFLINE=0")
+        return answer(result, 0, [])
     domain = load_domain(domain_name)
     problems = gate(report, domain)
     for problem in problems:
         print(f"GATE  {problem}", file=sys.stderr)
-    return 1 if problems and domain.calibration.gate == "fail" else 0
+    code = 1 if problems and domain.calibration.gate == "fail" else 0
+    return answer(result, code, problems)
 
 
 if __name__ == "__main__":  # pragma: no cover

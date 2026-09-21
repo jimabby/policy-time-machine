@@ -159,6 +159,20 @@ class TestTheThirtySecondStoryIsReal:
 
 WORDS = {20: "twenty", 30: "thirty", 40: "forty"}
 
+#: The other direction, for the counts the README spells out in words. Small on
+#: purpose: a repository that grows past this has a different problem than a
+#: missing dictionary entry.
+WORDS_TO_INT = {word: n for n, word in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve "
+    "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+    .split())}
+
+
+def as_int(word: str) -> int:
+    """A spelled number, however the sentence happened to capitalise it."""
+    assert word.lower() in WORDS_TO_INT, f"cannot read {word!r} as a number"
+    return WORDS_TO_INT[word.lower()]
+
 
 class TestTheCaveatCountIsReal:
     def test_the_readme_says_how_many_there_are(self):
@@ -180,3 +194,46 @@ class TestTheCaveatCountIsReal:
         assert expected in readme, (
             f"the caveats section has {actual} entries, so the README should say "
             f"{expected!r}; it does not")
+
+
+class TestTheCountsOfThingsThisRepositoryHas:
+    """"Nine of them" is a claim, and claims here are checked.
+
+    The README counts three kinds of artefact at the reader: the clips, the
+    charts, and the entry points that can hand over a document rather than an
+    exit code. Every one of those numbers goes stale the moment somebody adds
+    one of the thing it counts, and none of them breaks anything when it does -
+    which is the exact failure this file was written after.
+    """
+
+    def readme(self) -> str:
+        return (REPO / "README.md").read_text(encoding="utf-8")
+
+    def test_the_clips(self):
+        spelled = re.search(r"the (\w+) clips, captured from the real tool",
+                            self.readme())
+        assert spelled, "the layout no longer counts the clips"
+        assert as_int(spelled.group(1)) == len(
+            list((REPO / "docs").glob("*.gif")))
+
+    def test_the_charts(self):
+        """Counted as *figures*, not as files: each one is two SVGs, light and
+        dark, and a reader counting pictures counts six."""
+        spelled = re.search(r"the (\w+) figures, generated from the fixture",
+                            self.readme())
+        assert spelled, "the layout no longer counts the charts"
+        files = list((REPO / "docs" / "charts").glob("*.svg"))
+        assert as_int(spelled.group(1)) * 2 == len(files)
+
+    def test_the_entry_points_that_answer_in_json(self):
+        """The claim that turns an exit code into a document, counted.
+
+        Read from the modules rather than from a list somebody maintains, for
+        the same reason the CLI list in tests/test_cli_and_retention.py is:
+        a list of entry points is the thing that falls behind the entry points.
+        """
+        spelled = re.search(r"(\w+) entry points take it", self.readme())
+        assert spelled, "the README no longer counts the --json entry points"
+        having = [path.stem for path in (REPO / "ptm").glob("*.py")
+                  if '"--json"' in path.read_text(encoding="utf-8")]
+        assert as_int(spelled.group(1)) == len(having), sorted(having)

@@ -1163,9 +1163,12 @@ scripts/storyboard.py           the demo video, as one table: shots, durations,
 scripts/build_shots.py          renders each still with a headless browser
 scripts/generate_audio.py       synthesises the narration (macOS only: `say`)
 scripts/assemble_video.py       cuts the stills into the video and muxes it
+scripts/build_charts.py         the README's six figures, drawn from a real
+                                  replay - light and dark, no plotting library
 docs/*.gif                      the README's clips, captured from the real tool
+docs/charts/*.svg               the figures, checked byte for byte by the suite
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1367 tests; the engine's 1186 need nothing but Python
+tests/                          1428 tests; the engine's 1247 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1229,6 +1232,93 @@ which is right for a shell asking pass-or-fail and useless to a CI step that
 wants to *post* which rulings were reversed rather than report that there were
 some.
 
+### A gate that can only say "failed" is half a gate
+
+The argument `ptm.gate --json` makes about itself applied to three more entry
+points here, and it took a while to notice: `ptm.calibration` exits non-zero
+when the judge has drifted from the humans, `ptm.rules` when the offline rules
+no longer implement the policy they stand in for, and `ptm.preflight` when a
+clause would be empty at judging time. All three can redden a build, and all
+three could only hand the step that failed an exit code — so the run said that
+*something* had breached a threshold and never which threshold, by how much, or
+in which clause. Somebody then opened the log and read the paragraph, which is
+the work the exit code was supposed to have saved.
+
+```bash
+python -m ptm.calibration expenses v2 --json | jq '.gate_problems'
+python -m ptm.rules expenses v2 --json       | jq '.disagreements'
+python -m ptm.preflight expenses v2 --json   | jq '.versions[].findings[]'
+```
+
+Each carries `code`, `passed` and the domain it is about, so the exit status
+travels inside the document as well as out of the process — a consumer reading
+a saved body is not left inferring the verdict from the numbers. The prose is
+unchanged without the flag, deliberately: nobody's existing pipeline moves.
+
+### The one result that is a shape
+
+Every module above answers a question with a sentence or a verdict. `ptm.sweep`
+answers with a *curve*, and a curve is the one output here that somebody wants
+to plot, diff or feed to the next tool rather than read — and it could only be
+had as a fixed-width table. The grid form was worse than that: its own last
+line told a reader that the net impact and the policy-driven split were "in the
+JSON form of this result", and the JSON form existed on a FastAPI route behind
+an Airflow login and nowhere a shell could reach.
+
+```bash
+python -m ptm.sweep expenses v2 --json                          # the dials
+python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75 --json  # the curve
+python -m ptm.sweep expenses v2 --joint \
+  1.1:amount_gbp=25,50,75 3.1:days_notice=3,7,14 --json         # the grid
+```
+
+Same contract as `ptm.gate --json` in all three cases: stdout is the document
+and nothing else, the prose goes to stderr, and **a refusal is a document too**
+— `{"ran": false, "code": 2, "error": ...}` — so a caller never has to tell
+*could not be run* from *crashed* by looking at an empty pipe. That last one
+matters most here, because the values being swept usually come from somewhere
+else, and the refusal a script is likeliest to meet is the one about `nan` and
+`inf`: the whole reason that check exists is that `NaN` in a JSON body is what
+`JSON.parse` rejects, so emitting the refusal *as* JSON is the consistent end
+of the same argument.
+
+The warnings travel **inside** the document rather than only beside it. A
+clause that matches nothing at that setting, a dial that turns out to move
+nothing at all, offline rules that have never been scored against a judge:
+every one is a reason not to read a row of the curve at face value, and a
+consumer that kept stdout and dropped stderr would have had the numbers and
+none of the reasons.
+
+### The figures are generated too
+
+`docs/*.gif` show the tool running, which is the right artefact for *this is
+what it looks like* and the wrong one for *this is what it found*: a reader
+cannot compare two numbers in a clip, and neither can a build. So the six
+figures that carry an argument — the split between the policy and the
+reviewers, the threshold curve, the grid, where the change lands, what the
+sample cannot settle — are drawn by `scripts/build_charts.py` from a real
+offline replay of the shipped fixture, as SVG, with no plotting dependency.
+
+The reason they are generated rather than drawn is the one `.gitignore` already
+makes about the video stills: *a still that is committed is a picture of a
+number that no longer has to agree with the number.* The stills are ignored
+because nothing could check them. These are committed because something can —
+`tests/test_charts.py` redraws all twelve files and compares them byte for
+byte, and `python scripts/build_charts.py --check` is a CI step. The same suite
+holds the sentence under each chart, and its `alt` text, to the same replay,
+because alt text is the only version of a chart a screen reader gets and
+therefore the one least worth being wrong.
+
+Two files per chart, `<name>.svg` and `<name>-dark.svg`. GitHub strips `<style>`
+out of an SVG it serves into a README, and a `prefers-color-scheme` media query
+with it, so the theme has to be chosen by the `<picture>` element around the
+image rather than inside it. The dark palette is the same hues stepped for the
+dark surface, not an inversion. A label set inside a coloured fill picks black
+or white from that fill's own relative luminance, at the crossover where the
+two give equal WCAG contrast — which guarantees at least 4.58:1 against any
+fill whatsoever, and which an eyeballed threshold got wrong by putting white on
+the palette's mid-blue at 3.6:1.
+
 ## Verified against
 
 Built and run against `apache/airflow:3.1.0` with
@@ -1269,7 +1359,12 @@ Built and run against `apache/airflow:3.1.0` with
 - every `python -m ptm.*` entry point answers `--help` without doing any work,
   and the list of them is checked against the modules that actually have a
   `main` — two had fallen off it, and one of the two *seeded every domain* when
-  asked for help.
+  asked for help;
+- the figures in README.md and DEMO_SCRIPT.md are redrawn from a real offline
+  replay and compared byte for byte with what is committed
+  (`python scripts/build_charts.py --check`), so a picture cannot outlive the
+  number it draws. The prose beside each one, including its `alt` text, is held
+  to the same replay — see [the charts](#the-figures-are-generated-too).
 
 ## Caveats
 
@@ -1282,7 +1377,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 1186 tests,
+  so a skip there means something has genuinely changed. The engine's 1247 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.

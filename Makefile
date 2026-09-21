@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style storyboard rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
+.PHONY: help up down seed logs demo reset test lint unit style storyboard charts charts-check rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -137,6 +137,17 @@ lint:      ## Check every domain YAML against the policies it claims to implemen
 # after a mismatch plays under the wrong sentence.
 storyboard: ## Check the demo video's shot timings against its narration
 	$(PY) scripts/storyboard.py
+
+# The README's and the demo script's figures, drawn from a real offline replay
+# of the shipped fixture. `charts-check` is what CI runs: it never writes, and
+# it fails when a committed picture has stopped agreeing with the numbers the
+# fixture produces - which is the same contract tests/test_docs.py holds the
+# prose to, applied to the medium a reader trusts more and can check less.
+charts:    ## Redraw docs/charts/*.svg from the fixture
+	$(ENV) $(PY) scripts/build_charts.py
+
+charts-check: ## Fail if a committed chart no longer matches the fixture
+	$(ENV) $(PY) scripts/build_charts.py --check
 
 unit:      ## Run the test suite
 	$(ENV) $(PY) -m pytest -q

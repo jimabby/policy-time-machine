@@ -32,6 +32,8 @@ scored against, so the 100% cannot be quoted as if it meant something.
 
 from __future__ import annotations
 
+import functools
+import json
 import sys
 
 from . import cli, stats
@@ -328,13 +330,17 @@ def describe(result: dict) -> str:
 
 
 USAGE = """usage:
-  python -m ptm.rules [domain] [version]
+  python -m ptm.rules [domain] [version] [--json]
 
 Do the offline rules agree with the judge they stand in for? Every threshold
 curve is computed from these rules, so this is the number the sweep rests on.
 
   domain    defaults to 'expenses'
   version   defaults to 'v2'
+  --json    the agreement, clause by clause, on stdout with the gate's verdict
+            in it, and the prose on stderr. The same argument ptm.gate makes:
+            a gate that can only say pass or fail leaves a CI step reporting
+            that something was below its floor rather than which clause.
 
 Exits non-zero when the domain's rules.gate is 'fail' and agreement is below
 its floor. Inert with PTM_OFFLINE=1, where the verdicts being scored against
@@ -347,28 +353,48 @@ def main(argv: list[str] | None = None) -> int:
     if cli.wants_help(args):
         print(USAGE)
         return 0
-    domain_name = args[0] if args else "expenses"
-    version = args[1] if len(args) > 1 else "v2"
+    as_json = "--json" in args
+    say = functools.partial(print, file=sys.stderr if as_json else sys.stdout)
+    positional = [a for a in args if not a.startswith("-")]
+    # A misspelled flag would otherwise be dropped on the floor rather than
+    # refused - see the note in ptm.calibration.main, which had the same shape.
+    unknown = [a for a in args if a.startswith("-") and a != "--json"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    domain_name = positional[0] if positional else "expenses"
+    version = positional[1] if len(positional) > 1 else "v2"
 
     from . import report as report_module
+
+    def answer(result: dict, code: int, problems: list[str]) -> int:
+        if as_json:
+            json.dump({**result, "code": code, "passed": not problems,
+                       "gate_problems": problems}, sys.stdout, indent=2, default=str)
+            print()
+        return code
 
     try:
         result = report_module.rule_agreement(domain_name, version)
     except LookupError as exc:
+        if as_json:
+            json.dump({"error": str(exc), "domain": domain_name, "version": version,
+                       "code": 2, "compared": 0, "passed": False},
+                      sys.stdout, indent=2)
+            print()
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
-    print(describe(result))
+    say(describe(result))
     if result.get("inert"):
-        print(f"  measured against verdicts produced by {result['judged_by'] or ['the offline judge']}, "
-              f"which is these same rules - so this figure is 100% by construction and "
-              f"means nothing until PTM_OFFLINE=0")
-        return 0
+        say(f"  measured against verdicts produced by {result['judged_by'] or ['the offline judge']}, "
+            f"which is these same rules - so this figure is 100% by construction and "
+            f"means nothing until PTM_OFFLINE=0")
+        return answer(result, 0, [])
     problems = gate(result, load_domain(domain_name))
     for problem in problems:
         print(f"GATE  {problem}", file=sys.stderr)
-    if problems and load_domain(domain_name).rules.gate == "fail":
-        return 1
-    return 0
+    code = 1 if problems and load_domain(domain_name).rules.gate == "fail" else 0
+    return answer(result, code, problems)
 
 
 if __name__ == "__main__":  # pragma: no cover

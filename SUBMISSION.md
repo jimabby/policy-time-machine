@@ -260,10 +260,13 @@ printed once into the logs.
 
 ---
 
-**Verified:** 1367 tests (1186 need nothing but Python), `ruff` clean, all eleven
+**Verified:** 1428 tests (1247 need nothing but Python), `ruff` clean, all eleven
 DAGs parsing under a real Airflow in both offline and LLM-backed configurations,
 the plugin's routes driven through a real client, and the Diff Explorer loaded in
 Chromium and clicked through — failing on any console error or any panel that
 renders nothing. The precedent gate runs as an ordinary CI step, and the
 precedent set is exported and imported back, because an export nothing can read
-back is a backup nobody has tested.
+back is a backup nobody has tested. The figures in the README are generated from
+the same replay and redrawn on every build, so a chart cannot outlive the number
+it draws — and the sentence beside each one, including its `alt` text, is held
+to that replay too.

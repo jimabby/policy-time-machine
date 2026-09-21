@@ -9,6 +9,8 @@ to be comparable, or claiming a dial exists when no rule has one.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ptm import sweep
@@ -288,9 +290,28 @@ class TestTheCliRefusesRatherThanCrashes:
 
         ``--joint`` had to be filtered out of the axis list by hand for exactly
         this reason; every other flag simply corrupted the parse.
+
+        The flag here used to be ``--json``, which has since become a real one -
+        so the case it was standing in for is now covered twice over: an
+        *unknown* flag is refused by name below, and a *known* one keeps its
+        place in the line rather than taking a positional's, which is the next
+        test.
         """
-        assert sweep.main(["expenses", "v2", "--json", "amount_gbp", "25,50"]) == 2
-        assert "--json" in capsys.readouterr().err
+        assert sweep.main(["expenses", "v2", "--curve", "amount_gbp", "25,50"]) == 2
+        assert "--curve" in capsys.readouterr().err
+
+    def test_a_known_flag_does_not_take_a_positional_slot(self, seeded, capsys):
+        """``--json`` in the middle of the line is still the flag, not the field.
+
+        The original bug was arithmetic on ``len(argv)``, so the fix has to hold
+        for the flags that were added after it as well - and a sweep that read
+        ``--json`` as a field name would refuse a command that is correct.
+        """
+        assert sweep.main(["expenses", "v2", "--json", "1.1", "amount_gbp", "25,50"]) == 0
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["field"] == "amount_gbp"
+        # And the prose went the other way, so stdout is nothing but the document.
+        assert "sweeping" in captured.err
 
     def test_an_empty_dial_list_now_says_what_it_means(self, capsys):
         """The sentence the unknown-version path used to produce by accident.
@@ -379,3 +400,106 @@ class TestAThresholdHasToBeANumber:
 
         result = report.sweep("expenses", "v2", "amount_gbp", "25,50,75", clause="1.1")
         json.dumps(result, allow_nan=False)
+
+
+class TestTheCurveCanLeaveAsJson:
+    """``--json``, which the grid's own footer had been promising for a while.
+
+    This module's output is the one measurement in the project whose result is
+    a *shape*: a column of flips against a column of settings, meant to be
+    plotted or diffed or fed to the next tool. Every other entry point that
+    produces something worth machine-reading already had the flag - the gate,
+    the report, the disparity check, the stability run - and this one printed a
+    fixed-width table and left the caller to scrape it back apart. Worse, the
+    joint form's own last line told a reader to look in "the JSON form of this
+    result", which existed on a FastAPI route behind an Airflow login and
+    nowhere a shell could reach.
+
+    The contract asserted here is the one ``ptm.gate`` established: stdout is
+    the document and nothing else, prose goes to stderr, and a refusal is a
+    document too - so a consumer never has to tell "could not be run" from
+    "crashed" by looking at an empty pipe.
+    """
+
+    def test_stdout_is_the_document_and_the_prose_goes_to_stderr(self, seeded, capsys):
+        assert sweep.main(["expenses", "v2", "1.1", "amount_gbp", "25,50,75",
+                           "--json"]) == 0
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert result["field"] == "amount_gbp" and result["clause"] == "1.1"
+        assert [p["value"] for p in result["points"]] == [25, 50, 75]
+        assert result["ran"] is True and result["code"] == 0
+        # The table a human reads is still printed - just not into the pipe.
+        assert "policy-driven" in captured.err
+
+    def test_the_caveats_travel_inside_the_document(self, seeded, capsys):
+        """A reader who parsed stdout must not have dropped the reasons.
+
+        Every warning this module prints is a reason not to read a row of the
+        curve at face value - a clause that matches nothing at that setting, a
+        dial that moves nothing at all, rules that have never been scored
+        against a judge. Left only in the prose stream they are a caveat that
+        reaches the person watching the run and not the one acting on the
+        numbers, which is the wrong way round.
+        """
+        sweep.main(["expenses", "v2", "1.1", "amount_gbp", "25,50,75", "--json"])
+        result = json.loads(capsys.readouterr().out)
+        assert "warnings" in result
+        assert any("offline rules" in note
+                   for note in result["rule_agreement_notes"]), result
+
+    def test_the_grid_keeps_the_promise_its_footer_makes(self, seeded, capsys):
+        """net impact and the policy-driven split, which the table cannot fit."""
+        assert sweep.main(["expenses", "v2", "--joint", "1.1:amount_gbp=25,50",
+                           "3.1:days_notice=3,7", "--json"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert len(result["points"]) == 4
+        assert all({"net_impact", "policy_driven_flips"} <= set(p)
+                   for p in result["points"])
+        assert result["interaction"]["measured"]
+
+    def test_the_dial_list_is_a_document_too(self, seeded, capsys):
+        """The first thing anybody runs, and the one a tool would want to read.
+
+        Listing the dials is how a caller finds out what is sweepable at all,
+        so a wrapper that wanted to offer them has to parse the same
+        fixed-width table a person reads.
+        """
+        assert sweep.main(["expenses", "v2", "--json"]) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["dials"] and all(
+            {"clause", "field", "value", "collapses"} <= set(d)
+            for d in result["dials"])
+
+    def test_a_refusal_is_a_document_as_well(self, seeded, capsys):
+        assert sweep.main(["expenses", "v99", "--json"]) == 2
+        captured = capsys.readouterr()
+        refusal = json.loads(captured.out)
+        assert refusal["ran"] is False and refusal["code"] == 2
+        assert "v99" in refusal["error"]
+        assert "ERROR" in captured.err
+
+    def test_a_refused_threshold_is_a_document_as_well(self, seeded, capsys):
+        """The nan/inf refusal, through the flag that makes it machine-readable.
+
+        This is the one refusal a caller is most likely to meet from a script,
+        because the values come from somewhere else - and the whole reason it
+        exists is that ``NaN`` in a JSON body is what ``JSON.parse`` rejects.
+        Emitting a refusal *as* JSON is the consistent end of that argument.
+        """
+        assert sweep.main(["expenses", "v2", "1.1", "amount_gbp", "nan,50",
+                           "--json"]) == 2
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal["ran"] is False and "not a threshold" in refusal["error"]
+
+    def test_the_document_is_strict_json(self, seeded, capsys):
+        """No NaN, no Infinity - the property ``parse_values`` refuses to break.
+
+        Asserted on what the CLI actually emitted rather than on the read
+        model, which is covered above: the two could disagree, and the one a
+        script reads is this one.
+        """
+        sweep.main(["expenses", "v2", "1.1", "amount_gbp", "25,50,75", "--json"])
+        out = capsys.readouterr().out
+        json.dumps(json.loads(out), allow_nan=False)
+        assert "NaN" not in out and "Infinity" not in out

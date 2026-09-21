@@ -409,3 +409,147 @@ class TestTheArgumentHandlingOfTheNewEntryPoints:
         assert stability.main(["--cases", "3", "--samples", "2"]) == 0
         assert crosscheck.main([]) == 0
         assert disparity.main([]) == 0
+
+
+class TestEveryGateCanHandOverWhatItFound:
+    """``--json`` on the three gates that only ever had an exit code.
+
+    ``ptm.gate --json`` exists because exit codes were the whole machine
+    interface, which is right for a shell asking pass-or-fail and useless to a
+    CI step that wants to *post* which rulings were reversed rather than report
+    that there were some. Three other entry points here can fail a build -
+    ``ptm.calibration`` when the judge has drifted from the humans,
+    ``ptm.rules`` when the offline rules no longer implement the policy,
+    ``ptm.preflight`` when a clause is empty at judging time - and every one of
+    them could only say that something had breached a threshold, never which
+    threshold or by how much.
+
+    The contract asserted here is the one ``ptm.gate`` established and the
+    sweep now follows: stdout is the document, prose goes to stderr, the exit
+    code travels inside the document as well as out of the process, and a
+    refusal is a document too.
+    """
+
+    ENTRY_POINTS = ("calibration", "rules", "preflight")
+
+    @staticmethod
+    def entry(name: str):
+        from importlib import import_module
+
+        return import_module(f"ptm.{name}")
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_stdout_is_the_document_and_the_prose_is_not(self, replayed_db, capsys,
+                                                         name):
+        module = self.entry(name)
+        code = module.main(["expenses", "v2", "--json"])
+        captured = capsys.readouterr()
+        body = json.loads(captured.out)
+        assert body["code"] == code
+        assert body["passed"] is (code == 0)
+        # The prose a person reads is still printed, just not into the pipe.
+        assert captured.out.lstrip().startswith("{")
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_a_refusal_is_a_document_too(self, replayed_db, capsys, name):
+        """Otherwise the only difference from a crash is an empty pipe."""
+        module = self.entry(name)
+        assert module.main(["nosuchdomain", "v2", "--json"]) == 2
+        captured = capsys.readouterr()
+        refusal = json.loads(captured.out)
+        assert refusal["code"] == 2 and "nosuchdomain" in refusal["error"]
+        assert "ERROR" in captured.err
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_the_flag_does_not_take_a_positional_slot(self, replayed_db, capsys,
+                                                      name):
+        """The bug ``ptm.sweep`` shipped: arguments read by count.
+
+        ``--json`` in front of the domain must still leave the domain where it
+        was, or a correct command is refused with a message about a domain
+        nobody named.
+        """
+        module = self.entry(name)
+        assert module.main(["--json", "expenses", "v2"]) in (0, 1)
+        assert json.loads(capsys.readouterr().out)["domain"] == "expenses"
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_a_misspelled_flag_is_refused_rather_than_dropped(self, replayed_db,
+                                                              capsys, name):
+        """The cost of taking the flags out of the positional list.
+
+        Before ``--json`` these read ``argv[0]`` as the domain, so a stray flag
+        was refused for free - as the name of a domain that did not exist.
+        Filtering options out means an unknown one is silently ignored unless
+        something looks for it, and ``--jsonn`` would then run and print prose
+        to a caller that had asked for a document.
+        """
+        module = self.entry(name)
+        assert module.main(["expenses", "v2", "--jsonn"]) == 2
+        err = capsys.readouterr().err
+        assert "--jsonn" in err and "usage" in err.lower()
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_the_document_is_strict_json(self, replayed_db, capsys, name):
+        """No NaN and no Infinity - what every parser that is not Python's does.
+
+        Rates here are divisions, and a division by an empty denominator is
+        exactly how one gets into a body ``JSON.parse`` rejects.
+        """
+        self.entry(name).main(["expenses", "v2", "--json"])
+        out = capsys.readouterr().out
+        json.dumps(json.loads(out), allow_nan=False)
+        assert "NaN" not in out and "Infinity" not in out
+
+    @pytest.mark.parametrize("name", ENTRY_POINTS)
+    def test_the_prose_is_unchanged_without_the_flag(self, replayed_db, capsys,
+                                                     name):
+        """The flag is additive. Nobody's existing pipeline moves.
+
+        Asserted as "stdout is not a document" rather than on a phrase, because
+        which sentence each of these prints depends on what is on file - and
+        the property being kept is that a caller who never asked for JSON never
+        receives any.
+        """
+        self.entry(name).main(["expenses", "v2"])
+        out = capsys.readouterr().out
+        assert out.strip() and not out.lstrip().startswith("{")
+
+    def test_preflight_carries_every_finding_with_its_clause(self, replayed_db,
+                                                             capsys):
+        """The one that is worth reading rather than counting.
+
+        The shipped policy has a real finding in it - v2's discretion clause
+        says "Unchanged from v1." and a judge shown one policy at a time has
+        nothing to apply - and the prose form leaves a consumer parsing a
+        paragraph to find out which clause.
+        """
+        preflight_module = self.entry("preflight")
+        preflight_module.main(["expenses", "v2", "--json"])
+        body = json.loads(capsys.readouterr().out)
+        findings = body["versions"][0]["findings"]
+        assert findings, "the shipped policy has findings and the document has none"
+        assert all({"clause", "severity"} <= set(f) for f in findings)
+
+    def test_calibration_names_the_thresholds_it_breached(self, replayed_db, capsys,
+                                                          monkeypatch):
+        """A gate that fails has to say which threshold, not that one was hit.
+
+        Forced rather than waited for: offline the judge is the fixture
+        answering itself, so this branch is unreachable on the shipped data -
+        which is exactly why it needs a test rather than a run.
+        """
+        from ptm import calibration
+
+        scored = {"measured": True, "inert": False, "report": {
+            "domain": "expenses", "policy_version": "v2", "judged": 10,
+            "agreed": 4, "accuracy": 0.4, "accuracy_lo": 0.17,
+            "accuracy_hi": 0.69, "mean_confidence": 0.9,
+            "overconfidence": 0.5, "expected_calibration_error": 0.5}}
+        monkeypatch.setattr(calibration, "gate", lambda *a, **k: ["accuracy 40% is "
+                                                                 "below the floor"])
+        monkeypatch.setattr(report, "calibration", lambda *a, **k: scored)
+        code = calibration.main(["expenses", "v2", "--json"])
+        body = json.loads(capsys.readouterr().out)
+        assert body["gate_problems"] == ["accuracy 40% is below the floor"]
+        assert body["passed"] is False and body["code"] == code

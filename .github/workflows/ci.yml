@@ -62,6 +62,20 @@ jobs:
       - name: The demo storyboard reconciles
         run: python scripts/storyboard.py
 
+      # The charts in README.md and DEMO_SCRIPT.md are drawn from a real
+      # offline replay of the shipped fixture, so they can go stale the same
+      # way a quoted number can - and worse, because a picture is read faster,
+      # believed harder and cannot be grepped. `--check` writes nothing and
+      # fails when a committed SVG no longer matches what the fixture produces.
+      # Run here as well as in tests/test_charts.py because this is the form
+      # whose failure message names the command that fixes it.
+      - name: The charts still agree with the fixture
+        run: python scripts/build_charts.py --check
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: /tmp/ptm-charts.db
+          PTM_OFFLINE: "1"
+
       # With coverage, and the floor is coverage's own `fail_under` in
       # pyproject.toml rather than a flag here - so `make coverage` and this
       # step cannot disagree about what passing means. Scoped to ptm/: the DAG
@@ -96,6 +110,29 @@ jobs:
           python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250
           python -m ptm.sweep expenses v2 --joint \
             1.1:amount_gbp=25,50,75,100,150 3.1:days_notice=3,7,14,21
+          # And the machine-readable form, which the grid's own footer had been
+          # promising while it existed only on a FastAPI route behind an Airflow
+          # login. Prose goes to stderr, so this parse is also the assertion that
+          # the two streams stay separated - the same contract as ptm.gate --json.
+          python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250 \
+            --json 2>/dev/null |
+            python -c "import json,sys; d=json.load(sys.stdin); \
+              assert d['ran'] and len(d['points']) == 6, d; \
+              assert any(p['is_current'] for p in d['points']), 'no setting in force'; \
+              print('curve of', len(d['points']), 'settings,', \
+                    len(d['rule_agreement_notes']), 'caveat(s) carried with it')"
+          # A refusal is a document too. Without this the only difference
+          # between 'could not be run' and 'crashed' is an empty pipe. Written
+          # to a file rather than piped, so the exit code being asserted is the
+          # sweep's own and not the parser's - `! a | b` hides which of the two
+          # failed, which is the mistake this check exists to catch elsewhere.
+          if python -m ptm.sweep expenses v99 --json \
+               > /tmp/refusal.json 2>/dev/null; then
+            echo "an unknown version should have been refused"; exit 1
+          fi
+          python -c "import json; d=json.load(open('/tmp/refusal.json')); \
+            assert d['ran'] is False and d['code'] == 2, d; \
+            print('refused, and said so in JSON:', d['error'])"
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db
@@ -148,6 +185,19 @@ jobs:
           python -m ptm.calibration expenses v2
           python -m ptm.proposal expenses v2
           python -m ptm.proposal expenses --list
+          # The three gates in this step can each fail a build, and until they
+          # had --json the only thing they could hand the step that failed was
+          # an exit code - so a red build said that something breached a
+          # threshold and never which one. Same contract as ptm.gate --json:
+          # document on stdout, prose on stderr, the exit code inside the
+          # document as well as out of the process.
+          for m in preflight rules calibration; do
+            python -m ptm.$m expenses v2 --json 2>/dev/null |
+              python -c "import json,sys; d=json.load(sys.stdin); \
+                assert d['domain'] == 'expenses', d; \
+                assert d['code'] == 0 and d['passed'], d; \
+                print('$m: passed, and said so in JSON')"
+          done
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

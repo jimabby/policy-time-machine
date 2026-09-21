@@ -15,10 +15,21 @@ to settle selected cases. Their rulings become checks for the next proposal.
 | 109 changes attributed to the proposal | The other 38 differ from the old rulebook too. |
 | 8 simulated human rulings | Selected cases become checks future proposals must face. |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/story-dark.svg">
+  <img alt="600 historical decisions as one bar: 109 changed because of policy v2, 38 were already off the old rulebook, 453 came out the same" src="docs/charts/story.svg">
+</picture>
+
 **The twist:** a changed answer does not automatically mean the new rule caused it.
 The replay checks the old rulebook too. These are fixture results, not evidence
 from a live organisation. The offline demo uses deterministic rules instead of
 a live AI judge, and the local self-test simulates reviewer responses.
+
+*Every chart on this page is generated from a real offline replay of the shipped
+fixture by `python scripts/build_charts.py`, and a build fails when one of them
+stops agreeing with what the fixture produces — see
+[tests/test_charts.py](tests/test_charts.py). A picture is read faster than a
+sentence and believed harder, so it gets the stricter check, not the looser one.*
 
 ## Take it for a spin
 
@@ -55,9 +66,9 @@ knows**. People argue from anecdote, ship it, and find out in three months.
 This makes that question computable, and then makes the answer *stick*.
 
 **Every clip below is the real tool, on the shipped fixture, with no API key.**
-Nine of them. The long version of any of it — why each number carries the
-caveat it carries, and what each one refuses to claim — is in
-[docs/DESIGN.md](docs/DESIGN.md).
+Nine of them, and six charts drawn from the same replay. The long version of
+any of it — why each number carries the caveat it carries, and what each one
+refuses to claim — is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ---
 
@@ -85,6 +96,15 @@ so they are not this proposal's doing.
 Charging them to the new proposal overstates it by 26%. Separating them means
 judging the policy in force as well — which is why the replay judges both
 sides, and why the bill doubles.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/attribution-dark.svg">
+  <img alt="Changed decisions by clause: clause 1.1 relaxed accounts for 48, the reviewers' own deviations for 38, clause 2.1 relaxed for 22" src="docs/charts/attribution.svg">
+</picture>
+
+The second bar is not a clause. It is the reviewers, and it is the second
+largest bucket in the chart — which is the finding, and the one a backtest that
+judges only the candidate policy can never produce.
 
 ## 2. Do it the obvious way and 39 answers are wrong
 
@@ -124,6 +144,15 @@ required above GBP 75" has exactly one dial on it. `ptm.sweep` turns it.
 Free, offline, six full replays: it is pure rule evaluation over cases already
 on file.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/sweep-dark.svg">
+  <img alt="Decisions that change against the receipt threshold: 93 at GBP 25, 147 at the 75 in force, 212 at 250, with the policy-driven share tracking below it" src="docs/charts/sweep.svg">
+</picture>
+
+The gap between the two lines is the reviewers' own deviations, and it barely
+moves: the curve worth arguing about is the lower one. `--json` puts both of
+them on stdout for whatever comes next.
+
 **A clause that states a range gets the same treatment, one end at a time.**
 "Reimbursed between GBP 40 and GBP 100" is two thresholds in one sentence, and
 moving both of them to the same number leaves a rule that fires on nothing — so
@@ -144,6 +173,15 @@ restriction it carves out of interact by construction.
 So move two at once. The grid reports its own worth on the last line: if the
 second dial changed nothing about the first one's effect, two curves said
 everything, and it says so rather than letting itself be looked at out of habit.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/grid-dark.svg">
+  <img alt="A grid of the receipt threshold against the notice period: moving the amount changes between 84 and 88 decisions depending on where the notice period sits" src="docs/charts/grid.svg">
+</picture>
+
+Read one row and you have the curve above. Read down a column and you have the
+thing the curve could not tell you: the same move in `amount_gbp` is worth 84
+decisions at one setting of `days_notice` and 88 at another.
 
 ## 6. Then have it write the sentence
 
@@ -203,6 +241,17 @@ anything at all**); and a **concentration check**, because *is this change
 landing on one group?* is the first question compliance asks and twelve rows of
 percentages is exactly the shape of information a room skims past.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/segments-dark.svg">
+  <img alt="Flip rate by expense category with 95% intervals: meals at 52.6% against 17.8% for the rest of the field, every other category overlapping" src="docs/charts/segments.svg">
+</picture>
+
+One row is separated from the rest and four are not, which is the whole
+distinction a table of twelve percentages loses. The intervals are what make
+that readable: meals does not overlap the others, so it is a question somebody
+should answer before the rule ships — and it is *not* a finding of unfairness,
+because segments differ in what they contain.
+
 [The design notes](docs/DESIGN.md#consistent-is-not-the-same-as-right) have all
 four in full, including what each refuses to claim.
 
@@ -214,6 +263,11 @@ Every other band in this project is retrospective. This is the one that runs
 *before* you spend anything — and the useful line is a refusal. Two years of
 expense decisions cannot separate a 24.5% flip rate from a 20% one. A version
 comparison that turns on four points is a comparison about sample size.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/power-dark.svg">
+  <img alt="The measured 24.5% flip rate with the band 17.9% to 31.8% shaded: anything inside it is this sample's noise" src="docs/charts/power.svg">
+</picture>
 
 It sits under the tiles in the Explorer and in the export bundle, because the
 place it is needed is next to the figures somebody is about to argue from.
@@ -454,6 +508,7 @@ make vacuum    # drop the rows that stopped earning their disk, and shrink the f
 make adopt-plan V=v2-draft1 BY="your name"  # what adopting would do, without doing it
 make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
 make storyboard # the demo video's shot timings against its narration
+make charts    # redraw the figures in this README from the fixture
 ```
 
 **Every measurement is reachable from a shell now, including the three that
@@ -464,6 +519,31 @@ offline the noise floor is 0% by construction and says so rather than gating on
 it, and a cross-check nobody has run reports that rather than reporting
 agreement. [The design notes](docs/DESIGN.md#every-measurement-from-a-shell)
 have why the three behave differently.
+
+**And every gate can now hand you what it found, not just whether it passed.**
+`--json` puts the document on stdout and the prose on stderr, and **a refusal
+is a document too**, so a script never has to tell *could not be run* from
+*crashed* by looking at an empty pipe. Nine entry points take it: the precedent
+gate, the report, the disparity check, the stability run, the second-opinion
+cross-check, and — new — the threshold sweep, the judge's calibration, the
+rule-agreement score and the policy preflight.
+
+```bash
+python -m ptm.sweep expenses v2 1.1 amount_gbp 25,50,75,100,150,250 --json | jq '.points[]'
+python -m ptm.sweep expenses v2 --joint 1.1:amount_gbp=25,50,75 3.1:days_notice=3,7,14 --json
+python -m ptm.preflight expenses v2 --json | jq '.versions[].findings[]'
+python -m ptm.calibration expenses v2 --json | jq '.gate_problems'
+```
+
+Three of the four new ones are gates that can fail a build, and until they had
+this the only thing a red step could report was that *some* threshold had been
+breached — never which clause, or by how much. The sweep's case is different
+and is about caveats: they travel **inside** the document rather than
+only beside it — a clause that matches nothing at that setting, a dial that
+moves nothing at all, rules that have never been scored against a judge. Every
+one is a reason not to read a row of the curve at face value, and a consumer
+that kept stdout and dropped stderr would have had the numbers and none of the
+reasons.
 
 `make tour` runs the whole thing end to end in about nine seconds. On a box
 with no `make` — which is most Windows boxes — `python demo.py` is the same
@@ -519,6 +599,10 @@ include/drafts/<domain>/        policy versions a model wrote, never mixed in
                                 with the ones a person did
 docs/DESIGN.md                  the long version of everything above
 docs/*.gif                      the nine clips, captured from the real tool
+docs/charts/*.svg               the six figures, generated from the fixture by
+                                scripts/build_charts.py and checked by the suite
+scripts/                        the artefacts that leave the repository: the
+                                demo video's storyboard and the doc charts
 tests/                          engine, workflow, API and browser checks
 ```
 

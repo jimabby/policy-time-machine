@@ -21,6 +21,8 @@ and the markdown honest with each other in the meantime.
 from __future__ import annotations
 
 import ast
+import functools
+import json
 import math
 import sys
 
@@ -890,7 +892,13 @@ USAGE = (
     "                       sweep refuses it rather than rewriting both ends to the "
     "same number.\n"
     "                       On a grid, name the end on the axis instead: "
-    "'2.1:amount@lower=30,45'."
+    "'2.1:amount@lower=30,45'.\n"
+    "  --json               write the whole result to stdout as JSON and the prose to\n"
+    "                       stderr. This is the one measurement here whose output is a\n"
+    "                       shape rather than a sentence, and a column of numbers meant\n"
+    "                       to be plotted had to be scraped back out of a fixed-width\n"
+    "                       table. The warnings travel as fields, so a reader parsing\n"
+    "                       stdout cannot lose the caveat the numbers came with."
 )
 
 
@@ -914,12 +922,20 @@ def parse_axis(raw: str) -> dict:
             "values": parse_values(values)}
 
 
-def _print_joint(result: dict) -> None:
+def _print_joint(result: dict, out=None) -> None:
+    """The grid as prose.
+
+    ``out`` is where every line of it goes, and it exists because of
+    ``--json``: with that flag stdout carries nothing but the document, so the
+    prose has to be redirectable in one place rather than at each of the dozen
+    calls below.
+    """
+    say = functools.partial(print, file=sys.stdout if out is None else out)
     unit = result["impact_unit"]
     first, second = result["first"], result["second"]
-    print(f"sweeping {first['field']} x {second['field']} in {result['domain']}/"
-          f"{result['version']} over {result['cases']} cases "
-          f"(baseline {result['baseline_version'] or 'none'})")
+    say(f"sweeping {first['field']} x {second['field']} in {result['domain']}/"
+        f"{result['version']} over {result['cases']} cases "
+        f"(baseline {result['baseline_version'] or 'none'})")
     seconds = list(dict.fromkeys(p["second_value"] for p in result["points"]))
     by_pair = {(p["first_value"], p["second_value"]): p for p in result["points"]}
     # The row label is the first dial's setting; the column label is the
@@ -931,63 +947,74 @@ def _print_joint(result: dict) -> None:
     label = "{} \\ {}".format(first["field"][:11], second["field"][:11])
     subhead = "(rows \\ columns)"
     width = max(len(label) + 2, 20)
-    print(f"{label:<{width}}" + "".join(f"{v:>12}" for v in seconds))
-    print(f"{subhead:<{width}}" + "".join(f"{'flips':>12}" for _ in seconds))
+    say(f"{label:<{width}}" + "".join(f"{v:>12}" for v in seconds))
+    say(f"{subhead:<{width}}" + "".join(f"{'flips':>12}" for _ in seconds))
     for a in dict.fromkeys(p["first_value"] for p in result["points"]):
         cells = []
         for b in seconds:
             point = by_pair.get((a, b))
             mark = "*" if point and point["is_current"] else " "
             cells.append(f"{point['flips'] if point else '-':>11}{mark}")
-        print(f"{a:<{width}}" + "".join(cells))
-    print(f"  (* = the settings in force. net {unit} and the policy-driven split are in "
-          f"the JSON form of this result.)")
+        say(f"{a:<{width}}" + "".join(cells))
+    say(f"  (* = the settings in force. net {unit} and the policy-driven split are "
+        f"in the JSON form of this result - add --json.)")
     for side in ("first_inert", "second_inert"):
         reading = result.get(side) or {}
         if reading.get("measured") and reading.get("inert"):
-            print(f"\n  WARNING {reading['note']}")
+            say(f"\n  WARNING {reading['note']}")
     interaction = result["interaction"]
     if interaction.get("measured"):
-        print(f"\ninteraction: moving {first['field']} changes "
-              f"{interaction['effect_min_flips']}-{interaction['effect_max_flips']} "
-              f"decisions depending on where {second['field']} sits "
-              f"({interaction['interaction_flips']} apart)")
-        print("  " + ("the two dials are independent here, so two single sweeps would "
-                      "have told you the same thing"
-                      if interaction["independent"] else
-                      "the dials interact: the best setting for one depends on the other, "
-                      "which is what a pair of single sweeps cannot show"))
+        say(f"\ninteraction: moving {first['field']} changes "
+            f"{interaction['effect_min_flips']}-{interaction['effect_max_flips']} "
+            f"decisions depending on where {second['field']} sits "
+            f"({interaction['interaction_flips']} apart)")
+        say("  " + ("the two dials are independent here, so two single sweeps would "
+                    "have told you the same thing"
+                    if interaction["independent"] else
+                    "the dials interact: the best setting for one depends on the "
+                    "other, which is what a pair of single sweeps cannot show"))
 
 
-def _warn_about_the_rules(domain_name: str, version: str) -> None:
+def _warn_about_the_rules(domain_name: str, version: str, out=None) -> list[str]:
     """Say what the curve above is worth, next to the curve above.
 
     The sweep is arithmetic over ``offline_rules``, so it is only ever as good
     as the rules' agreement with the judge. Printing the caveat somewhere else
     means it is read by somebody other than the person acting on the numbers.
+
+    Returns the sentences as well as printing them, which is what lets
+    ``--json`` carry them as a field. A caveat that exists only in the prose
+    stream is a caveat a reader who parsed stdout has already lost, and this is
+    the one this module would least like to be dropped.
     """
+    say = functools.partial(print, file=sys.stdout if out is None else out)
     from . import report as report_module
 
     try:
         result = report_module.rule_agreement(domain_name, version)
     except LookupError:
-        return
+        return []
     if result.get("inert"):
-        print("\n  these curves are computed from the offline rules, and the verdicts "
-              "they were last scored against came from those same rules - so nothing "
-              "here has been checked against a real judge")
-        return
+        note = ("these curves are computed from the offline rules, and the verdicts "
+                "they were last scored against came from those same rules - so nothing "
+                "here has been checked against a real judge")
+        say(f"\n  {note}")
+        return [note]
     if not result.get("compared"):
-        print("\n  these curves are computed from the offline rules, which have never "
-              "been scored against a judge - run the replay, then python -m ptm.rules")
-        return
-    print(f"\n  computed from offline rules agreeing with the judge on "
-          f"{result['rate']:.1%} of {result['compared']} case(s), citing the same clause "
-          f"{result['clause_agreement']:.1%} of the time")
+        note = ("these curves are computed from the offline rules, which have never "
+                "been scored against a judge - run the replay, then python -m ptm.rules")
+        say(f"\n  {note}")
+        return [note]
+    notes = [f"computed from offline rules agreeing with the judge on "
+             f"{result['rate']:.1%} of {result['compared']} case(s), citing the same "
+             f"clause {result['clause_agreement']:.1%} of the time"]
+    say(f"\n  {notes[0]}")
     from .config import load_domain as _load
 
     for problem in report_module.rules_engine.gate(result, _load(domain_name)):
-        print(f"  WARNING {problem}")
+        say(f"  WARNING {problem}")
+        notes.append(problem)
+    return notes
 
 
 def _take_edge(args: list[str]) -> tuple[list[str], str]:
@@ -1040,6 +1067,12 @@ def main(argv: list[str] | None = None) -> int:
     # argv by its raw length, which is why `--joint` had to be filtered out of
     # the axis list by hand and why a stray flag shifted `field` onto `values`.
     joint_mode = "--joint" in args
+    as_json = "--json" in args
+    # Where the prose goes. With --json stdout carries nothing but the
+    # document, exactly as in ptm.gate, so the reader who wanted `| jq` and the
+    # reader watching the run both get what they came for.
+    prose = sys.stderr if as_json else sys.stdout
+    say = functools.partial(print, file=prose)
     # --edge takes a value, so it cannot simply be filtered out of the
     # positional list the way --joint is: doing that would leave 'lower'
     # sitting where the sweep expects a field name. Taken out with its
@@ -1050,7 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR {exc}\n\n{USAGE}", file=sys.stderr)
         return 2
     positional = [a for a in args if not _is_option(a)]
-    unknown = [a for a in args if _is_option(a) and a != "--joint"]
+    unknown = [a for a in args if _is_option(a) and a not in ("--joint", "--json")]
     if unknown:
         print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
         return 2
@@ -1072,15 +1105,33 @@ def main(argv: list[str] | None = None) -> int:
     # that has no thresholds rather than a policy that does not exist. That is
     # the same confident-wrong-answer failure `thresholds()` refuses to make
     # about a band rule, made about the whole version.
+    def refuse(message: str, usage: bool = False) -> int:
+        """A refusal, in whichever form the caller asked the result in.
+
+        With ``--json`` a consumer parses stdout and nothing else, so an empty
+        pipe would be the only difference between "could not be run" and
+        "crashed". The same argument ``ptm.gate`` makes, and the same shape of
+        document, so one reader handles both.
+
+        ``usage`` is for the refusals that are about the command line rather
+        than about the policy - a misspelled setting is somebody who wants the
+        usage string, and an unknown version is somebody who does not.
+        """
+        if as_json:
+            json.dump({"error": message, "domain": domain_name, "version": version,
+                       "code": 2, "ran": False}, sys.stdout, indent=2)
+            print()
+        tail = f"\n\n{USAGE}" if usage else ""
+        print(f"ERROR {message}{tail}", file=sys.stderr)
+        return 2
+
     try:
         domain = load_domain(domain_name)
     except FileNotFoundError as exc:
-        print(f"ERROR {exc}", file=sys.stderr)
-        return 2
+        return refuse(str(exc))
     if version not in domain.policies:
-        print(f"ERROR unknown policy version {version!r} for {domain_name}; have "
-              f"{sorted(domain.policies)}", file=sys.stderr)
-        return 2
+        return refuse(f"unknown policy version {version!r} for {domain_name}; have "
+                      f"{sorted(domain.policies)}")
 
     if joint_mode:
         axes = positional[2:]
@@ -1096,14 +1147,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR {exc}\n\n{USAGE}", file=sys.stderr)
             return 2
         try:
-            _print_joint(joint(domain_name, version, first, second))
+            grid = joint(domain_name, version, first, second)
         except LookupError as exc:
-            print(f"ERROR {exc}", file=sys.stderr)
-            return 2
-        _warn_about_the_rules(domain_name, version)
+            return refuse(str(exc))
+        _print_joint(grid, out=prose)
+        notes = _warn_about_the_rules(domain_name, version, out=prose)
+        if as_json:
+            json.dump({**grid, "ran": True, "code": 0, "rule_agreement_notes": notes},
+                      sys.stdout, indent=2, default=str)
+            print()
         return 0
     if len(positional) == 2:
-        print(f"numeric dials in {domain_name}/{version}:")
+        say(f"numeric dials in {domain_name}/{version}:")
         found = thresholds(domain, version)
         for t in found:
             note = ""
@@ -1117,14 +1172,18 @@ def main(argv: list[str] | None = None) -> int:
                         f"--edge {' or --edge '.join(ends)}]" if ends else
                         f"  [not sweepable: compared against {t['values']}, and no single "
                         f"end of it can be told from the others]")
-            print(f"  clause {t['clause'] or '-':<6} {t['field']:<24} = {t['value']:<10} "
-                  f"-> {t['outcome']}{note}")
+            say(f"  clause {t['clause'] or '-':<6} {t['field']:<24} = {t['value']:<10} "
+                f"-> {t['outcome']}{note}")
         if not found:
             # An empty list is a finding about the policy, and it is the one the
             # old unknown-version path produced by accident. Said out loud now
             # that it can only mean what it says.
-            print("  none: this version's offline rules compare no field against a "
-                  "number, so there is no dial to sweep")
+            say("  none: this version's offline rules compare no field against a "
+                "number, so there is no dial to sweep")
+        if as_json:
+            json.dump({"domain": domain_name, "version": version, "dials": found,
+                       "ran": True, "code": 0}, sys.stdout, indent=2, default=str)
+            print()
         return 0
     if len(positional) == 4:
         clause, field, raw = "", positional[2], positional[3]
@@ -1137,47 +1196,54 @@ def main(argv: list[str] | None = None) -> int:
     try:
         values = parse_values(raw)
     except ValueError as exc:
-        print(f"ERROR the settings to sweep must be comma-separated numbers: {exc}\n\n"
-              f"{USAGE}", file=sys.stderr)
-        return 2
+        return refuse(f"the settings to sweep must be comma-separated numbers: {exc}",
+                      usage=True)
     if not values:
-        print(f"ERROR a sweep needs at least one setting to try\n\n{USAGE}",
-              file=sys.stderr)
-        return 2
+        return refuse("a sweep needs at least one setting to try", usage=True)
     try:
         result = sweep(domain_name, version, field, values, clause=clause, edge=edge)
     except LookupError as exc:
-        print(f"ERROR {exc}", file=sys.stderr)
-        return 2
+        return refuse(str(exc))
     unit = result["impact_unit"]
     where = f"clause {clause} " if clause else ""
     end = f"the {edge} end of " if edge else ""
-    print(f"sweeping {end}{where}{field} in {domain_name}/{version} over "
-          f"{result['cases']} cases (baseline {result['baseline_version'] or 'none'})")
+    say(f"sweeping {end}{where}{field} in {domain_name}/{version} over "
+        f"{result['cases']} cases (baseline {result['baseline_version'] or 'none'})")
     header = f"{field:>14}{'flips':>8}{'rate':>8}{'loosen':>8}{'tighten':>9}"
-    print(header + f"{'net ' + unit:>13}{'policy-driven':>15}")
+    say(header + f"{'net ' + unit:>13}{'policy-driven':>15}")
     for p in result["points"]:
         mark = "  <- current" if p["is_current"] else ""
         # The marker goes on the row rather than only in the note below it: a
         # reader scanning the column for a round number has to meet it there.
         if p.get("empties_rule"):
             mark = f"{mark}  [clause matches nothing at this setting]"
-        print(f"{p['value']:>14}{p['flips']:>8}{p['flip_rate']:>7.1%}{p['loosening']:>8}"
-              f"{p['tightening']:>9}{p['net_impact']:>13,.0f}"
-              f"{p['policy_driven_flips']:>15}{mark}")
+        say(f"{p['value']:>14}{p['flips']:>8}{p['flip_rate']:>7.1%}{p['loosening']:>8}"
+            f"{p['tightening']:>9}{p['net_impact']:>13,.0f}"
+            f"{p['policy_driven_flips']:>15}{mark}")
     # Before the inert reading, which would otherwise describe a flat run of
     # rows as an insensitive threshold when what it actually is is a clause
     # that stopped applying.
+    warnings: list[str] = []
     if result.get("emptied"):
-        print(f"\n  WARNING {describe_emptied(result['emptied'], field, edge)}")
+        warnings.append(describe_emptied(result["emptied"], field, edge))
+        say(f"\n  WARNING {warnings[-1]}")
     # Ahead of the caveat about the rules, because it is the stronger statement:
     # a flat curve is not a curve anybody should be picking a round number off.
     inert = result.get("inert") or {}
     if inert.get("measured") and inert.get("inert"):
-        print(f"\n  WARNING {inert['note']}")
+        warnings.append(inert["note"])
+        say(f"\n  WARNING {warnings[-1]}")
     # After the table, not before it: the caveat is about the numbers a reader
     # has just seen, and above them it is read as preamble and skipped.
-    _warn_about_the_rules(domain_name, version)
+    notes = _warn_about_the_rules(domain_name, version, out=prose)
+    if as_json:
+        # The warnings travel *in* the document rather than only beside it.
+        # Every one of them is a reason not to read a row of this curve at face
+        # value, and a consumer that took stdout and dropped stderr would have
+        # the numbers and none of the reasons.
+        json.dump({**result, "ran": True, "code": 0, "warnings": warnings,
+                   "rule_agreement_notes": notes}, sys.stdout, indent=2, default=str)
+        print()
     return 0
 
 

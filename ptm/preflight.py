@@ -27,6 +27,8 @@ four dollars.
 
 from __future__ import annotations
 
+import functools
+import json
 import re
 import sys
 from collections import Counter
@@ -234,7 +236,7 @@ def check(domain_name: str, version: str) -> list[PolicyFinding]:
 
 
 USAGE = """usage:
-  python -m ptm.preflight [domain] [version]
+  python -m ptm.preflight [domain] [version] [--json]
 
 Read a policy for problems before paying to replay it. Structural only: clause
 numbering, cross-references, outcomes the policy never mentions. No model, no
@@ -242,6 +244,11 @@ network, milliseconds.
 
   domain    defaults to 'expenses'
   version   defaults to every version the domain declares
+  --json    every finding on stdout, with its clause, severity and the exit
+            code, and the prose on stderr. This runs before the money is spent,
+            so it is the one most likely to be read by something other than a
+            person - a pre-commit hook, or the step that decides whether the
+            backfill is worth starting.
 
 Exits non-zero when a finding is blocking - a replay would run and its results
 would not be attributable to any sentence."""
@@ -253,26 +260,54 @@ def main(argv: list[str] | None = None) -> int:
     if cli.wants_help(args):
         print(USAGE)
         return 0
-    domain_name = args[0] if args else "expenses"
+    as_json = "--json" in args
+    say = functools.partial(print, file=sys.stderr if as_json else sys.stdout)
+    positional = [a for a in args if not a.startswith("-")]
+    # A misspelled flag would otherwise be dropped on the floor rather than
+    # refused - see the note in ptm.calibration.main, which had the same shape.
+    unknown = [a for a in args if a.startswith("-") and a != "--json"]
+    if unknown:
+        print(f"ERROR unknown option {unknown[0]!r}\n\n{USAGE}", file=sys.stderr)
+        return 2
+    domain_name = positional[0] if positional else "expenses"
+
+    def refuse(message: str) -> int:
+        if as_json:
+            json.dump({"error": message, "domain": domain_name, "code": 2,
+                       "ran": False}, sys.stdout, indent=2)
+            print()
+        print(f"ERROR {message}", file=sys.stderr)
+        return 2
 
     try:
         domain = load_domain(domain_name)
     except FileNotFoundError as exc:
-        print(f"ERROR {exc}", file=sys.stderr)
-        return 2
-    versions = [args[1]] if len(args) > 1 else sorted(domain.policies)
+        return refuse(str(exc))
+    versions = [positional[1]] if len(positional) > 1 else sorted(domain.policies)
 
     blocked = 0
+    checked = []
     for version in versions:
         if version not in domain.policies:
-            print(f"ERROR unknown policy version {version!r}; have {sorted(domain.policies)}",
-                  file=sys.stderr)
-            return 2
+            return refuse(f"unknown policy version {version!r}; have "
+                          f"{sorted(domain.policies)}")
         findings = structural(domain, version)
         blocked += len(blocking(findings))
-        print(describe(findings, version))
-    print(f"\n{len(versions)} version(s) checked: {blocked} blocking finding(s)")
-    return 1 if blocked else 0
+        say(describe(findings, version))
+        checked.append({
+            "version": version,
+            "findings": [f.model_dump(mode="json") for f in findings],
+            "blocking": len(blocking(findings)),
+            "summary": describe(findings, version),
+        })
+    say(f"\n{len(versions)} version(s) checked: {blocked} blocking finding(s)")
+    code = 1 if blocked else 0
+    if as_json:
+        json.dump({"domain": domain_name, "versions": checked, "blocking": blocked,
+                   "code": code, "passed": not blocked, "ran": True},
+                  sys.stdout, indent=2, default=str)
+        print()
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

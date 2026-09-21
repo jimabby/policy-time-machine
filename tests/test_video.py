@@ -230,3 +230,87 @@ class TestTheNarrationQuotesTheFixture:
             f"the terminal template no longer shows the naive error count {wrong}"
         assert re.search(rf"\b{wrong} false approvals\b", shown), \
             f"the trap card no longer shows {wrong} false approvals"
+
+
+class TestTheDemoScriptRunsToTheSameClock:
+    """The presenter's script and the video are the same three minutes.
+
+    ``scripts/storyboard.py`` exists because three files each carried their own
+    copy of the shot timings and nothing compared them. DEMO_SCRIPT.md is the
+    fourth copy, and it carries the timings *three more times*: in the section
+    headings a presenter reads off, in the run-of-show gantt, and in the beat
+    table beside it. Every one of them is the same contract, and the way they
+    stop agreeing is that somebody lengthens a beat in one place and the other
+    two keep the old number - which reads as deliberate to anyone rehearsing
+    from it, right up until the recording overruns.
+
+    So the storyboard is still the one statement of the timings and this is the
+    check that the script has not drifted from it.
+    """
+
+    SCRIPT = REPO / "DEMO_SCRIPT.md"
+
+    @staticmethod
+    def seconds(stamp: str) -> int:
+        minutes, secs = stamp.split(":")
+        return int(minutes) * 60 + int(secs)
+
+    def text(self) -> str:
+        return self.SCRIPT.read_text(encoding="utf-8")
+
+    def starts(self, storyboard) -> list[int]:
+        """When each scene begins, accumulated from the storyboard's durations."""
+        out, cursor = [], 0.0
+        for scene in storyboard.SCENES:
+            out.append(int(cursor))
+            cursor += scene["duration"]
+        return out
+
+    def test_the_gantt_has_one_bar_per_scene_at_the_right_time(self, storyboard):
+        """The run-of-show diagram, parsed rather than looked at.
+
+        A mermaid gantt renders whatever numbers it is given, so a wrong one is
+        a clean-looking picture of the wrong three minutes.
+        """
+        block = re.search(r"```mermaid\n(gantt.*?)```", self.text(), re.S)
+        assert block, "DEMO_SCRIPT.md no longer carries the run-of-show gantt"
+        bars = re.findall(r":\w+, (\d+:\d+), (\d+)s", block.group(1))
+        assert len(bars) == len(storyboard.SCENES), (
+            f"the gantt draws {len(bars)} bar(s) for "
+            f"{len(storyboard.SCENES)} scene(s)")
+        for (stamp, length), start, scene in zip(bars, self.starts(storyboard),
+                                                 storyboard.SCENES):
+            assert self.seconds(stamp) == start, f"{scene['name']} starts wrong"
+            assert int(length) == int(scene["duration"]), \
+                f"{scene['name']} runs {length}s in the gantt"
+
+    def test_the_gantt_adds_up_to_three_minutes(self, storyboard):
+        block = re.search(r"```mermaid\n(gantt.*?)```", self.text(), re.S)
+        total = sum(int(n) for n in re.findall(r":\w+, \d+:\d+, (\d+)s",
+                                               block.group(1)))
+        assert total == int(sum(s["duration"] for s in storyboard.SCENES)) == 180
+
+    def test_the_beat_table_names_the_same_starts(self, storyboard):
+        """One row per scene, each stamped with when the presenter gets there."""
+        stamps = [self.seconds(s)
+                  for s in re.findall(r"\| \*\*(\d+:\d+)\*\* ", self.text())]
+        assert stamps == self.starts(storyboard), (
+            f"the beat table starts at {stamps}, the storyboard at "
+            f"{self.starts(storyboard)}")
+
+    def test_the_section_headings_are_the_same_clock(self, storyboard):
+        """``## 0:25-0:55`` - the timings a presenter actually reads.
+
+        Checked as spans rather than starts, because a heading states both
+        ends: an overlapping pair is a script that has a scene beginning before
+        the one before it finished.
+        """
+        spans = re.findall(r"^## (\d+:\d+)[–-](\d+:\d+) ", self.text(),
+                           re.M)
+        assert len(spans) == len(storyboard.SCENES), (
+            f"{len(spans)} timed section(s) for {len(storyboard.SCENES)} scene(s)")
+        for (opens, closes), start, scene in zip(spans, self.starts(storyboard),
+                                                 storyboard.SCENES):
+            assert self.seconds(opens) == start, f"{scene['name']} opens wrong"
+            assert self.seconds(closes) - self.seconds(opens) == \
+                int(scene["duration"]), f"{scene['name']} runs the wrong length"
