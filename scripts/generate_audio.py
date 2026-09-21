@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-import subprocess
 import os
-import sys
+import subprocess
 
 # Segments with target durations in seconds
 SEGMENTS = [
@@ -54,31 +53,31 @@ def get_audio_duration(file_path):
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", file_path
     ]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return float(res.stdout.strip())
 
 def main():
     os.makedirs("scratch/audio", exist_ok=True)
     os.makedirs("video_assets", exist_ok=True)
-    
+
     total_target = sum(s["duration"] for s in SEGMENTS)
     print(f"Total target video duration: {total_target}s ({total_target/60:.2f} mins)")
-    
+
     scene_wavs = []
-    
+
     for i, seg in enumerate(SEGMENTS, 1):
         raw_aiff = f"scratch/audio/{seg['id']}_raw.aiff"
         final_wav = f"scratch/audio/{seg['id']}_timed.wav"
-        
+
         # Synthesize with say using Daniel
         # -r rate: standard is ~175. We can test around 165 for very clear narration
         cmd = ["say", "-v", "Daniel", "-r", "165", "-o", raw_aiff, seg["text"]]
         subprocess.run(cmd, check=True)
-        
+
         raw_dur = get_audio_duration(raw_aiff)
         target_dur = seg["duration"]
         print(f"Scene {i} ({seg['name']}): raw duration {raw_dur:.2f}s -> target {target_dur:.2f}s")
-        
+
         # Pad with silence or slight tempo adjust to exactly match target duration
         if raw_dur < target_dur:
             pad_needed = target_dur - raw_dur
@@ -110,13 +109,13 @@ def main():
     with open(concat_list_file, "w") as f:
         for w in scene_wavs:
             f.write(f"file '{os.path.abspath(w)}'\n")
-            
+
     full_wav = "video_assets/full_narration.wav"
     subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", concat_list_file, "-c", "copy", full_wav
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    
+
     total_dur = get_audio_duration(full_wav)
     print(f"\nSuccessfully generated full narration: {full_wav} (Duration: {total_dur:.2f}s / {total_dur/60:.2f} min)")
 

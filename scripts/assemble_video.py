@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import subprocess
-import os
-import sys
 from pathlib import Path
 
 SHOTS = [
@@ -10,7 +8,7 @@ SHOTS = [
     {"id": "s1_shot2", "dur": 5.0},
     {"id": "s1_shot3", "dur": 5.0},
     {"id": "s1_shot4", "dur": 7.0},
-    
+
     # Scene 2: The Plot Twist (30.0s)
     {"id": "s2_shot1", "dur": 7.0},
     {"id": "s2_shot2", "dur": 8.0},
@@ -182,26 +180,26 @@ Try tomorrow's rules on yesterday's decisions, before tomorrow becomes a surpris
 def main():
     clips_dir = Path("video_assets/clips")
     clips_dir.mkdir(parents=True, exist_ok=True)
-    
+
     shots_dir = Path("video_assets/shots")
     audio_file = Path("video_assets/full_narration.wav")
     output_mp4 = Path("policy_time_machine_demo.mp4")
     srt_file = Path("video_assets/subtitles.srt")
-    
+
     srt_file.write_text(SUBTITLES.strip() + "\n")
     print("Wrote subtitles to video_assets/subtitles.srt")
-    
+
     clip_files = []
-    
+
     print("Step 1: Encoding individual shot video clips...")
     for i, shot in enumerate(SHOTS, 1):
         img_path = shots_dir / f"{shot['id']}.png"
         clip_path = clips_dir / f"{shot['id']}.mp4"
         clip_files.append(clip_path)
-        
+
         dur = shot["dur"]
         vf_filter = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=0x080c16"
-        
+
         cmd = [
             "ffmpeg", "-y",
             "-loop", "1",

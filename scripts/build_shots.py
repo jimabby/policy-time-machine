@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
 import time
-import os
-import sys
 from pathlib import Path
 
 SHOTS = [
@@ -11,7 +9,7 @@ SHOTS = [
     {"id": "s1_shot2", "dur": 5.0, "sc": "s1_2", "title": "The Bet: Moving slider to 20%"},
     {"id": "s1_shot3", "dur": 5.0, "sc": "s1_3", "title": "The Bet: Guess comparison reveal"},
     {"id": "s1_shot4", "dur": 7.0, "sc": "s1_4", "title": "The Bet: 147 flips impact chart & coverage"},
-    
+
     # Scene 2: The Plot Twist (30.0s)
     {"id": "s2_shot1", "dur": 7.0, "sc": "s2_1", "title": "The Plot Twist: Clauses overview"},
     {"id": "s2_shot2", "dur": 8.0, "sc": "s2_2", "title": "The Plot Twist: Clause 1.1 (48 changes)"},
@@ -46,10 +44,10 @@ SHOTS = [
 def main():
     out_dir = Path("video_assets/shots")
     out_dir.mkdir(parents=True, exist_ok=True)
-    
+
     total_dur = sum(s["dur"] for s in SHOTS)
     print(f"Total video duration from shots: {total_dur}s ({total_dur/60:.2f} mins)")
-    
+
     server_py = """
 import sys, types, os
 sys.path.insert(0, os.path.abspath('.'))
@@ -83,7 +81,7 @@ def capture_page(sc: str = ''):
     window.addEventListener('load', async () => {{
         await new Promise(r => setTimeout(r, 1600));
         const sc = "{sc}";
-        
+
         const s = document.createElement('style');
         s.textContent = `
             body {{ font-size: 16px !important; }}
@@ -250,7 +248,7 @@ if __name__ == '__main__':
     for i, shot in enumerate(SHOTS, 1):
         shot_file = out_dir / f"{shot['id']}.png"
         print(f"[{i}/{len(SHOTS)}] Rendering {shot['id']}: {shot['title']}...")
-        
+
         sc = shot["sc"]
         if sc == "term_1":
             target_url = f"file://{term_html}?step=1"

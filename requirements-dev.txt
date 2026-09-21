@@ -9,3 +9,5 @@ pytest>=8.0
 ruff>=0.16
 # Coverage, for `make coverage` and the CI floor in pyproject.toml.
 pytest-cov>=5.0
+# Fix for PYSEC-2026-3447 vulnerability in earlier setuptools
+setuptools>=83.0.0

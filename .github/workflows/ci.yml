@@ -36,7 +36,7 @@ jobs:
       # blocking unrelated work. See .github/dependabot.yml.
       - name: Audit the engine's dependencies
         run: |
-          pip install pip-audit
+          pip install --upgrade setuptools pip-audit
           pip-audit --strict --desc
 
       # The code carries `# noqa` directives and nothing here could honour them,
@@ -368,6 +368,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # include/ contains the database and fixtures. The checkout is owned by
+      # the runner user, so the container running as user airflow (50000) needs
+      # write permissions to create and write to include/ptm.db.
+      - name: Make include directory writable for the demo container
+        run: chmod 777 include
 
       # --wait blocks on the healthcheck in docker-compose.yaml, which polls the
       # Explorer's own API. So this step passing already means Airflow migrated,
