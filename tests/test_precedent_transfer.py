@@ -214,3 +214,171 @@ class TestTheArchiveIsNeverOverwritten:
         elsewhere["ruled_by"] = "someone.elsewhere"
         added = store.import_precedent_history([{**elsewhere, "domain": "expenses"}])
         assert added == 1
+
+
+class TestRecordingARulingWithoutAirflow:
+    """The half of the loop that needed a scheduler, and should not have.
+
+    :func:`ptm.store.save_precedent` had three callers: the HITL task in
+    ``ptm_dags.adjudicate``, the simulated reviewer in ``ptm.selftest``, and
+    the import path above - which can only file a ruling somebody else already
+    made. So ``manage.py`` would import your history, replay it, measure its
+    coverage, export a bundle and export the rulings held against it, and there
+    was no way to *make* one. The project's claim is that a human ruling becomes
+    the check the next proposal faces; making one was the last thing that should
+    have required standing up Airflow.
+    """
+
+    def test_it_records_the_ruling(self, ruled):
+        result = precedents.record_precedent(
+            "expenses", "exp-0003", "deny", "risk.lead", note="over the band")
+        assert result["outcome"] == "deny"
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0003"].correct_outcome == "deny"
+        assert held["exp-0003"].ruled_by == "risk.lead"
+        assert held["exp-0003"].note == "over the band"
+
+    def test_it_captures_the_circumstances_and_not_only_the_answer(self, ruled):
+        """A ruling recording only the answer cannot be re-read later.
+
+        ``policy_version`` and ``judged_outcome`` are what make staleness
+        computable - see :func:`ptm.diff.stale_precedents` - and the DAG records
+        them because it has just shown them to a reviewer. A shell path that
+        left them blank would produce rulings that quietly read as stale beside
+        ones made in the UI.
+        """
+        from ptm import cost, diff
+        from ptm.config import load_domain
+        from ptm.judge import offline_verdict
+
+        domain = load_domain("expenses")
+        cases = store.load_cases("expenses", until=datetime(2026, 9, 1))
+        candidate = {c.case_id: offline_verdict(c, domain, "v2") for c in cases}
+        baseline = {c.case_id: offline_verdict(c, domain, "v1") for c in cases}
+        flips = diff.flips(cases, candidate, domain, baseline=baseline)
+        store.save_replay("pytest__rule", "expenses", "v2", "actual", len(cases), flips,
+                          0.0, candidate, ledger=cost.zero(), baseline_version="v1",
+                          baseline_verdicts=baseline)
+
+        flipped = flips[0].case_id
+        result = precedents.record_precedent("expenses", flipped, "deny", "risk.lead")
+        assert result["policy_version"] == "v2"
+        assert result["judged_outcome"], "the verdict being overturned was not recorded"
+        held = {p.case_id: p for p in store.load_precedents("expenses")}[flipped]
+        assert held.policy_version == "v2"
+        assert held.established_by_run, "a ruling with no provenance"
+
+    def test_a_case_this_database_does_not_have_is_refused(self, ruled):
+        """The opposite of the import path, deliberately.
+
+        An import accepts rulings for cases not yet loaded, because receiving a
+        regression suite before the history is the normal way round. Nobody
+        settles a case first-hand that they cannot read, so here a case id that
+        is not on file is a typo.
+        """
+        with pytest.raises(LookupError, match="no case"):
+            precedents.record_precedent("expenses", "exp-9999", "deny", "risk.lead")
+
+    def test_an_outcome_the_domain_does_not_have_is_refused(self, ruled):
+        with pytest.raises(LookupError, match="invalid outcome"):
+            precedents.record_precedent("expenses", "exp-0003", "maybe", "risk.lead")
+
+    def test_an_unattributed_ruling_is_refused(self, ruled):
+        """Precedent is the one output that cannot be recomputed, so a ruling
+        nobody's name is on is one nobody can be asked about."""
+        with pytest.raises(LookupError, match="who made it"):
+            precedents.record_precedent("expenses", "exp-0003", "deny", "   ")
+
+    def test_it_does_not_overwrite_an_existing_ruling(self, ruled):
+        with pytest.raises(LookupError, match="already been ruled"):
+            precedents.record_precedent("expenses", "exp-0002", "approve", "someone.else")
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0002"].correct_outcome == "deny", "the ruling was replaced"
+
+    def test_replace_takes_the_new_one_and_archives_the_old(self, ruled):
+        before = len(store.precedent_history("expenses"))
+        result = precedents.record_precedent(
+            "expenses", "exp-0002", "approve", "someone.else", replace=True)
+        assert result["replaced"] == "deny"
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0002"].correct_outcome == "approve"
+        assert len(store.precedent_history("expenses")) == before + 1
+
+    def test_pinning_a_version_with_no_recorded_change_is_refused(self, ruled):
+        """Saying which candidate you ruled against is a claim, so it is checked."""
+        with pytest.raises(LookupError, match="no recorded change"):
+            precedents.record_precedent("expenses", "exp-0003", "deny", "risk.lead",
+                                        version="v2")
+
+    def test_the_ruling_is_exportable_like_any_other(self, ruled):
+        """A ruling made here must be indistinguishable from one made in the UI."""
+        precedents.record_precedent("expenses", "exp-0003", "deny", "risk.lead",
+                                    note="over the band")
+        payload = precedents.export_precedents("expenses")
+        recorded = [p for p in payload["precedents"] if p["case_id"] == "exp-0003"]
+        assert recorded and recorded[0]["note"] == "over the band"
+
+
+class TestTheRulingCli:
+    def test_it_records_and_reports(self, ruled, capsys):
+        assert precedents.main(
+            ["expenses", "--rule", "exp-0003", "deny", "--by", "risk.lead"]) == 0
+        assert "risk.lead ruled exp-0003" in capsys.readouterr().out
+
+    def test_a_note_may_begin_with_a_dash(self, ruled, capsys):
+        """A reviewer's reason is free text they wrote. A minus sign can open a
+        sentence, and a flag scan that reads a leading dash as the next option
+        would report that --note needs a value it had just been given."""
+        assert precedents.main(
+            ["expenses", "--rule", "exp-0003", "deny", "--by", "risk.lead",
+             "--note", "-40 GBP under the old band"]) == 0
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0003"].note.startswith("-40 GBP")
+
+    def test_a_note_is_not_mistaken_for_a_switch(self, ruled, capsys):
+        """`--note "--replace"` is an odd note and not a request to overwrite.
+
+        A membership test over the raw argument list read it as the switch that
+        replaces somebody else's ruling, which is the one act this module is
+        built to make people ask for twice.
+        """
+        assert precedents.main(
+            ["expenses", "--rule", "exp-0002", "approve", "--by", "x",
+             "--note", "--replace"]) == 2
+        assert "already been ruled" in capsys.readouterr().err
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0002"].correct_outcome == "deny", "the ruling was replaced"
+
+    def test_a_conflict_exits_non_zero_without_writing(self, ruled, capsys):
+        assert precedents.main(
+            ["expenses", "--rule", "exp-0002", "approve", "--by", "x"]) == 2
+        assert "already been ruled" in capsys.readouterr().err
+        held = {p.case_id: p for p in store.load_precedents("expenses")}
+        assert held["exp-0002"].correct_outcome == "deny"
+
+    def test_replace_resolves_it(self, ruled, capsys):
+        assert precedents.main(
+            ["expenses", "--rule", "exp-0002", "approve", "--by", "x", "--replace"]) == 0
+        assert "replaced the earlier ruling" in capsys.readouterr().out
+
+    def test_a_missing_outcome_is_usage_rather_than_a_traceback(self, ruled, capsys):
+        assert precedents.main(["expenses", "--rule", "exp-0003", "--by", "x"]) == 2
+        err = capsys.readouterr().err
+        assert "needs a case id and an outcome" in err and "Traceback" not in err
+
+    def test_ruling_and_importing_are_different_acts(self, ruled, tmp_path, capsys):
+        """Both write precedents and they mean opposite things: one is a
+        judgement made here, the other is a file of judgements made elsewhere.
+        Silently doing one when asked for both is how a regression suite gets a
+        row nobody remembers agreeing to."""
+        path = tmp_path / "rulings.json"
+        path.write_text(json.dumps(precedents.export_precedents("expenses"),
+                                   default=str), encoding="utf-8")
+        assert precedents.main(["expenses", "--rule", "exp-0003", "deny",
+                                "--by", "x", "--import", str(path)]) == 2
+        assert "different acts" in capsys.readouterr().err
+
+    def test_the_export_path_is_untouched(self, ruled, capsys):
+        """The flags added for --rule must not change what the other forms do."""
+        assert precedents.main(["expenses"]) == 0
+        assert json.loads(capsys.readouterr().out)["format"] == precedents.FORMAT

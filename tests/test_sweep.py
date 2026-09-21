@@ -322,3 +322,60 @@ class TestTheCliRefusesRatherThanCrashes:
         assert sweep.main(["expenses", "v2", "--joint",
                            "1.1:amount_gbp=50,75", "3.1:days_notice=3,7"]) == 0
         assert "<- current" in capsys.readouterr().out
+
+
+class TestAThresholdHasToBeANumber:
+    """``float()`` accepts ``nan`` and ``inf``, and both used to reach a curve.
+
+    Each is a threshold no comparison can satisfy, so the rule stops firing
+    entirely - and the sweep then reported the resulting decision base with the
+    same confidence as a real setting. Three things were wrong with that at
+    once, and the third is the one that broke a page: ``json.dumps`` writes
+    them as the bare tokens ``NaN`` and ``Infinity``, which are not JSON, so
+    ``/api/sweep?values=nan`` returned a body ``JSON.parse`` rejects and the
+    panel died with nothing on screen to say why.
+    """
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "Infinity", "1e400"])
+    def test_parse_values_refuses_it(self, raw):
+        """``1e400`` is in the list because it is the one that does not look
+        like the others: it is a finite literal that overflows to ``inf``, so a
+        check written against the spelling rather than the value would pass it
+        straight through."""
+        with pytest.raises(ValueError):
+            sweep.parse_values(f"{raw},50")
+
+    def test_ordinary_values_are_untouched(self):
+        assert sweep.parse_values("25, 50,75.5 ,100") == [25, 50, 75.5, 100]
+        assert sweep.parse_values("-25,0") == [-25, 0]
+
+    @pytest.mark.parametrize("raw", ["nan,50", "inf,50"])
+    def test_the_cli_refuses_it_by_both_routes(self, seeded, raw, capsys):
+        assert sweep.main(["expenses", "v2", "1.1", "amount_gbp", raw]) == 2
+        assert sweep.main(["expenses", "v2", "--joint",
+                           f"1.1:amount_gbp={raw}", "3.1:days_notice=3,7"]) == 2
+        assert "is not a threshold" in capsys.readouterr().err
+
+    def test_the_read_model_refuses_it_as_a_lookup(self, seeded):
+        """Which is the shape the plugin turns into a 404 rather than a 500."""
+        from ptm import report
+
+        with pytest.raises(LookupError, match="not a threshold"):
+            report.sweep("expenses", "v2", "amount_gbp", "nan,50", clause="1.1")
+        with pytest.raises(LookupError, match="not a threshold"):
+            report.joint_sweep("expenses", "v2", "amount_gbp", "inf,50",
+                               "days_notice", "3,7", "1.1", "3.1")
+
+    def test_what_a_sweep_returns_is_serialisable_as_strict_json(self, seeded):
+        """The property the refusal exists to preserve, asserted directly.
+
+        ``allow_nan=False`` is what every JSON parser that is not Python's does
+        by default. :mod:`ptm.ingest` already writes payloads this way; this is
+        the other door into the same file format.
+        """
+        import json
+
+        from ptm import report
+
+        result = report.sweep("expenses", "v2", "amount_gbp", "25,50,75", clause="1.1")
+        json.dumps(result, allow_nan=False)

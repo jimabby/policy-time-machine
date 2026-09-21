@@ -455,11 +455,22 @@ class TestManageExposesTheWholeLoop:
     def test_the_commands_a_real_history_needs_are_all_there(self):
         """The gap this closed: measuring your own cases and then being unable to
         get the bundle out, move the rulings, clear a stranded run or reclaim the
-        disk without setting PTM_DB by hand."""
+        disk without setting PTM_DB by hand.
+
+        ``rule`` and ``gate`` are the rest of that gap, and the half that
+        mattered most: every command here would import your history, replay it,
+        measure it and export the rulings held against it, and none of them
+        would let you *make* a ruling or hold a policy to one. The project's
+        whole claim is that a human ruling becomes the check the next proposal
+        faces; a workflow that can export rulings it cannot create, and record
+        them where nothing enforces them, is that claim with its two ends
+        missing.
+        """
         import manage
 
         assert {"import", "replay", "coverage", "snapshots", "evidence",
-                "resolve", "export", "rulings", "prune"} == set(manage.COMMANDS)
+                "resolve", "export", "rulings", "rule", "gate",
+                "prune"} == set(manage.COMMANDS)
 
 
 class TestTheMakefileFollowsTheDatabaseYouChose:

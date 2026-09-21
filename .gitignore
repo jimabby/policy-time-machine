@@ -31,3 +31,12 @@ scratch/
 video_assets/clips/
 *.wav
 *.aiff
+# The rendered stills are build output, like the clips above: `python
+# scripts/build_shots.py` makes them from the storyboard and the shipped
+# fixture. They were committed while the clips beside them were ignored, which
+# is one rule drawn in two places - and a still that is committed is a picture
+# of a number that no longer has to agree with the number. The mp4 stays
+# tracked: it is the deliverable, and nothing regenerates it for a reader who
+# only wants to watch it.
+video_assets/shots/
+video_assets/subtitles.srt

@@ -1,44 +1,21 @@
 #!/usr/bin/env python3
+"""Cut the rendered stills into the demo video: clips, concat, then the mux.
+
+The shot list and its durations are :mod:`storyboard`'s, not this file's. They
+used to be stated here as well, identically, and a second copy of a timing
+table is a copy that is one edit away from disagreeing with the first - at
+which point the pictures and the voice drift apart and nothing says so until
+somebody watches all three minutes.
+"""
+
+from __future__ import annotations
+
 import subprocess
+import sys
 from pathlib import Path
 
-SHOTS = [
-    # Scene 1: The Bet (25.0s)
-    {"id": "s1_shot1", "dur": 8.0},
-    {"id": "s1_shot2", "dur": 5.0},
-    {"id": "s1_shot3", "dur": 5.0},
-    {"id": "s1_shot4", "dur": 7.0},
-
-    # Scene 2: The Plot Twist (30.0s)
-    {"id": "s2_shot1", "dur": 7.0},
-    {"id": "s2_shot2", "dur": 8.0},
-    {"id": "s2_shot3", "dur": 7.0},
-    {"id": "s2_shot4", "dur": 8.0},
-
-    # Scene 3: No Spoilers from the Future (25.0s)
-    {"id": "s3_shot1", "dur": 8.0},
-    {"id": "s3_shot2", "dur": 9.0},
-    {"id": "s3_shot3", "dur": 8.0},
-
-    # Scene 4: Open the Machine (30.0s)
-    {"id": "s4_shot1", "dur": 8.0},
-    {"id": "s4_shot2", "dur": 12.0},
-    {"id": "s4_shot3", "dur": 10.0},
-
-    # Scene 5: The Person Gets a Say (30.0s)
-    {"id": "s5_shot1", "dur": 10.0},
-    {"id": "s5_shot2", "dur": 10.0},
-    {"id": "s5_shot3", "dur": 10.0},
-
-    # Scene 6: Let the Room Choose (25.0s)
-    {"id": "s6_shot1", "dur": 7.0},
-    {"id": "s6_shot2", "dur": 10.0},
-    {"id": "s6_shot3", "dur": 8.0},
-
-    # Scene 7: Pay Off the Opening Question (15.0s)
-    {"id": "s7_shot1", "dur": 7.0},
-    {"id": "s7_shot2", "dur": 8.0},
-]
+import storyboard
+from storyboard import SHOTS, TOTAL_SECONDS
 
 SUBTITLES = """1
 00:00:00,500 --> 00:00:04,500
@@ -177,7 +154,16 @@ Now we can discuss who it affects, what it costs, and which human decisions it m
 Try tomorrow's rules on yesterday's decisions, before tomorrow becomes a surprise.
 """
 
-def main():
+def main() -> int:
+    problems = storyboard.check()
+    if problems:
+        # Checked before a single clip is encoded. A storyboard that does not
+        # reconcile produces a video whose narration slides out from under the
+        # pictures, and finding that at the end costs the whole encode.
+        for line in problems:
+            print(f"ERROR {line}", file=sys.stderr)
+        return 1
+
     clips_dir = Path("video_assets/clips")
     clips_dir.mkdir(parents=True, exist_ok=True)
 
@@ -217,7 +203,7 @@ def main():
 
     print("\nStep 2: Concatenating all shot clips...")
     concat_txt = clips_dir / "concat.txt"
-    with open(concat_txt, "w") as f:
+    with open(concat_txt, "w", encoding="utf-8") as f:
         for c in clip_files:
             f.write(f"file '{c.resolve()}'\n")
 
@@ -242,7 +228,10 @@ def main():
         "-c:a", "aac",
         "-b:a", "192k",
         "-c:s", "mov_text",
-        "-t", "180.0",
+        # The storyboard's total, not a number typed here. Written out as
+        # "180.0" this was a fourth copy of the same contract, and the one
+        # that truncates the end of the video when it falls behind.
+        "-t", str(TOTAL_SECONDS),
         str(output_mp4.resolve())
     ]
     subprocess.run(cmd_final, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -257,6 +246,11 @@ def main():
     dur = float(res.stdout.strip())
     size_mb = output_mp4.stat().st_size / (1024 * 1024)
     print(f"Output verified: Duration = {dur:.2f}s ({dur/60:.2f} min), Size = {size_mb:.2f} MB")
+    if abs(dur - TOTAL_SECONDS) > 1.0:
+        print(f"WARNING the muxed video is {dur:.2f}s against a storyboard of "
+              f"{TOTAL_SECONDS}s", file=sys.stderr)
+        return 1
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

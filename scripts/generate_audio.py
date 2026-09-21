@@ -1,52 +1,33 @@
 #!/usr/bin/env python3
-import os
-import subprocess
+"""Synthesise the narration, one wav per scene, then one for the whole video.
 
-# Segments with target durations in seconds
-SEGMENTS = [
-    {
-        "id": "scene1",
-        "name": "The Bet",
-        "duration": 25.0,
-        "text": "We're thinking about changing our expense rules. Before we announce anything: how many old decisions do you think would get a different answer? Ten? Fifty? Half of them? [[slnc 1200]] In this demo, 147 out of 600. Almost one in four. That small rule change just became a much more interesting conversation."
-    },
-    {
-        "id": "scene2",
-        "name": "The Plot Twist",
-        "duration": 30.0,
-        "text": "Which sentence did it? This receipt clause accounts for 48 changes. But there's a twist: 38 of the 147 differences also disagree with the old rulebook. [[slnc 1000]] The proposal didn't create those differences. In the flips table, we can inspect each case's historical facts, candidate clauses, and human rulings."
-    },
-    {
-        "id": "scene3",
-        "name": "No Spoilers from the Future",
-        "duration": 25.0,
-        "text": "Imagine someone was promoted last year. Should today's seniority change what they were entitled to two years ago? [[slnc 1000]] This replay uses what was known on the day. Using today's facts gets 39 of these 600 cases wrong. [[slnc 1500]] Point in time replay protects you from tomorrow's bias."
-    },
-    {
-        "id": "scene4",
-        "name": "Open the Machine",
-        "duration": 30.0,
-        "text": "Bring back the old facts. Try both rulebooks. Ask a person about selected changes. Save their answer so the next proposal has to face it too. [[slnc 1000]] Airflow coordinates those steps. The machine stores the evidence in one shared memory, and this screen reads it back so we can discuss it together."
-    },
-    {
-        "id": "scene5",
-        "name": "The Person Gets a Say",
-        "duration": 30.0,
-        "text": "We don't ask someone to read 600 cases. The demo selects eight. Each answer becomes an example future rules are checked against. If a proposal reverses one, the check fails and somebody has to resolve it. [[slnc 1200]] And we still ask whether the old policy already made the same reversal. A red result needs an explanation, not a convenient scapegoat."
-    },
-    {
-        "id": "scene6",
-        "name": "Let the Room Choose",
-        "duration": 25.0,
-        "text": "What would you choose: 50, 100, or 150 pounds? We can compare the consequences before we pick. [[slnc 1200]] These results use the offline rules; they show trade-offs, not a recommendation."
-    },
-    {
-        "id": "scene7",
-        "name": "Pay Off the Opening Question",
-        "duration": 15.0,
-        "text": "Would you ship this rule? Now we can discuss who it affects, what it costs, and which human decisions it must respect. [[slnc 600]] Try tomorrow's rules on yesterday's decisions, before tomorrow becomes a surprise."
-    }
-]
+**macOS only, and deliberately so.** ``say`` is the synthesiser and it ships
+with the system; the ``[[slnc N]]`` pauses in the narration are its markup too.
+:mod:`build_shots` used to read as though it were macOS-only as well, which was
+an accident and is fixed; this one is a real constraint, so it is stated here
+rather than discovered as a FileNotFoundError.
+
+The text and the per-scene durations are :mod:`storyboard`'s. They were a
+second copy here, next to a third copy of the shot timings in
+:mod:`assemble_video`, all three describing one contract.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+
+import storyboard
+from storyboard import SCENES
+
+#: ffmpeg's ``atempo`` takes 0.5-2.0 per instance. A scene whose synthesised
+#: narration overruns its slot by more than double is a storyboard problem
+#: rather than something to fix with a filter, and passing the filter a value
+#: it rejects fails with ffmpeg's own message about a slot nobody has mentioned.
+MAX_TEMPO = 2.0
+
 
 def get_audio_duration(file_path):
     cmd = [
@@ -56,22 +37,35 @@ def get_audio_duration(file_path):
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return float(res.stdout.strip())
 
-def main():
+
+def main() -> int:
+    problems = storyboard.check()
+    if problems:
+        for line in problems:
+            print(f"ERROR {line}", file=sys.stderr)
+        return 1
+    for tool in ("say", "ffmpeg", "ffprobe"):
+        if not shutil.which(tool):
+            print(f"ERROR {tool!r} is not on PATH. This script is macOS-only: the "
+                  f"narration is synthesised with the system `say` voice.",
+                  file=sys.stderr)
+            return 1
+
     os.makedirs("scratch/audio", exist_ok=True)
     os.makedirs("video_assets", exist_ok=True)
 
-    total_target = sum(s["duration"] for s in SEGMENTS)
+    total_target = sum(s["duration"] for s in SCENES)
     print(f"Total target video duration: {total_target}s ({total_target/60:.2f} mins)")
 
     scene_wavs = []
 
-    for i, seg in enumerate(SEGMENTS, 1):
+    for i, seg in enumerate(SCENES, 1):
         raw_aiff = f"scratch/audio/{seg['id']}_raw.aiff"
         final_wav = f"scratch/audio/{seg['id']}_timed.wav"
 
         # Synthesize with say using Daniel
         # -r rate: standard is ~175. We can test around 165 for very clear narration
-        cmd = ["say", "-v", "Daniel", "-r", "165", "-o", raw_aiff, seg["text"]]
+        cmd = ["say", "-v", "Daniel", "-r", "165", "-o", raw_aiff, seg["narration"]]
         subprocess.run(cmd, check=True)
 
         raw_dur = get_audio_duration(raw_aiff)
@@ -92,6 +86,18 @@ def main():
         else:
             # Need slight speedup (atempo)
             tempo = raw_dur / (target_dur - 0.5)
+            if tempo > MAX_TEMPO:
+                # Refused rather than clamped. Clamping would produce a scene
+                # that overruns its slot and pushes every later scene out of
+                # step with its pictures - silently, which is the one failure
+                # this pipeline is now arranged to make noisy. Shorten the
+                # narration or lengthen the scene in storyboard.py.
+                print(f"ERROR scene {seg['id']} synthesises to {raw_dur:.2f}s against a "
+                      f"{target_dur:.2f}s slot, which needs a tempo of {tempo:.2f} - past "
+                      f"the {MAX_TEMPO} ffmpeg's atempo accepts, and past what stays "
+                      f"listenable. Shorten the narration or lengthen the scene.",
+                      file=sys.stderr)
+                return 1
             cmd = [
                 "ffmpeg", "-y", "-i", raw_aiff,
                 "-af", f"atempo={tempo},apad=whole_dur={target_dur}",
@@ -106,7 +112,7 @@ def main():
 
     # Concatenate all into full_audio.wav
     concat_list_file = "scratch/audio/concat_list.txt"
-    with open(concat_list_file, "w") as f:
+    with open(concat_list_file, "w", encoding="utf-8") as f:
         for w in scene_wavs:
             f.write(f"file '{os.path.abspath(w)}'\n")
 

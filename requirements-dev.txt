@@ -9,5 +9,12 @@ pytest>=8.0
 ruff>=0.16
 # Coverage, for `make coverage` and the CI floor in pyproject.toml.
 pytest-cov>=5.0
-# Fix for PYSEC-2026-3447 vulnerability in earlier setuptools
+# Not a dependency of anything here - setuptools arrives with the build
+# environment - but the CI audit step runs pip-audit over this file's resolved
+# tree and fails on an advisory, and PYSEC-2026-3447 affects the setuptools the
+# runner ships with. Pinning the floor here is what makes the fix reproducible
+# on a laptop rather than something the workflow does to itself with a separate
+# `pip install --upgrade`: the two would drift, and the one that drifts is the
+# one nobody runs. Remove this line when the base image's setuptools is past it;
+# a floor tied to one advisory is archaeology a year from now.
 setuptools>=83.0.0

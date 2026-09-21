@@ -1,49 +1,127 @@
 #!/usr/bin/env python3
+"""Render every still the demo video is cut from, with a headless browser.
+
+Each shot is one frame: the dashboard driven into a particular state, or one of
+the three standalone templates beside this file. The states are the JavaScript
+injected by the capture server below, selected by the ``sc`` directive on each
+shot in :mod:`storyboard` - which is also where the durations, the titles and
+the narration live, in one table the other two scripts read as well.
+
+**Platform.** The browser and the interpreter are both discovered rather than
+assumed. This script used to name ``/Applications/Google Chrome.app`` and
+``.venv/bin/python`` outright, which made it macOS-only in a repository whose
+Makefile goes out of its way to work from Git Bash on Windows - and it failed
+with a bare FileNotFoundError that named neither problem. :mod:`generate_audio`
+is genuinely macOS-only, because ``say`` is; this is not, and should not have
+read as though it were.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
 import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-SHOTS = [
-    # Scene 1: The Bet (25.0s)
-    {"id": "s1_shot1", "dur": 8.0, "sc": "s1_1", "title": "The Bet: Place your prediction"},
-    {"id": "s1_shot2", "dur": 5.0, "sc": "s1_2", "title": "The Bet: Moving slider to 20%"},
-    {"id": "s1_shot3", "dur": 5.0, "sc": "s1_3", "title": "The Bet: Guess comparison reveal"},
-    {"id": "s1_shot4", "dur": 7.0, "sc": "s1_4", "title": "The Bet: 147 flips impact chart & coverage"},
+import storyboard
+from storyboard import SHOTS
 
-    # Scene 2: The Plot Twist (30.0s)
-    {"id": "s2_shot1", "dur": 7.0, "sc": "s2_1", "title": "The Plot Twist: Clauses overview"},
-    {"id": "s2_shot2", "dur": 8.0, "sc": "s2_2", "title": "The Plot Twist: Clause 1.1 (48 changes)"},
-    {"id": "s2_shot3", "dur": 7.0, "sc": "s2_3", "title": "The Plot Twist: 38 pre-existing deviations"},
-    {"id": "s2_shot4", "dur": 8.0, "sc": "s2_4", "title": "The Evidence: Case review dialog & historical facts"},
+#: Where the capture server listens. Local only - it serves the demo database.
+PORT = 8089
+HOST = "127.0.0.1"
 
-    # Scene 3: No Spoilers from the Future (25.0s)
-    {"id": "s3_shot1", "dur": 8.0, "sc": "term_1", "title": "Terminal: pit_check command & replay"},
-    {"id": "s3_shot2", "dur": 9.0, "sc": "term_2", "title": "Terminal: 39 naive replay errors & future bias"},
-    {"id": "s3_shot3", "dur": 8.0, "sc": "term_3", "title": "Terminal: manage.py coverage & provenance"},
+#: How long to wait for that server before giving up, in seconds. Polled rather
+#: than slept through: a fixed `time.sleep(2)` is either slower than it needs to
+#: be or shorter than the machine needs, and on the short side every shot fails
+#: with a connection error that looks like a browser problem.
+SERVER_TIMEOUT = 30
 
-    # Scene 4: Open the Machine (30.0s)
-    {"id": "s4_shot1", "dur": 8.0, "sc": "s4_1", "title": "Under the Hood: Four core steps"},
-    {"id": "s4_shot2", "dur": 12.0, "sc": "s4_2", "title": "Engine Room: Architecture diagram"},
-    {"id": "s4_shot3", "dur": 10.0, "sc": "dag_view", "title": "Orchestration: Airflow DAG code"},
+#: Chrome, in the order worth trying. `shutil.which` covers a PATH install and
+#: every Linux package name; the absolute paths are where the macOS and Windows
+#: installers put it, neither of which puts it on PATH.
+CHROME_CANDIDATES = (
+    "google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
 
-    # Scene 5: The Person Gets a Say (30.0s)
-    {"id": "s5_shot1", "dur": 10.0, "sc": "s5_1", "title": "Human Decisions: 8 Precedents"},
-    {"id": "s5_shot2", "dur": 10.0, "sc": "s5_2", "title": "Precedent Gate: Baseline comparison"},
-    {"id": "s5_shot3", "dur": 10.0, "sc": "s5_3", "title": "Human Rationale: Resolution details"},
 
-    # Scene 6: Let the Room Choose (25.0s)
-    {"id": "s6_shot1", "dur": 7.0, "sc": "s6_1", "title": "Sweep: Threshold dial selection"},
-    {"id": "s6_shot2", "dur": 10.0, "sc": "s6_2", "title": "Sweep: Computing trade-offs"},
-    {"id": "s6_shot3", "dur": 8.0, "sc": "s6_3", "title": "Sweep: 25, 50, 75, 100, 150 GBP curve"},
+def find_chrome() -> str:
+    """The browser to render with, or a refusal that says how to fix it."""
+    override = os.environ.get("PTM_CHROME")
+    if override:
+        if not Path(override).exists() and not shutil.which(override):
+            raise SystemExit(f"PTM_CHROME points at {override!r}, which is not there")
+        return override
+    for candidate in CHROME_CANDIDATES:
+        found = shutil.which(candidate) if not os.path.isabs(candidate) else (
+            candidate if Path(candidate).exists() else None)
+        if found:
+            return found
+    raise SystemExit(
+        "no Chrome or Chromium found. These shots are rendered headless, so one is "
+        "needed; install it, or set PTM_CHROME to the executable.")
 
-    # Scene 7: Pay Off the Opening Question (15.0s)
-    {"id": "s7_shot1", "dur": 7.0, "sc": "s7_1", "title": "Summary: Would you ship this rule?"},
-    {"id": "s7_shot2", "dur": 8.0, "sc": "s7_2", "title": "Payoff: Final metrics & quickstart"},
-]
 
-def main():
+def find_python() -> str:
+    """The interpreter to run the capture server with.
+
+    A project venv if there is one - and both spellings of its layout, because
+    a venv puts the interpreter in Scripts/ on Windows and bin/ everywhere
+    else, which is the same fork the Makefile documents at the top. Otherwise
+    whatever is running this, which is the right answer when the dependencies
+    are installed globally or the venv is already active.
+    """
+    root = Path(__file__).resolve().parent.parent
+    for relative in (".venv/Scripts/python.exe", ".venv/bin/python",
+                     ".venv-af/Scripts/python.exe", ".venv-af/bin/python"):
+        candidate = root / relative
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+def wait_for_server(url: str, process: subprocess.Popen, timeout: int) -> None:
+    """Block until the capture server answers, or say why it never will."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SystemExit(
+                f"the capture server exited with status {process.returncode} before it "
+                f"served anything. Run it by hand to see why: it needs fastapi, uvicorn "
+                f"and a seeded include/ptm.db.")
+        try:
+            with urllib.request.urlopen(url, timeout=1):
+                return
+        except (urllib.error.URLError, ConnectionError, OSError):
+            time.sleep(0.25)
+    raise SystemExit(f"the capture server did not answer {url} within {timeout}s")
+
+
+def main() -> int:
+    problems = storyboard.check()
+    if problems:
+        # The storyboard is the contract these frames are cut to. Rendering
+        # twenty-two stills against a table that does not add up wastes the
+        # render and produces a video whose narration drifts, so it is checked
+        # before the first shot rather than discovered at the mux.
+        for line in problems:
+            print(f"ERROR {line}", file=sys.stderr)
+        return 1
+
     out_dir = Path("video_assets/shots")
     out_dir.mkdir(parents=True, exist_ok=True)
+    scratch = Path("scratch")
+    # Created rather than assumed: scratch/ is gitignored, so it does not exist
+    # in a fresh clone and this failed on the write below with a FileNotFoundError
+    # naming a path nobody had been told to make.
+    scratch.mkdir(parents=True, exist_ok=True)
 
     total_dur = sum(s["dur"] for s in SHOTS)
     print(f"Total video duration from shots: {total_dur}s ({total_dur/60:.2f} mins)")
@@ -209,11 +287,23 @@ def capture_page(sc: str = ''):
             hideExcept('#plain', '#gatecard', 'h2[data-t="p.gate"]');
             window.scrollTo(0, 0);
         }} else if (sc === 's6_1') {{
+            // The dials, with nothing chosen yet. s6_2 is this with the
+            // candidate thresholds typed in and s6_3 is the answer, so the
+            // three frames are three states of one panel rather than - as
+            // s6_2 and s6_3 were, sharing a branch - one picture shown twice
+            // under two different sentences of narration.
             setView('detail');
             hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp');
-            document.getElementById('swvalues').value = '25,50,75,100,150';
+            document.getElementById('swvalues').value = '';
             window.scrollTo(0, 0);
-        }} else if (sc === 's6_2' || sc === 's6_3') {{
+        }} else if (sc === 's6_2') {{
+            setView('detail');
+            hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp');
+            const v = document.getElementById('swvalues');
+            v.value = '25,50,75,100,150';
+            v.classList.add('highlight-box');
+            window.scrollTo(0, 0);
+        }} else if (sc === 's6_3') {{
             setView('detail');
             hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp', '#sweep');
             document.getElementById('swvalues').value = '25,50,75,100,150';
@@ -221,7 +311,14 @@ def capture_page(sc: str = ''):
             await new Promise(r => setTimeout(r, 1200));
             window.scrollTo(0, 0);
         }} else if (sc === 's7_1') {{
+            // The summary the closing question is asked over. Without the
+            // hideExcept this was the plain view untouched, which is byte for
+            // byte the opening frame - so the video ended by replaying its own
+            // first seven seconds under a different voiceover.
             setView('plain');
+            hideExcept('#plain', '#story', '#tiles');
+            const p = document.getElementById('prediction');
+            if (p) p.style.display = 'none';
             window.scrollTo(0, 0);
         }}
     }});
@@ -232,51 +329,109 @@ def capture_page(sc: str = ''):
 root_app.mount('/ptm', ptm_app)
 
 if __name__ == '__main__':
-    uvicorn.run(root_app, host='127.0.0.1', port=8089, log_level='warning')
+    uvicorn.run(root_app, host=__PTM_HOST__, port=__PTM_PORT__, log_level='warning')
 """
+    # Substituted rather than typed twice. The URL every shot is fetched from is
+    # built from HOST and PORT above, and a server listening somewhere else is a
+    # run where all twenty-two frames fail on a connection error.
+    server_py = (server_py.replace("__PTM_HOST__", repr(HOST))
+                 .replace("__PTM_PORT__", str(PORT)))
 
-    Path("scratch/server_prod.py").write_text(server_py)
-    server_proc = subprocess.Popen([".venv/bin/python", "scratch/server_prod.py"])
-    time.sleep(2)
+    server_file = scratch / "server_prod.py"
+    # encoding named rather than left to the platform default, which is the
+    # ANSI codepage on Windows: this source carries the dashboard's own
+    # punctuation and would be written in a codec uvicorn then cannot read.
+    server_file.write_text(server_py, encoding="utf-8")
 
-    term_html = Path("scripts/templates/term_scene.html").resolve()
-    dag_html = Path("scripts/templates/dag_scene.html").resolve()
-    payoff_html = Path("scripts/templates/payoff_scene.html").resolve()
+    python_bin, chrome_bin = find_python(), find_chrome()
+    print(f"server:  {python_bin}")
+    print(f"browser: {chrome_bin}")
 
-    chrome_bin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    base = f"http://{HOST}:{PORT}"
+    server_proc = subprocess.Popen([python_bin, str(server_file)])
+    rendered = 0
+    try:
+        wait_for_server(f"{base}/ptm/api/domains", server_proc, SERVER_TIMEOUT)
 
-    for i, shot in enumerate(SHOTS, 1):
-        shot_file = out_dir / f"{shot['id']}.png"
-        print(f"[{i}/{len(SHOTS)}] Rendering {shot['id']}: {shot['title']}...")
+        term_html = Path("scripts/templates/term_scene.html").resolve()
+        dag_html = Path("scripts/templates/dag_scene.html").resolve()
+        payoff_html = Path("scripts/templates/payoff_scene.html").resolve()
+        # as_uri() rather than an f-string: a Windows path is C:\... and
+        # "file://C:\..." is not a URL, so the query string on the terminal
+        # shots - which is the whole of how those three frames differ - was
+        # never going to reach the page.
+        standalone = {
+            "term_1": f"{term_html.as_uri()}?step=1",
+            "term_2": f"{term_html.as_uri()}?step=2",
+            "term_3": f"{term_html.as_uri()}?step=3",
+            "dag_view": dag_html.as_uri(),
+            "s7_2": payoff_html.as_uri(),
+        }
 
-        sc = shot["sc"]
-        if sc == "term_1":
-            target_url = f"file://{term_html}?step=1"
-        elif sc == "term_2":
-            target_url = f"file://{term_html}?step=2"
-        elif sc == "term_3":
-            target_url = f"file://{term_html}?step=3"
-        elif sc == "dag_view":
-            target_url = f"file://{dag_html}"
-        elif sc == "s7_2":
-            target_url = f"file://{payoff_html}"
+        for i, shot in enumerate(SHOTS, 1):
+            shot_file = out_dir / f"{shot['id']}.png"
+            print(f"[{i}/{len(SHOTS)}] Rendering {shot['id']}: {shot['title']}...")
+
+            target_url = standalone.get(
+                shot["sc"],
+                f"{base}/ptm_capture?domain=expenses&version=v2&sc={shot['sc']}")
+
+            cmd = [
+                chrome_bin,
+                "--headless=new",
+                "--virtual-time-budget=3800",
+                "--window-size=1920,1080",
+                f"--screenshot={shot_file.resolve()}",
+                target_url,
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           check=True)
+            size_kb = shot_file.stat().st_size / 1024
+            print(f"  -> Generated {shot_file.name} ({size_kb:.1f} KB)")
+            rendered += 1
+    finally:
+        # In a finally, because a shot failing under check=True used to leave
+        # uvicorn holding the port - so the next run failed at startup for a
+        # reason that had nothing to do with what was actually wrong.
+        server_proc.terminate()
+        try:
+            server_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+
+    # Counted, not remembered: this said "All 22 shots" beside a list that is
+    # free to be any length.
+    print()
+    print(f"All {rendered} shot(s) rendered successfully!")
+    duplicates = _identical_frames(out_dir)
+    if duplicates:
+        # Two shots that rendered the same bytes are two spans of the finished
+        # video holding one still while the narration moves on. The storyboard
+        # refuses two shots sharing a capture directive; this catches the other
+        # way in, where two different directives happen to produce one frame.
+        for left, right in duplicates:
+            print(f"WARNING {left} and {right} are byte-identical", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _identical_frames(out_dir: Path) -> list[tuple[str, str]]:
+    """Pairs of rendered shots with the same content, in play order."""
+    import hashlib
+
+    seen: dict[str, str] = {}
+    found: list[tuple[str, str]] = []
+    for shot in SHOTS:
+        path = out_dir / f"{shot['id']}.png"
+        if not path.exists():
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest in seen:
+            found.append((seen[digest], shot["id"]))
         else:
-            target_url = f"http://127.0.0.1:8089/ptm_capture?domain=expenses&version=v2&sc={sc}"
+            seen[digest] = shot["id"]
+    return found
 
-        cmd = [
-            chrome_bin,
-            "--headless=new",
-            "--virtual-time-budget=3800",
-            "--window-size=1920,1080",
-            f"--screenshot={shot_file.resolve()}",
-            target_url
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        size_kb = shot_file.stat().st_size / 1024
-        print(f"  -> Generated {shot_file.name} ({size_kb:.1f} KB)")
-
-    server_proc.terminate()
-    print("\nAll 22 shots rendered successfully!")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

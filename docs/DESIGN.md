@@ -1146,7 +1146,8 @@ ptm/preflight.py                what is wrong with the policy before it is repla
 ptm/sweep.py                    what the threshold should be, not just which clause
 ptm/rules.py                    are the offline rules the policy they stand in for?
 ptm/gate.py                     the precedent regression suite, from a shell
-ptm/precedents.py               move the one output that cannot be recomputed
+ptm/precedents.py               record, move and merge the one output that cannot
+                                  be recomputed
 ptm/proposal.py                 drafts the next version, then makes the gate check it
 ptm/cache.py                    do not pay twice for a prompt already answered
 ptm/cost.py                     what a replay costs, and did cost
@@ -1157,9 +1158,14 @@ ptm/cli.py                      one definition of --help, for every entry point
 ptm/seed.py                     synthetic 2-year decision history
 ptm/selftest.py                 whole loop, no Airflow
 demo.py                         the Makefile's tour, for a box with no make
+scripts/storyboard.py           the demo video, as one table: shots, durations,
+                                  narration - and the check that they reconcile
+scripts/build_shots.py          renders each still with a headless browser
+scripts/generate_audio.py       synthesises the narration (macOS only: `say`)
+scripts/assemble_video.py       cuts the stills into the video and muxes it
 docs/*.gif                      the README's clips, captured from the real tool
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1309 tests; the engine's 1128 need nothing but Python
+tests/                          1367 tests; the engine's 1186 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1276,7 +1282,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 1128 tests,
+  so a skip there means something has genuinely changed. The engine's 1186 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.
@@ -1401,6 +1407,30 @@ Built and run against `apache/airflow:3.1.0` with
   exponentiation is refused outright — every exponent in `((b**64)**64)**64` is
   a legal 64 while the base grows — and `MAX_RESULT_SIZE` caps what an
   expression may build, which is the bound that also covers `'x' * 10**9`.
+  `MAX_DEPTH` is the fourth, and it closes a hole in the module's own contract
+  rather than a cost: everything `safe_eval` declines is promised to arrive as
+  a `RuleError`, and a deeply nested condition — `amount_gbp > 1+1+1+…` four
+  thousand terms long, which parses, whitelists clean and stays far under every
+  other ceiling — exhausted the Python stack in the walkers and came back as
+  `RecursionError`. That is not a `RuleError`, so it walked past every
+  `except RuleError` in the project, and the caller it reached first is the one
+  that matters: `ptm.rules.validate` is the gate in front of rules a *model*
+  wrote, so `propose_<domain>`'s designed behaviour — report the rule, write
+  the draft without it — became a task dying on a traceback. The depth is
+  measured iteratively, because a recursive measurement would overflow on
+  exactly the input it exists to refuse. `ptm.lint` warns at three quarters of
+  the ceiling, since a generated rule set drifts toward this one rather than
+  jumping into it.
+- **A threshold has to be a number.** `float()` accepts `nan` and `inf`, and
+  `ptm.sweep.parse_values` used to pass both straight through to a curve. Each
+  is a setting no comparison can satisfy, so the rule stops firing entirely and
+  the sweep reported the resulting decision base as confidently as a real
+  threshold — while `empties_rule`, whose whole job is to say "this leaves a
+  rule matching nothing", read `False`. And `json.dumps` writes them as the
+  bare tokens `NaN` and `Infinity`, which are not JSON, so `/api/sweep` handed
+  the dashboard a body `JSON.parse` rejects. Both are refused on the way in
+  now, on every route, including the finite literal `1e400` that overflows to
+  `inf` without looking like it would.
 - **A second judge is independent, not correct.** Where two judges split, the
   cross-check reports both answers and stops; it is evidence the *policy* does
   not settle that case, never evidence about which model was right. It also has

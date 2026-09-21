@@ -1,4 +1,4 @@
-"""Get the precedent set out of the database, and back into another one.
+"""Record a human ruling, get the set out of the database, and back into another.
 
 Precedents are the only durable output of this project. Everything else - every
 verdict, flip, aggregate, curve and cost figure - is recomputable from the cases
@@ -12,6 +12,16 @@ control beside the policy it guards, had one option: copy the whole SQLite file,
 cases and cache and all. ``ptm.report --csv`` exports flips, which are the
 recomputable half.
 
+**And no way to make one, either.** The only routes into
+:func:`ptm.store.save_precedent` were the HITL task in
+:mod:`ptm_dags.adjudicate`, the simulated reviewer in :mod:`ptm.selftest`, and
+the import below - which can only file a judgement somebody else already made.
+A team could import two years of their own decisions, replay them, measure the
+coverage, export the bundle and export the rulings held against it, and not
+record a single ruling without standing up a scheduler. See
+:func:`record_precedent`.
+
+    python -m ptm.precedents expenses --rule exp-0042 deny --by finance.lead
     python -m ptm.precedents expenses -o rulings.json
     python -m ptm.precedents expenses --import rulings.json
     python -m ptm.precedents expenses --import rulings.json --replace
@@ -43,6 +53,129 @@ from .models import Precedent
 #: this cannot read is refused by name rather than half-imported: a partial
 #: precedent set is a regression suite that passes for the wrong reason.
 FORMAT = "ptm-precedents/1"
+
+
+def record_precedent(domain_name: str, case_id: str, outcome: str, ruled_by: str,
+                     note: str = "", version: str = "",
+                     replace: bool = False) -> dict:
+    """Record one human ruling, the way the ``adjudicate`` DAG records a queue of them.
+
+    Until this existed, :func:`ptm.store.save_precedent` had three callers: the
+    HITL task in :mod:`ptm_dags.adjudicate`, the simulated reviewer in
+    :mod:`ptm.selftest`, and :func:`import_precedents` - which can only file a
+    ruling somebody else already made. So the whole non-Airflow path was a
+    half-loop. ``manage.py`` will import your history, replay it, check its
+    coverage and export a bundle, and ``make history-rulings`` will export the
+    rulings held against it, all of which CI exercises; and there was no way to
+    *make* one without standing up a scheduler. The claim this project is built
+    on is that a human ruling becomes the check the next proposal must face, so
+    the act of making one is the last thing that should have needed Airflow.
+
+    **It captures the circumstances, not just the answer.** A ruling that
+    records only "finance.lead said deny" cannot be re-read later - see
+    :class:`ptm.models.Precedent` and :func:`ptm.diff.stale_precedents`. The DAG
+    has the candidate version and its verdict to hand because it just showed
+    them to the reviewer; here they are looked up from the recorded flip, so a
+    ruling typed at a shell carries the same record as one made in the UI rather
+    than a thinner one that quietly reads as stale.
+
+    **It refuses an unknown case.** :func:`import_precedents` deliberately
+    accepts rulings for cases this database has not loaded, because receiving a
+    regression suite before the history is the normal way round. Making a
+    first-hand ruling is the opposite: nobody settles a case they cannot read,
+    so a typo in a case id is a mistake rather than an ordering.
+
+    **And it does not overwrite by default**, for the reason the import path
+    does not: an answer already on file was given by somebody, and ``--replace``
+    is how you say you mean it. The earlier ruling is archived either way.
+    """
+    domain = load_domain(domain_name)
+    ruled_by = (ruled_by or "").strip()
+    if not ruled_by:
+        raise LookupError(
+            "a ruling needs the name of the person who made it. Precedent is the one "
+            "output here that cannot be recomputed, and an unattributed one cannot be "
+            "asked about later.")
+    try:
+        outcome = domain.validate_outcome(outcome)
+    except ValueError as exc:
+        raise LookupError(str(exc)) from exc
+
+    on_file = store.query("SELECT case_id FROM cases WHERE domain=? AND case_id=?",
+                          (domain_name, case_id))
+    if not on_file:
+        raise LookupError(
+            f"no case {case_id!r} in {domain_name}. A ruling is a judgement about a "
+            f"case somebody read; import the history first, or check the id.")
+
+    # The candidate the reviewer was looking at, and what it gave. Taken from the
+    # most recent recorded flip for this case unless the caller named a version,
+    # which is what makes a ruling typed here as re-readable as one made in the UI.
+    rows = store.query(
+        """SELECT policy_version, new_outcome, policy_clause FROM current_flips
+           WHERE domain=? AND case_id=?""" + (" AND policy_version=?" if version else "")
+        + " ORDER BY rowid DESC LIMIT 1",
+        (domain_name, case_id, version) if version else (domain_name, case_id))
+    seen = rows[0] if rows else {}
+    if version and not rows:
+        raise LookupError(
+            f"{version} has no recorded change for {case_id}, so there is nothing this "
+            f"ruling would be overturning. Replay it first, or drop --version to rule "
+            f"on the case as it stands.")
+
+    current = next((p for p in store.load_precedents(domain_name)
+                    if p.case_id == case_id), None)
+    if current and not replace:
+        raise LookupError(
+            f"{case_id} has already been ruled {current.correct_outcome!r} by "
+            f"{current.ruled_by}. Two people disagreeing is settled by them rather than "
+            f"by whoever typed last; --replace takes this answer and archives that one.")
+
+    store.save_precedent(Precedent(
+        case_id=case_id, domain=domain_name, correct_outcome=outcome,
+        ruled_by=ruled_by, note=note,
+        established_at=store.now_utc(),
+        # Named the way the DAG names its own runs, so the provenance of a
+        # ruling says which door it came in by rather than going blank.
+        established_by_run="cli::ptm.precedents",
+        policy_version=seen.get("policy_version", "") or version,
+        judged_outcome=seen.get("new_outcome", ""),
+        judged_clause=seen.get("policy_clause", ""),
+    ))
+    # The same bookkeeping the DAG does after a ruling: a case that has been
+    # settled leaves the review queue, so the next adjudication run does not
+    # offer it again.
+    if seen.get("policy_version"):
+        store.mark_reviewed(domain_name, seen["policy_version"], [case_id])
+    return {
+        "domain": domain_name, "case_id": case_id, "outcome": outcome,
+        "ruled_by": ruled_by, "note": note,
+        "replaced": current.correct_outcome if current else "",
+        "policy_version": seen.get("policy_version", "") or version,
+        "judged_outcome": seen.get("new_outcome", ""),
+        "judged_clause": seen.get("policy_clause", ""),
+    }
+
+
+def describe_ruling(result: dict) -> str:
+    """One recorded ruling, as the CLI reports it."""
+    lines = []
+    if result["replaced"]:
+        lines.append(f"replaced the earlier ruling of {result['replaced']!r} on "
+                     f"{result['case_id']}, which is archived rather than lost")
+    against = ""
+    if result["policy_version"]:
+        against = (f" against {result['policy_version']}, which gave "
+                   f"{result['judged_outcome'] or 'no recorded verdict'!r}"
+                   + (f" citing clause {result['judged_clause']}"
+                      if result["judged_clause"] else ""))
+    lines.append(f"{result['ruled_by']} ruled {result['case_id']} "
+                 f"{result['outcome']!r}{against}")
+    if not result["policy_version"]:
+        lines.append("  no replayed version has a recorded change for this case, so the "
+                     "ruling carries no verdict it was overturning. It still binds the "
+                     "gate; it simply cannot be checked for staleness later.")
+    return "\n".join(lines)
 
 
 def export_precedents(domain_name: str) -> dict:
@@ -189,6 +322,14 @@ USAGE = """usage:
         differently is reported and skipped; --replace takes the incoming
         answer and archives the one it replaced.
 
+  python -m ptm.precedents <domain> --rule <case_id> <outcome> --by NAME
+                                    [--note TEXT] [--version V] [--replace]
+        Record one human ruling, without Airflow. The candidate version the
+        ruling is against and the verdict it overturns are read from the
+        recorded flip, so a ruling typed here carries the same circumstances
+        as one made in the review UI. --version pins which candidate; without
+        it the most recent recorded change for the case is used.
+
 Precedent is the only output here that cannot be recomputed, which is why it is
 the only one worth moving between databases - and why nothing is overwritten
 without being asked for twice."""
@@ -200,7 +341,15 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE)
         return 0
 
-    replace = "--replace" in args
+    # Which arguments are a flag's *value* rather than a flag. Computed first
+    # because --note is free text a reviewer wrote: `--note "--replace"` is a
+    # legitimate, if odd, note, and a membership test over the raw list would
+    # read it as the switch that overwrites somebody else's ruling.
+    consumed = _consumed_values(args)
+    switches = {arg for index, arg in enumerate(args) if index not in consumed}
+
+    replace = "--replace" in switches
+    ruling = "--rule" in switches
     importing = _flag(args, "--import")
     # Not `_flag(-o) or _flag(--out)`: "" means the flag was given with nothing
     # after it, and `or` collapses that into the second lookup and then into
@@ -212,14 +361,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR -o needs a file to write to\n\n{USAGE}", file=sys.stderr)
         return 2
 
-    flags = {"--replace", "--import", "-o", "--out"}
+    # ``--note`` is read with a lookup that takes the next argument whatever it
+    # looks like: a reviewer's reason legitimately starts with a dash ("-ve
+    # margin on this one"), and _flag treats a leading dash as a missing value.
+    note = _value_after(args, "--note")
+    ruled_by = _flag(args, "--by")
+    for name, value in (("--by", ruled_by), ("--note", note)):
+        if value == "":
+            print(f"ERROR {name} needs a value\n\n{USAGE}", file=sys.stderr)
+            return 2
+    pinned = _flag(args, "--version")
+    if pinned == "":
+        print(f"ERROR --version needs a policy version\n\n{USAGE}", file=sys.stderr)
+        return 2
+
+    #: The flags that stand alone. Everything else in ``flags`` swallows the
+    #: argument after it, which is what ``skip`` below is counting.
+    bare = {"--replace", "--rule"}
+    flags = bare | {"--import", "-o", "--out", "--by", "--note", "--version"}
     positional, skip = [], False
     for arg in args:
         if skip:
             skip = False
             continue
         if arg in flags:
-            skip = arg != "--replace"
+            skip = arg not in bare
             continue
         if arg.startswith("-"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
@@ -238,6 +404,26 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
+
+    if ruling:
+        if importing is not None:
+            print(f"ERROR --rule records one ruling and --import merges a file of them; "
+                  f"they are different acts\n\n{USAGE}", file=sys.stderr)
+            return 2
+        if len(positional) != 3:
+            print(f"ERROR --rule needs a case id and an outcome: "
+                  f"`{domain_name} --rule <case_id> <outcome> --by NAME`\n\n{USAGE}",
+                  file=sys.stderr)
+            return 2
+        try:
+            result = record_precedent(domain_name, positional[1], positional[2],
+                                      ruled_by or "", note=note or "",
+                                      version=pinned or "", replace=replace)
+        except LookupError as exc:
+            print(f"ERROR {exc}", file=sys.stderr)
+            return 2
+        print(describe_ruling(result))
+        return 0
 
     if importing is not None:
         if not importing:
@@ -269,6 +455,24 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+#: Flags that take the argument after them. ``--replace`` and ``--rule`` stand
+#: alone, so nothing following them is swallowed.
+_TAKES_A_VALUE = ("--import", "-o", "--out", "--by", "--note", "--version")
+
+
+def _consumed_values(args: list[str]) -> set[int]:
+    """Indices of arguments that are a flag's value rather than a flag."""
+    consumed: set[int] = set()
+    skip = False
+    for index, arg in enumerate(args):
+        if skip:
+            consumed.add(index)
+            skip = False
+            continue
+        skip = arg in _TAKES_A_VALUE
+    return consumed
+
+
 def _flag(args: list[str], name: str) -> str | None:
     """The value after ``--name``, or None. Empty string if the flag ends the line."""
     if name not in args:
@@ -276,6 +480,20 @@ def _flag(args: list[str], name: str) -> str | None:
     index = args.index(name)
     value = args[index + 1] if index + 1 < len(args) else ""
     return "" if value.startswith("-") else value
+
+
+def _value_after(args: list[str], name: str) -> str | None:
+    """Like :func:`_flag`, but a leading dash is part of the value.
+
+    For ``--note`` only. A reviewer's reason is free text they wrote, and
+    "-40 GBP under the old band" is a sentence rather than a mistyped flag;
+    :func:`_flag`'s dash check would read it as the flag ending the line and
+    report that ``--note`` needs a value the caller had just given it.
+    """
+    if name not in args:
+        return None
+    index = args.index(name)
+    return args[index + 1] if index + 1 < len(args) else ""
 
 
 if __name__ == "__main__":  # pragma: no cover

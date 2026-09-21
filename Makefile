@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
+.PHONY: help up down seed logs demo reset test lint unit style storyboard rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -41,6 +41,7 @@ DATA_DB ?= include/history.db
 
 .PHONY: import-preview import-cases replay-history replay-coverage snapshots
 .PHONY: history-export history-rulings history-resolve history-prune
+.PHONY: history-rule history-gate
 import-preview: ## Validate a CSV/JSON import without writing cases (FILE=... D=...)
 	$(PY) manage.py --db "$(DATA_DB)" import $(D) "$(FILE)"
 
@@ -61,6 +62,20 @@ history-export: ## Everything the Explorer shows for your imported history, as o
 
 history-rulings: ## Export the human rulings held against your imported history
 	$(PY) manage.py --db "$(DATA_DB)" rulings $(D) -o "ptm-$(D)-precedents.json"
+
+# The other half of that, and the one that was missing: a ruling had to be made
+# through the Airflow review UI, so a database full of your own history could
+# be measured, exported and gated and never actually ruled on. CASE, OUTCOME
+# and BY are required; NOTE is the reviewer's reason and is worth the typing,
+# because it is the only free text in the system written by the person
+# accountable for the decision.
+#
+#     make history-rule CASE=exp-0042 OUTCOME=deny BY=finance.lead NOTE="..."
+history-rule: ## Record one human ruling against your imported history
+	$(PY) manage.py --db "$(DATA_DB)" rule $(D) "$(CASE)" "$(OUTCOME)" --by "$(BY)" --note "$(NOTE)" $(ARGS)
+
+history-gate: ## Hold a policy to the rulings recorded against your imported history
+	$(PY) manage.py --db "$(DATA_DB)" gate $(D) $(POLICY) $(ARGS)
 
 history-resolve: ## Clear replay runs left pending by an interrupted import or replay
 	$(PY) manage.py --db "$(DATA_DB)" resolve $(D)
@@ -117,6 +132,12 @@ dev:       ## Create the local venv used by test/lint/unit
 lint:      ## Check every domain YAML against the policies it claims to implement
 	$(ENV) $(PY) -m ptm.lint
 
+# The demo video's timing contract, checked without rendering anything. The
+# shot durations and the narration have to reconcile per scene, or every scene
+# after a mismatch plays under the wrong sentence.
+storyboard: ## Check the demo video's shot timings against its narration
+	$(PY) scripts/storyboard.py
+
 unit:      ## Run the test suite
 	$(ENV) $(PY) -m pytest -q
 
@@ -138,6 +159,11 @@ test: lint style unit  ## Lint, test, then run the whole engine end to end with 
 
 gate:      ## Run the precedent regression suite without Airflow. Non-zero on a reversal
 	$(ENV) $(PY) -m ptm.gate expenses v2 --introduced-only
+
+# Recording a ruling against the demo, for rehearsing the loop the review UI
+# runs. Same arguments as history-rule above; this one acts on the fixture.
+rule:      ## Record one human ruling. CASE=.. OUTCOME=.. BY=.. [NOTE=..]
+	$(ENV) $(PY) -m ptm.precedents expenses --rule "$(CASE)" "$(OUTCOME)" --by "$(BY)" --note "$(NOTE)" $(ARGS)
 
 rulings:   ## Export every human ruling, with what each one replaced
 	$(ENV) $(PY) -m ptm.precedents expenses -o ptm-expenses-precedents.json

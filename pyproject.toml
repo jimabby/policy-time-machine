@@ -61,7 +61,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# A ratchet, not an aspiration. The suite measures 90.8% over ptm/ today with
+# A ratchet, not an aspiration. The suite measures 91.4% over ptm/ today with
 # `branch = true` above - which is the stricter question, and several points
 # below the line-only figure, so it is the one worth holding. The floor sits
 # far enough under that an ordinary refactor does not redden a build and close

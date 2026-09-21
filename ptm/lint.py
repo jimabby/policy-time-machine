@@ -50,8 +50,21 @@ from . import cli, preflight
 from . import sweep as sweep_engine
 from .config import DomainConfig, available_domains, load_domain
 from .judge import SAFE_BUILTINS, case_scope
-from .safe_eval import RuleError, check_expression, evaluate, names_in
+from .safe_eval import MAX_DEPTH, RuleError, check_expression, depth_of, evaluate, names_in
 from .safe_eval import shadowed as shadowed_rules
+
+#: How deep a rule may nest before the lint mentions it, as a share of
+#: :data:`ptm.safe_eval.MAX_DEPTH`.
+#:
+#: Past the ceiling itself, :func:`ptm.safe_eval.parse` refuses the rule and
+#: :func:`check_expression` reports the refusal, so that case is already
+#: covered. This is the approach to it. A hand-written condition nests three or
+#: four deep and will never come near; what moves is a *generated* one, because
+#: ``propose_<domain>`` redrafts a rule set each time it runs and each redraft
+#: can add a clause to a condition that already had several. Finding out at the
+#: wall means a proposal run whose rules are dropped wholesale; finding out at
+#: three quarters of it means an edit.
+DEPTH_WARN_AT = 0.75
 
 #: How many cases :func:`probe` evaluates each rule against.
 #:
@@ -405,6 +418,26 @@ def check_domain(name: str) -> list[Problem]:
                  f"dial in clause {row['clause'] or '-'} - ptm.sweep would collapse both "
                  f"ends onto one number and draw a curve for a rule that fires on "
                  f"nothing. {route}")
+
+        # How close a condition is to the nesting ceiling. Not a fault - the
+        # rule runs, and everything above has passed it - but the one ceiling in
+        # safe_eval that a rule set can drift into rather than jump into, and
+        # the drift is invisible until a proposal run has its rules dropped.
+        for index, rule in enumerate(rules):
+            expression = (rule.get("when") or "").strip()
+            if not expression:
+                continue
+            try:
+                depth = depth_of(expression)
+            except RuleError:
+                continue  # already reported by check_expression, above
+            if depth >= MAX_DEPTH * DEPTH_WARN_AT:
+                warn(f"{where}[{index}]",
+                     f"nests {depth} levels deep, against a ceiling of {MAX_DEPTH} "
+                     f"beyond which the expression is refused rather than evaluated. It "
+                     f"works today. Splitting it across two rules costs nothing and is "
+                     f"cheaper than finding the wall in a proposal run, where a refused "
+                     f"condition takes the whole generated rule set with it.")
 
         # A rule an earlier rule makes unreachable. Every other check in this
         # module passes it - it parses, it reads real fields, it cites a real

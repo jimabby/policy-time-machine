@@ -95,7 +95,20 @@
 <script>
   const urlParams = new URLSearchParams(window.location.search);
   const step = urlParams.get('step') || '1';
-  
+
+  // Step 1 is the command and the point-in-time result, before the comparison
+  // that makes the point. The markup above holds the whole of step 2, so
+  // without this step 1 rendered *identically* to step 2 - and because each
+  // step is captured as one still, that was seventeen seconds of the finished
+  // video holding a single frame while the narration described two different
+  // things. The reveal has to be something this page can be asked for
+  // separately, so step 1 takes the reveal back off.
+  if (step === '1') {
+    document.querySelector('.replay-naive').style.visibility = 'hidden';
+    document.querySelector('.cases').style.visibility = 'hidden';
+    document.querySelector('.card.bad').style.visibility = 'hidden';
+  }
+
   if (step === '3') {
     document.getElementById('term-title').textContent = 'policy-time-machine — python manage.py coverage';
     document.getElementById('term-content').innerHTML = `

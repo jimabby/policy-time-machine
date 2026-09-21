@@ -107,7 +107,21 @@ line that offline it is 0% by construction, and refuses to gate on it),
 `ptm.crosscheck` reads the last second opinion, and `ptm.disparity` asks who
 the change lands on. `ptm.report --compare` and `--history` answer the question
 the whole loop is for — *did the edit help?* — which until then lived only on a
-FastAPI route behind an Airflow login.
+FastAPI route behind an Airflow login. `ptm.pit_check` is the latest: it
+measured the naive-backtest error rate and *printed* it, so the figure quoted
+in the README, in the design notes and in the demo video was one nothing could
+check; `compare()` now returns it and the test suite asserts it.
+
+The last gap was the other direction. Every one of those commands *reads*, and
+the one act this project is built around is a write: a person settling a case.
+`save_precedent` was reachable only from the HITL task, so a team could import
+their own history, replay it, measure it, export a bundle and export the
+rulings held against it — and record none. `python -m ptm.precedents <domain>
+--rule <case> <outcome> --by NAME` is that act at a shell, capturing the same
+circumstances the review UI does: which candidate the ruling was against and
+what that candidate gave, read from the recorded flip, so the ruling can be
+re-read later rather than merely enforced. `manage.py rule` and `manage.py
+gate` put both ends of the loop on your own database.
 
 **Typed verdicts, not parsed prose.** `LLMOperator` with `output_type=Verdict`
 means every answer arrives as a validated object with an outcome, a confidence
@@ -246,7 +260,7 @@ printed once into the logs.
 
 ---
 
-**Verified:** 1309 tests (1128 need nothing but Python), `ruff` clean, all eleven
+**Verified:** 1367 tests (1186 need nothing but Python), `ruff` clean, all eleven
 DAGs parsing under a real Airflow in both offline and LLM-backed configurations,
 the plugin's routes driven through a real client, and the Diff Explorer loaded in
 Chromium and clicked through — failing on any console error or any panel that

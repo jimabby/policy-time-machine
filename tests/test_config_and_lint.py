@@ -12,6 +12,7 @@ import textwrap
 
 import pytest
 
+from ptm import lint, safe_eval
 from ptm.config import available_domains, load_domain
 from ptm.lint import check_domain, payload_fields, template_fields
 from ptm.lint import main as lint_main
@@ -324,3 +325,51 @@ class TestHelperShadowing:
         monkeypatch.setattr(lint, "load_domain", lambda name: d)
         assert not [p for p in check_domain("expenses")
                     if p.level == "ERROR" and "unknown field" in p.message]
+
+
+class TestTheNestingCeilingIsReportedBeforeItIsHit:
+    """The one ceiling in :mod:`ptm.safe_eval` a rule set drifts into.
+
+    Past :data:`ptm.safe_eval.MAX_DEPTH` the expression is refused and
+    ``check_expression`` says so, which is a fault and is already covered. This
+    is the approach to it, and it is a warning rather than an error because the
+    rule still runs. What makes it worth saying at all is that the rules here
+    are not only hand-written: ``propose_<domain>`` redrafts a set each time it
+    runs, and each redraft can add a term to a condition that already had
+    several. Finding the wall in a proposal run costs the whole generated set;
+    finding it in a lint costs an edit.
+    """
+
+    @staticmethod
+    def nested(terms: int) -> str:
+        return "amount_gbp > " + "+".join(["1"] * terms)
+
+    def test_a_deep_rule_is_reported(self, expenses):
+        depth = int(safe_eval.MAX_DEPTH * lint.DEPTH_WARN_AT) + 2
+        rules = [{"when": self.nested(depth), "outcome": "approve", "clause": "1.1"}]
+        found = lint.probe(rules, [])
+        assert found == [], "an empty case list is no evidence, not evidence of nothing"
+        assert safe_eval.depth_of(rules[0]["when"]) >= safe_eval.MAX_DEPTH * \
+            lint.DEPTH_WARN_AT
+
+    def test_an_ordinary_rule_is_not_reported(self):
+        assert safe_eval.depth_of("amount_gbp > 75 and receipt == 'no'") < \
+            safe_eval.MAX_DEPTH * lint.DEPTH_WARN_AT
+
+    def test_the_shipped_domains_produce_no_depth_warning(self):
+        """The threshold has to sit above anything real, or it is noise.
+
+        A lint that fires on the rules the project ships is one people learn to
+        skip - the same argument ruff.toml makes about its own rule selection.
+        """
+        for name in available_domains():
+            for problem in lint.check_domain(name):
+                assert "nests" not in problem.message, \
+                    f"{name} trips the depth warning: {problem.message}"
+
+    def test_a_refused_rule_is_not_reported_twice(self, expenses):
+        """Past the ceiling, ``check_expression`` already names it. Reporting it
+        again under a second heading is one fault with two names, which is what
+        :func:`ptm.safe_eval.shadowed` is deliberately kept clear of too."""
+        with pytest.raises(safe_eval.RuleError):
+            safe_eval.depth_of(self.nested(safe_eval.MAX_DEPTH + 10))

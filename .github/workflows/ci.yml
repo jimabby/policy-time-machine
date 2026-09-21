@@ -53,6 +53,15 @@ jobs:
         env:
           PTM_INCLUDE_DIR: ./include
 
+      # The demo video's storyboard: the shot durations and the narration have
+      # to add up to the same number per scene, or every scene after a mismatch
+      # plays under the wrong sentence. Cheap, needs no ffmpeg and no browser,
+      # and run here rather than only inside the render because a render is the
+      # expensive way to be told. tests/test_video.py checks the figures the
+      # narration quotes against a real replay; this is the timing half.
+      - name: The demo storyboard reconciles
+        run: python scripts/storyboard.py
+
       # With coverage, and the floor is coverage's own `fail_under` in
       # pyproject.toml rather than a flag here - so `make coverage` and this
       # step cannot disagree about what passing means. Scoped to ptm/: the DAG
@@ -111,6 +120,13 @@ jobs:
                    disparity ingest provenance replay; do
             python -m ptm.$m --help > /dev/null
           done
+          # And the two inputs that are now refused rather than believed. Both
+          # exit 2 with a sentence naming the value, so `!` is the assertion:
+          # a non-finite threshold would otherwise draw a confident curve for a
+          # rule that never fires, and emit `NaN` into a JSON body that
+          # JSON.parse rejects. See ptm.sweep.parse_values.
+          ! python -m ptm.sweep expenses v2 1.1 amount_gbp nan,50
+          ! python -m ptm.sweep expenses v2 1.1 amount_gbp inf,50
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db
@@ -226,6 +242,56 @@ jobs:
           python -m ptm.precedents expenses -o /tmp/rulings.json
           python -c "import json; p=json.load(open('/tmp/rulings.json'));             assert p['format'] == 'ptm-precedents/1', p['format'];             print(len(p['precedents']), 'ruling(s),', len(p['superseded']), 'superseded')"
           python -m ptm.precedents expenses --import /tmp/rulings.json
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # Making a ruling, as against moving one somebody else made. Until this
+      # existed the whole non-Airflow path was a half-loop: import your history,
+      # replay it, check its coverage, export a bundle, export the rulings held
+      # against it - all of which the first step of this job already does - and
+      # no way to record one without standing up a scheduler. Run against the
+      # imported database rather than the shipped fixture, because that is the
+      # workflow being proved, and then run through the gate, because a ruling
+      # nothing enforces is a row in a table.
+      #
+      # The second call must fail: a case already ruled on is a disagreement
+      # between two people, and this project settles that by saying so rather
+      # than by taking whichever write landed last.
+      - name: Record a ruling, and hold a policy to it
+        run: |
+          # The case id comes out of the database the ruling goes into. The
+          # imported fixture and the shipped demo have different case ids, and
+          # taking one from the wrong database is refused rather than filed
+          # against nothing - which is the refusal working, and still a step
+          # that proves less than it looks like it does.
+          CASE=$(python manage.py --db /tmp/ptm-import.db export expenses v2 --csv \
+                 | sed -n 2p | cut -d, -f1)
+          echo "ruling on $CASE"
+          python manage.py --db /tmp/ptm-import.db rule expenses "$CASE" deny \
+            --by ci.reviewer --note "recorded by the CI smoke test"
+          ! python manage.py --db /tmp/ptm-import.db rule expenses "$CASE" approve \
+            --by someone.else
+          python manage.py --db /tmp/ptm-import.db rule expenses "$CASE" approve \
+            --by someone.else --replace
+          python manage.py --db /tmp/ptm-import.db rulings expenses -o /tmp/own.json
+          python -c "import json; p=json.load(open('/tmp/own.json')); \
+            assert p['precedents'], 'the ruling was not recorded'; \
+            assert p['superseded'], 'the replaced ruling was not archived'; \
+            print(len(p['precedents']), 'ruling(s),', len(p['superseded']), 'superseded')"
+          # The gate, run against the ruling this step just made. Asserted on
+          # what it *checked* rather than on whether it passed: pass or fail
+          # here depends on which outcome the reviewer above happened to pick,
+          # and a step that green-lights on a coincidence proves nothing. What
+          # matters is that a ruling recorded at a shell is one the gate loads
+          # and judges, exactly like one made in the review UI.
+          python manage.py --db /tmp/ptm-import.db gate expenses v2 \
+            --introduced-only --json 2>/dev/null |
+            python -c "import json,sys; d=json.load(sys.stdin); \
+              assert d['ran'], 'the gate did not run'; \
+              assert d['checked'] == 1, d['headline']; \
+              print('the gate checked', d['checked'], 'ruling(s):', d['headline'])"
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

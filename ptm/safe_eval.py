@@ -38,7 +38,9 @@ so a refusal is something a caller can report rather than something it absorbs.
 still be made to run forever, and a rule evaluates on a worker holding a mapped
 task slot. :data:`MAX_EXPONENT` caps one ``**``; :data:`MAX_RESULT_SIZE` caps
 what an expression may *build*, which is the bound that survives nesting and
-covers ``'x' * 10**9`` as well.
+covers ``'x' * 10**9`` as well; :data:`MAX_DEPTH` caps how far the expression
+*nests*, which is the one that keeps the two walkers below this module from
+running out of Python stack and raising something no caller catches.
 """
 
 from __future__ import annotations
@@ -78,6 +80,29 @@ MAX_EXPONENT = 64
 #: needs and still costs milliseconds to reach, so it refuses only expressions
 #: that were never rules.
 MAX_RESULT_SIZE = 1 << 20
+
+#: Ceiling on how deeply an expression may nest.
+#:
+#: The two walkers below - :func:`_walk` and :func:`_eval` - are recursive, and
+#: nothing bounded how far they would go. ``amount_gbp > 1+1+1+...`` four
+#: thousand terms long is a single left-nested chain of ``BinOp`` nodes: it
+#: parses, every operator in it is whitelisted, every exponent and every result
+#: is far under the ceilings above, and walking it exhausts the Python stack.
+#:
+#: What came back was ``RecursionError``, which is the one thing this module
+#: promises never to emit. It is not a :class:`RuleError`, so it walked past
+#: every ``except RuleError`` in the project - and the caller it reached first
+#: is the one that matters: :func:`ptm.rules.validate` is the gate in front of
+#: rules a *model* wrote, called from the ``propose_<domain>`` DAG, whose
+#: designed behaviour is to report the rule and write the draft without it.
+#: Instead the task died on a traceback. The same argument as :func:`_apply`,
+#: one level up: a refusal a caller can report beats a crash it cannot.
+#:
+#: Checked once in :func:`parse`, which every entry point here goes through, and
+#: measured with an explicit stack so the check itself cannot be what overflows.
+#: A threshold comparison nests three or four deep, so sixty-four refuses only
+#: expressions that were never rules.
+MAX_DEPTH = 64
 
 
 class RuleError(ValueError):
@@ -130,13 +155,78 @@ _REFUSALS = {
 
 
 def parse(expression: str) -> ast.Expression:
-    """Parse one condition, or raise :class:`RuleError`."""
+    """Parse one condition, or raise :class:`RuleError`.
+
+    The single chokepoint: :func:`names_in`, :func:`evaluate` and
+    :func:`_conjuncts` all arrive here first, which is why :data:`MAX_DEPTH` is
+    enforced here rather than in each of the two walkers.
+    """
     if not isinstance(expression, str) or not expression.strip():
         return _fail("is empty")
     try:
-        return ast.parse(expression, mode="eval")
+        tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
         return _fail(f"does not parse: {exc}")
+    except RecursionError:
+        # CPython's tokenizer refuses deeply nested *parentheses* with a
+        # SyntaxError, but the limit it trips is not the only way in, and a
+        # parser that runs out of stack must still leave by this module's door.
+        return _fail(f"nests deeper than the ceiling of {MAX_DEPTH}")
+    except (ValueError, MemoryError) as exc:
+        # The rest of what ``ast.parse`` can raise, and none of it is a
+        # SyntaxError. A null byte in the source is a ``ValueError``; a lone
+        # surrogate is a ``UnicodeEncodeError``, which is a ``ValueError`` by
+        # inheritance but would not have been caught by name. Neither is
+        # reachable from YAML somebody typed - both are reachable from a JSON
+        # rule set a model produced, which is the threat model this module was
+        # rewritten for, and both escaped every ``except RuleError`` exactly the
+        # way ``RecursionError`` did. ``RuleError`` subclasses ``ValueError``,
+        # so the ordering matters: nothing in this block raises one.
+        return _fail(f"cannot be parsed as an expression: "
+                     f"{type(exc).__name__}: {exc}")
+    _check_depth(tree.body)
+    return tree
+
+
+def _measure_depth(root: ast.AST, ceiling: int | None = None) -> int:
+    """How deeply a parsed expression nests, stopping early at ``ceiling``.
+
+    Iterative, with the depth carried on an explicit stack. A recursive
+    measurement would overflow on exactly the input it was added to refuse,
+    which is a check that works everywhere except where it is needed. The early
+    stop is what keeps the refusal cheap: an expression built to exhaust the
+    stack does not also get to be fully traversed first.
+    """
+    deepest = 0
+    stack = [(root, 1)]
+    while stack:
+        node, depth = stack.pop()
+        deepest = max(deepest, depth)
+        if ceiling is not None and depth > ceiling:
+            return depth
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, depth + 1))
+    return deepest
+
+
+def _check_depth(root: ast.AST) -> None:
+    """Refuse an expression nesting past :data:`MAX_DEPTH`."""
+    depth = _measure_depth(root, ceiling=MAX_DEPTH)
+    if depth > MAX_DEPTH:
+        _fail(f"nests {depth} levels deep; the ceiling is {MAX_DEPTH}. A rule is a "
+              f"threshold comparison, and walking an expression this deep would "
+              f"exhaust the interpreter's stack rather than return an answer.")
+
+
+def depth_of(expression: str) -> int:
+    """How deeply one condition nests. Raises :class:`RuleError` past the ceiling.
+
+    Public because :mod:`ptm.lint` reports the ones getting close. The ceiling
+    is a wall a generated rule set can walk into between one draft and the next,
+    and a check that only ever says "fine" until the day it says "refused" gives
+    nobody the chance to see it coming.
+    """
+    return _measure_depth(parse(expression).body)
 
 
 def _fail(message: str) -> Any:

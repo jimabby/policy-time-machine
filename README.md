@@ -41,8 +41,9 @@ Follow **Find the cause** for the reveal. Under **Look under the hood**, open
 the engine room to see how the workflows, shared memory and charts connect.
 The prediction is just an audience activity; it does not change the replay.
 
-**Choose your route:** [Three-minute demo](DEMO_SCRIPT.md) ·
-[Architecture](#architecture) · [Technical background](docs/DESIGN.md)
+**Choose your route:** [Watch the three minutes](policy_time_machine_demo.mp4) ·
+[Present it yourself](DEMO_SCRIPT.md) · [Architecture](#architecture) ·
+[Technical background](docs/DESIGN.md)
 
 ![The Policy Diff Explorer: a plain-language summary of what a rule change does, then the evidence behind it](docs/explorer.gif)
 
@@ -308,16 +309,28 @@ python manage.py coverage expenses v2
 python manage.py snapshots expenses v2 -o evidence.json
 python manage.py export expenses v2 -o bundle.json                # the whole bundle
 python manage.py rulings expenses -o rulings.json                 # the human rulings
+python manage.py rule expenses exp-0042 deny --by finance.lead   --note "receipt produced after the fact"                        # record one
+python manage.py gate expenses v2 --introduced-only               # hold v2 to them
 python manage.py evidence expenses v2 --export -o evidence-set.json
 python manage.py evidence expenses v2 --import evidence-set.json  # into another database
 python manage.py resolve expenses                                 # clear interrupted runs
 python manage.py prune --dry-run                                  # reclaim disk
 ```
 
+`rule` and `gate` are the two ends of the loop this project is actually about,
+and until recently neither could be reached without Airflow. A ruling is a
+judgement somebody makes about one case: it records who made it, what they
+decided, why, and — read from the recorded flip — which candidate policy they
+were looking at and what that policy gave, so the ruling can be re-read later
+rather than merely enforced. Nothing is overwritten without `--replace`, and
+the ruling that gets replaced is archived rather than lost. `gate` then holds a
+policy to every ruling on file and exits non-zero on a reversal.
+
 Use `python manage.py --db PATH ...` to choose a database. The equivalent Make
 targets are `import-preview`, `import-cases`, `replay-history`, `replay-coverage`,
-`snapshots`, `history-export`, `history-rulings`, `history-resolve` and
-`history-prune`; configure `D`, `POLICY`, `FILE` and `DATA_DB` as needed.
+`snapshots`, `history-export`, `history-rulings`, `history-rule`, `history-gate`,
+`history-resolve` and `history-prune`; configure `D`, `POLICY`, `FILE` and
+`DATA_DB` as needed.
 
 Every other Make target reads `DB`, which defaults to the demo's
 `include/ptm.db`. Point it at your own history to measure that instead:
@@ -426,6 +439,7 @@ make grid      # two thresholds at once — one curve cannot show them interacti
 make rules     # do the offline rules agree with the judge they stand in for?
 make calibrate # is the judge right, scored against the humans who ruled?
 make gate      # the precedent regression suite; non-zero if a ruling is reversed
+make rule CASE=exp-0042 OUTCOME=deny BY="your name" NOTE="why"  # record a ruling
 make power     # how big a change could this much history actually detect?
 make noise     # the judge's noise floor — inert offline, and it says so
 make confirmed # re-judge the flips, so an unstable one stays out of the queue
@@ -439,6 +453,7 @@ make export    # everything the Explorer shows, as one file
 make vacuum    # drop the rows that stopped earning their disk, and shrink the file
 make adopt-plan V=v2-draft1 BY="your name"  # what adopting would do, without doing it
 make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
+make storyboard # the demo video's shot timings against its narration
 ```
 
 **Every measurement is reachable from a shell now, including the three that
@@ -515,7 +530,7 @@ list: [docs/DESIGN.md](docs/DESIGN.md#layout).
 ## Caveats
 
 The [full list is in the design notes](docs/DESIGN.md#caveats) — there are
-twenty-nine of them, and each one is a claim this project declines to make. The six
+thirty of them, and each one is a claim this project declines to make. The six
 that change how you read the clips above:
 
 - **Single-container Airflow on SQLite.** Fine for a demo, not a topology.

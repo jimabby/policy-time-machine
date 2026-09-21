@@ -21,6 +21,7 @@ and the markdown honest with each other in the meantime.
 from __future__ import annotations
 
 import ast
+import math
 import sys
 
 from . import cli, diff
@@ -841,11 +842,32 @@ def _interaction(points: list[dict], firsts: list, seconds: list) -> dict:
 
 
 def parse_values(raw: str) -> list[float]:
+    """Candidate thresholds from the comma-separated string a caller supplies.
+
+    ``float()`` accepts ``nan``, ``inf`` and ``-inf``, and all three used to
+    come straight through to a curve. Each one is a threshold no comparison can
+    ever satisfy, so the rule stops firing entirely and the sweep reports the
+    resulting decision base with the same confidence as a real number - while
+    ``empties_rule``, the flag whose whole job is to say "this setting leaves a
+    rule matching nothing", reads ``False``, because it compares against the
+    rule's *other* bound rather than asking whether the threshold is a number.
+
+    And ``json.dumps`` writes them as the bare tokens ``NaN`` and ``Infinity``,
+    which are not JSON. ``/api/sweep?values=nan`` returned a body that
+    ``JSON.parse`` rejects, so the dashboard panel died on a parse error with
+    nothing on screen to say why. :mod:`ptm.ingest` already refuses non-finite
+    numbers on the way in, for the same reason; this is the other door.
+    """
     out: list[float] = []
     for chunk in raw.split(","):
         chunk = chunk.strip()
         if chunk:
             number = float(chunk)
+            if not math.isfinite(number):
+                raise ValueError(
+                    f"{chunk!r} is not a threshold. A rule compares a field against a "
+                    f"number, and no value is less than nan or greater than inf, so "
+                    f"this would report the decision base for a rule that never fires.")
             out.append(int(number) if number.is_integer() else number)
     return out
 

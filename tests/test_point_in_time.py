@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from ptm import diff, store
+import pytest
+
+from ptm import diff, pit_check, store
 from ptm.judge import offline_verdict
 
 NOW = datetime(2026, 9, 1)
@@ -178,3 +180,47 @@ class TestNaiveReplayIsWrong:
         assert len(cases) == 600
         assert len(diff.flips(cases, correct, expenses)) == 147
         assert callable(pit_main)
+
+
+class TestThePointInTimeCheckHasAnEntryPoint:
+    """The figure the whole point-in-time argument rests on, as a return value.
+
+    ``39 of 600 wrong`` is quoted in the README, in docs/DESIGN.md and spoken
+    aloud in the demo video, and the only way to obtain it was to run the
+    module and read the line back off standard output. Every other measurement
+    in this project returns its number; this one printed it, so every document
+    quoting it was quoting a figure nothing could check.
+    """
+
+    def test_it_returns_the_numbers_the_cli_prints(self, seeded, capsys):
+        result = pit_check.compare("expenses", "v2")
+        pit_check.run("expenses", "v2")
+        printed = capsys.readouterr().out
+        assert f"{result['pit_flips']} flips" in printed
+        assert f"wrong on {result['naive_wrong']} / {result['compared']}" in printed
+
+    def test_the_trap_is_actually_in_the_fixture(self, seeded):
+        """A zero here would mean the demo's central claim has nothing behind it."""
+        result = pit_check.compare("expenses", "v2")
+        assert result["naive_wrong"] > 0
+        assert result["compared"] > 0
+        assert len(result["disagreements"]) == result["naive_wrong"]
+
+    def test_every_disagreement_names_both_answers(self, seeded):
+        for row in pit_check.compare("expenses", "v2")["disagreements"]:
+            assert row["correct"] and row["naive"]
+            assert row["correct"] != row["naive"]
+
+    def test_an_unknown_version_is_refused_rather_than_measured(self, seeded):
+        """Both shipped domains declare a pit_field, so the refusal worth
+        asserting here is the other one: a version that does not exist must not
+        come back as a comparison over nothing."""
+        with pytest.raises(SystemExit):
+            pit_check.compare("expenses", "v99")
+
+    def test_the_other_shipped_domain_is_measurable_too(self, seeded):
+        """refunds declares its own pit_field (tier), so the check is not a
+        thing that only works on the domain it was written against."""
+        result = pit_check.compare("refunds", "v2")
+        assert result["pit_field"] == "tier"
+        assert result["compared"] > 0

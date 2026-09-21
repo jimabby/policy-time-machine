@@ -8,7 +8,9 @@ Examples:
   python manage.py coverage expenses v2
   python manage.py snapshots expenses v2 -o evidence.json
   python manage.py export expenses v2 -o bundle.json
+  python manage.py gate expenses v2 --introduced-only
   python manage.py rulings expenses -o rulings.json
+  python manage.py rule expenses exp-0042 deny --by finance.lead --note "..."
   python manage.py evidence expenses v2 --export -o evidence-set.json
   python manage.py evidence expenses v2 --import evidence-set.json
   python manage.py resolve expenses
@@ -52,6 +54,17 @@ COMMANDS: dict[str, tuple[str, list[str]]] = {
     "evidence": ("ptm.provenance", []),
     "export": ("ptm.report", []),
     "rulings": ("ptm.precedents", []),
+    # Recording a ruling, as against exporting the ones already on file. The
+    # implied flag is what lets the command read as `rule <domain> <case>
+    # <outcome>` rather than making the caller repeat the module's own switch.
+    "rule": ("ptm.precedents", ["--rule"]),
+    # The measurement the whole loop is built toward, and the last one that a
+    # real-history database could not reach from here: `gate` was reachable
+    # only by setting PTM_DB by hand or by triggering the DAG, while every
+    # other step of the same workflow - import, replay, coverage, export - had
+    # a command. A regression suite you can record rulings into and then not
+    # run is half a gate.
+    "gate": ("ptm.gate", []),
     "prune": ("ptm.prune", []),
 }
 

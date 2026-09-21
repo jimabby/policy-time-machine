@@ -33,7 +33,17 @@ Needs a domain that declares a pit_field: a slowly-changing fact about the
 subject of a case, which is the only thing a naive join can get wrong."""
 
 
-def run(domain_name: str = "expenses", version: str = "v2") -> None:
+def compare(domain_name: str = "expenses", version: str = "v2") -> dict:
+    """The two replays, as numbers. :func:`run` is this with the printing on it.
+
+    Split out because the measurement had no caller but its own ``print``. The
+    naive-replay error count is the figure the whole point-in-time argument
+    rests on - it is quoted in the README, in docs/DESIGN.md and spoken aloud
+    in the demo video - and the only way to obtain it was to run the module and
+    read the line back off standard output. Everything else this project
+    measures has an entry point that returns the number; this one did not, so
+    every document quoting it was quoting a figure nothing could check.
+    """
     domain = load_domain(domain_name)
     if not domain.pit_field:
         raise SystemExit(f"domain {domain_name!r} declares no pit_field")
@@ -75,13 +85,32 @@ def run(domain_name: str = "expenses", version: str = "v2") -> None:
 
     wrong = [c.case_id for c in comparable
              if correct[c.case_id].outcome != naive[c.case_id].outcome]
-    print(f"point-in-time replay : {pit_flips} flips")
-    print(f"naive replay         : wrong on {len(wrong)} / {len(comparable)} cases")
-    if ungrounded:
-        print(f"  ({len(ungrounded)} case(s) skipped: no {domain.pit_field!r} fact on file "
-              f"for the subject, so there is nothing for a naive join to get wrong)")
-    for k in wrong[:5]:
-        print(f"  {k}: correct '{correct[k].outcome}', naive '{naive[k].outcome}'")
+    return {
+        "domain": domain_name, "version": version, "pit_field": domain.pit_field,
+        "pit_flips": pit_flips,
+        "compared": len(comparable),
+        "naive_wrong": len(wrong),
+        "wrong_case_ids": wrong,
+        "skipped": ungrounded,
+        # What each disagreement looks like, for the five the CLI prints and
+        # for anything else that wants to show the trap rather than count it.
+        "disagreements": [{"case_id": k, "correct": correct[k].outcome,
+                           "naive": naive[k].outcome} for k in wrong],
+    }
+
+
+def run(domain_name: str = "expenses", version: str = "v2") -> None:
+    """:func:`compare`, printed the way the demo and CI read it."""
+    result = compare(domain_name, version)
+    wrong, skipped = result["wrong_case_ids"], result["skipped"]
+    print(f"point-in-time replay : {result['pit_flips']} flips")
+    print(f"naive replay         : wrong on {result['naive_wrong']} / "
+          f"{result['compared']} cases")
+    if skipped:
+        print(f"  ({len(skipped)} case(s) skipped: no {result['pit_field']!r} fact on "
+              f"file for the subject, so there is nothing for a naive join to get wrong)")
+    for row in result["disagreements"][:5]:
+        print(f"  {row['case_id']}: correct '{row['correct']}', naive '{row['naive']}'")
     if len(wrong) > 5:
         print(f"  ... and {len(wrong) - 5} more")
 

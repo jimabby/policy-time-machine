@@ -14,6 +14,7 @@ it was reported as clean and then handed the interpreter.
 
 from __future__ import annotations
 
+import ast
 from datetime import datetime
 
 import pytest
@@ -128,3 +129,105 @@ class TestWhatItStillDoes:
 
     def test_names_in_reports_fields_but_not_helpers(self):
         assert safe_eval.names_in("max(amount, 10) > cap") == {"amount", "cap"}
+
+
+class TestNestingIsBounded:
+    """The ceiling that closes the one refusal this module used to leak.
+
+    :mod:`ptm.safe_eval` promises that everything it declines arrives as a
+    :class:`RuleError`, and :func:`_apply` exists to keep that promise for the
+    operators. The walkers themselves were unbounded: ``amount_gbp > 1+1+1+...``
+    four thousand terms long parses, whitelists clean, stays far under every
+    size and exponent ceiling, and exhausts the Python stack. What came back
+    was ``RecursionError``, which is not a ``RuleError`` and so walked past
+    every ``except RuleError`` in the project.
+
+    The caller that mattered is :func:`ptm.rules.validate`, the gate in front of
+    rules a *model* wrote - so ``propose_<domain>``'s designed behaviour, report
+    the rule and write the draft without it, became a task dying on a traceback.
+    """
+
+    @staticmethod
+    def deep(terms: int = 4000) -> str:
+        """A condition that nests ``terms`` deep without a single parenthesis.
+
+        Parentheses are refused by CPython's own tokenizer at a few hundred, so
+        a test built on those would prove the tokenizer works. A left-nested
+        chain of ``BinOp`` is the shape that actually reaches the walkers.
+        """
+        return "amount_gbp > " + "+".join(["1"] * terms)
+
+    def test_check_expression_reports_it_rather_than_raising(self):
+        problems = safe_eval.check_expression(self.deep())
+        assert problems and "nests" in problems[0]
+
+    @pytest.mark.parametrize("call", [
+        lambda expr: safe_eval.evaluate(expr, {"amount_gbp": 5}),
+        safe_eval.names_in,
+        safe_eval.depth_of,
+        safe_eval.parse,
+    ])
+    def test_every_entry_point_refuses_by_the_same_door(self, call):
+        """Each of these goes through parse(), which is where the check lives."""
+        with pytest.raises(safe_eval.RuleError):
+            call(self.deep())
+
+    def test_a_recursion_error_never_escapes(self):
+        """The assertion is the exception *type*, which is the whole bug.
+
+        ``RecursionError`` subclasses ``RuntimeError``, so a caller catching
+        ``Exception`` swallowed it and a caller catching ``RuleError`` did not.
+        Both were wrong in different directions.
+        """
+        try:
+            safe_eval.evaluate(self.deep(), {"amount_gbp": 5})
+        except safe_eval.RuleError:
+            pass
+        except RecursionError:  # pragma: no cover - the bug this closes
+            pytest.fail("RecursionError escaped safe_eval")
+
+    def test_the_generated_rule_gate_reports_instead_of_crashing(self, expenses):
+        problems = rules.validate(
+            [{"when": self.deep(), "outcome": "approve", "clause": "1.1",
+              "because": "x"}], expenses, "v2")
+        assert problems, "validate accepted a rule it cannot evaluate"
+        assert any("nests" in p for p in problems)
+
+    def test_an_ordinary_rule_is_nowhere_near_the_ceiling(self):
+        """The bound has to be one no real rule can trip, or it is a bug of its own."""
+        assert safe_eval.depth_of("amount_gbp > 75 and receipt == 'no'") < 10
+
+    def test_the_shipped_rules_are_nowhere_near_it_either(self, expenses):
+        for ruleset in expenses.offline_rules.values():
+            for rule in ruleset:
+                assert safe_eval.depth_of(rule["when"]) < safe_eval.MAX_DEPTH / 2
+
+    @pytest.mark.parametrize("expression,why", [
+        ("a" + chr(0) + "b", "a null byte"),
+        ("a" + chr(0xDCFF), "a lone surrogate"),
+    ])
+    def test_the_other_things_ast_parse_raises_are_refusals_too(self, expression, why):
+        """Neither is a ``SyntaxError``, and neither was caught.
+
+        A null byte raises ``ValueError`` and a lone surrogate raises
+        ``UnicodeEncodeError``; ``RuleError`` subclasses ``ValueError``, so a
+        caller catching ``RuleError`` did not catch either. Unreachable from
+        YAML somebody typed, reachable from a JSON rule set a model produced -
+        which is the threat model this module was rewritten for. Built with
+        ``chr()`` because a source file holding a lone surrogate cannot itself
+        be saved as UTF-8, which is its own small demonstration of the point.
+        """
+        problems = safe_eval.check_expression(expression)
+        assert problems and "cannot be parsed" in problems[0], why
+        with pytest.raises(safe_eval.RuleError):
+            safe_eval.evaluate(expression, {})
+
+    def test_measuring_depth_does_not_itself_recurse(self):
+        """A recursive measurement would overflow on exactly its own input.
+
+        Driven well past the interpreter's limit: if the walk below this were
+        recursive, this is the call that would prove it.
+        """
+        assert safe_eval._measure_depth(
+            ast.parse("1" + "+1" * 20000, mode="eval").body,
+            ceiling=safe_eval.MAX_DEPTH) > safe_eval.MAX_DEPTH
