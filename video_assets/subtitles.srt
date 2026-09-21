@@ -1,0 +1,135 @@
+1
+00:00:00,500 --> 00:00:04,500
+We're thinking about changing our expense rules.
+
+2
+00:00:04,500 --> 00:00:10,500
+Before we announce anything: how many old decisions do you think would get a different answer?
+
+3
+00:00:10,500 --> 00:00:14,000
+Ten? Fifty? Half of them?
+
+4
+00:00:15,000 --> 00:00:19,500
+In this demo, 147 out of 600. Almost one in four.
+
+5
+00:00:19,500 --> 00:00:24,500
+That small rule change just became a much more interesting conversation.
+
+6
+00:00:25,500 --> 00:00:28,500
+Which sentence did it?
+
+7
+00:00:28,500 --> 00:00:32,500
+This receipt clause accounts for 48 changes.
+
+8
+00:00:32,500 --> 00:00:38,500
+But there's a twist: 38 of the 147 differences also disagree with the old rulebook.
+
+9
+00:00:39,500 --> 00:00:43,500
+The proposal didn't create those differences.
+
+10
+00:00:43,500 --> 00:00:53,500
+In the flips table, we can inspect each case's historical facts, candidate clauses, and human rulings.
+
+11
+00:00:55,500 --> 00:00:59,500
+Imagine someone was promoted last year.
+
+12
+00:00:59,500 --> 00:01:05,500
+Should today's seniority change what they were entitled to two years ago?
+
+13
+00:01:06,500 --> 00:01:10,000
+This replay uses what was known on the day.
+
+14
+00:01:10,000 --> 00:01:14,500
+Using today's facts gets 39 of these 600 cases wrong.
+
+15
+00:01:15,500 --> 00:01:21,000
+Point in time replay protects you from tomorrow's bias.
+
+16
+00:01:21,500 --> 00:01:25,000
+Bring back the old facts. Try both rulebooks.
+
+17
+00:01:25,000 --> 00:01:28,500
+Ask a person about selected changes.
+
+18
+00:01:28,500 --> 00:01:34,000
+Save their answer so the next proposal has to face it too.
+
+19
+00:01:34,500 --> 00:01:38,000
+Airflow coordinates those steps.
+
+20
+00:01:38,000 --> 00:01:42,500
+The machine stores the evidence in one shared memory,
+
+21
+00:01:42,500 --> 00:01:48,000
+and this screen reads it back so we can discuss it together.
+
+22
+00:01:50,500 --> 00:01:54,500
+We don't ask someone to read 600 cases.
+
+23
+00:01:54,500 --> 00:01:58,000
+The demo selects eight.
+
+24
+00:01:58,000 --> 00:02:04,500
+Each answer becomes an example future rules are checked against.
+
+25
+00:02:04,500 --> 00:02:09,500
+If a proposal reverses one, the check fails and somebody has to resolve it.
+
+26
+00:02:10,500 --> 00:02:15,000
+And we still ask whether the old policy already made the same reversal.
+
+27
+00:02:15,000 --> 00:02:20,000
+A red result needs an explanation, not a convenient scapegoat.
+
+28
+00:02:21,000 --> 00:02:26,000
+What would you choose: 50, 100, or 150 pounds?
+
+29
+00:02:26,000 --> 00:02:30,500
+We can compare the consequences before we pick.
+
+30
+00:02:31,500 --> 00:02:36,000
+These results use the offline rules;
+
+31
+00:02:36,000 --> 00:02:41,500
+they show trade-offs, not a recommendation.
+
+32
+00:02:45,500 --> 00:02:47,500
+Would you ship this rule?
+
+33
+00:02:47,500 --> 00:02:53,000
+Now we can discuss who it affects, what it costs, and which human decisions it must respect.
+
+34
+00:02:53,500 --> 00:03:00,000
+Try tomorrow's rules on yesterday's decisions, before tomorrow becomes a surprise.

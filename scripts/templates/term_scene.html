@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {
+    margin: 0; background: #080c16; color: #eef3ff;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    box-sizing: border-box; padding: 40px;
+  }
+  .window {
+    width: 1260px; background: #0f172a; border-radius: 12px;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.1);
+    overflow: hidden;
+  }
+  .titlebar {
+    background: #1e293b; padding: 12px 18px; display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .dot.red { background: #ff5f56; }
+  .dot.yellow { background: #ffbd2e; }
+  .dot.green { background: #27c93f; }
+  .title { margin-left: auto; margin-right: auto; font-size: 13px; color: #94a3b8; font-family: ui-monospace, monospace; }
+  .terminal-body {
+    padding: 30px 38px; font-family: ui-monospace, monospace; font-size: 18px; line-height: 1.6;
+  }
+  .prompt { color: #38bdf8; font-weight: 600; }
+  .cmd { color: #f8fafc; font-weight: bold; }
+  .replay-pit { color: #34d399; font-weight: 600; }
+  .replay-naive { color: #f87171; font-weight: 600; }
+  .cases { color: #94a3b8; font-size: 17px; }
+  .case-id { color: #cbd5e1; }
+  .case-deny { color: #f87171; }
+  .case-app { color: #34d399; }
+  .case-part { color: #fbbf24; }
+  .card-container {
+    margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; width: 1260px;
+  }
+  .card {
+    background: rgba(30, 41, 59, 0.75); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px; padding: 20px 24px; backdrop-filter: blur(10px);
+  }
+  .card h3 { margin: 0 0 8px; font-size: 17px; display: flex; align-items: center; gap: 10px; }
+  .card p { margin: 0; font-size: 15px; color: #94a3b8; line-height: 1.55; }
+  .card.good h3 { color: #34d399; }
+  .card.bad h3 { color: #f87171; }
+  .card.bad { border-color: rgba(248, 113, 113, 0.3); background: rgba(248, 113, 113, 0.08); }
+  .card.info h3 { color: #38bdf8; }
+  .card.info { border-color: rgba(56, 189, 248, 0.3); background: rgba(56, 189, 248, 0.08); }
+  .coverage-box {
+    background: #080c16; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px;
+    padding: 16px 20px; font-family: ui-monospace, monospace; font-size: 16px; margin-top: 14px;
+  }
+  .cov-key { color: #38bdf8; }
+  .cov-val { color: #34d399; font-weight: bold; }
+  .cov-sub { color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="title" id="term-title">policy-time-machine — python -m ptm.pit_check</span>
+  </div>
+  <div class="terminal-body" id="term-content">
+    <div><span class="prompt">$</span> <span class="cmd">python -m ptm.pit_check expenses v2</span></div>
+    <br>
+    <div><span class="replay-pit">point-in-time replay : 147 flips</span></div>
+    <div><span class="replay-naive">naive replay         : wrong on 39 / 600 cases</span></div>
+    <br>
+    <div class="cases">
+      &nbsp;&nbsp;<span class="case-id">exp-0578:</span> correct '<span class="case-deny">deny</span>', naive '<span class="case-app">approve</span>'<br>
+      &nbsp;&nbsp;<span class="case-id">exp-0294:</span> correct '<span class="case-deny">deny</span>', naive '<span class="case-app">approve</span>'<br>
+      &nbsp;&nbsp;<span class="case-id">exp-0441:</span> correct '<span class="case-deny">deny</span>', naive '<span class="case-part">partial</span>'<br>
+      &nbsp;&nbsp;<span class="case-id">exp-0401:</span> correct '<span class="case-deny">deny</span>', naive '<span class="case-app">approve</span>'<br>
+      &nbsp;&nbsp;<span class="case-id">exp-0536:</span> correct '<span class="case-deny">deny</span>', naive '<span class="case-app">approve</span>'<br>
+      &nbsp;&nbsp;<span style="color:#64748b">... and 34 more cases (all in the loosening direction)</span>
+    </div>
+  </div>
+</div>
+
+<div class="card-container" id="cards-container">
+  <div class="card good">
+    <h3>&#10004; Point-in-Time Accuracy</h3>
+    <p>Replays decisions using exclusively what was known on the day. Historical seniority and grade levels are preserved as of that timestamp.</p>
+  </div>
+  <div class="card bad">
+    <h3>&#9888; The Naive Backtest Trap</h3>
+    <p>Using today's facts joins recent promotions onto old cases. It creates 39 false approvals—a naive backtest doesn't add noise, it adds bias.</p>
+  </div>
+</div>
+
+<script>
+  const urlParams = new URLSearchParams(window.location.search);
+  const step = urlParams.get('step') || '1';
+  
+  if (step === '3') {
+    document.getElementById('term-title').textContent = 'policy-time-machine — python manage.py coverage';
+    document.getElementById('term-content').innerHTML = `
+      <div><span class="prompt">$</span> <span class="cmd">python manage.py coverage expenses v2</span></div>
+      <div class="coverage-box">
+        <div><span class="cov-key">domain</span>: "expenses", <span class="cov-key">version</span>: "v2"</div>
+        <div><span class="cov-key">eligible_cases</span>: <span class="cov-val">600</span> | <span class="cov-key">replayed</span>: <span class="cov-val">600 (100.0%)</span> | <span class="cov-key">missing</span>: <span class="cov-val">0</span></div>
+        <div><span class="cov-key">date_range</span>: 2024-09-11 &rarr; 2026-08-31</div>
+        <div class="cov-sub" style="margin-top:8px;">&bull; Coverage spans all imported cases. Provenance verified against historical snapshots.</div>
+      </div>
+      <br>
+      <div><span class="prompt">$</span> <span class="cmd">python manage.py replay expenses v2</span></div>
+      <div style="color:#34d399; margin-top:4px;">&check; Replay complete: 600 verdicts recorded, 147 flips identified.</div>
+    `;
+    document.getElementById('cards-container').innerHTML = `
+      <div class="card good">
+        <h3>&#10004; Complete Provenance & Coverage</h3>
+        <p>Every imported case is accounted for. Replay inputs are cryptographically snapshotted so historical evidence can be audited at any time.</p>
+      </div>
+      <div class="card info">
+        <h3>&#9873; Production CLI Management</h3>
+        <p><code>manage.py</code> coordinates import, replay, coverage, and export against live history without touching the demo tour database.</p>
+      </div>
+    `;
+  }
+</script>
+</body>
+</html>

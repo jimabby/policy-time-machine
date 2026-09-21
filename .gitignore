@@ -27,3 +27,7 @@ ptm-*.csv
 .coverage
 coverage.xml
 htmlcov/
+scratch/
+video_assets/clips/
+*.wav
+*.aiff
