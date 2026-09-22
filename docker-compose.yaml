@@ -2,7 +2,22 @@
 services:
   airflow:
     build: .
-    ports: ["8080:8080"]
+    # Loopback, not every interface. The next block argues at length that a
+    # login screen is the wrong thing for a demo and turns authentication off
+    # for the whole UI - which is a fine trade for something reachable from the
+    # laptop it runs on, and a different proposition entirely once Docker has
+    # published it on 0.0.0.0. `8080:8080` did exactly that: the conference
+    # wifi, the co-working LAN and anything else that could route to the host
+    # got an Airflow with every visitor an admin, able to trigger DAGs and read
+    # every case file through the Explorer.
+    #
+    # Binding to 127.0.0.1 keeps `docker compose up` followed by
+    # http://localhost:8080/ptm/ working exactly as the README describes, and
+    # is the cheaper half of the fix - PTM_OPEN_UI=false is the other, for a
+    # deployment that genuinely wants to be reachable and therefore wants a
+    # login. Override PTM_BIND to publish deliberately: PTM_BIND=0.0.0.0 to
+    # show the Explorer to the room from somebody else's machine.
+    ports: ["${PTM_BIND:-127.0.0.1}:8080:8080"]
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
@@ -35,6 +50,13 @@ services:
       # cannot be reached is worse than one that does not exist, because somebody
       # sets it, sees the login, and concludes the auth cannot be turned off.
       PTM_ALLOW_ANONYMOUS: "${PTM_ALLOW_ANONYMOUS:-}"
+      # Where `ptm report <domain> <version> --html` finds the Explorer page to
+      # fill in. Empty means the copy beside this repository's plugins/ folder,
+      # which is what the mount below puts there and is right for every ordinary
+      # run. Declared rather than left implicit for the same reason as the three
+      # above: an image that has moved the page needs a lever that reaches the
+      # container, and a lever that does not is worse than none.
+      PTM_DASHBOARD: "${PTM_DASHBOARD:-}"
       # Only read when PTM_OFFLINE=0.
       AIRFLOW_CONN_PYDANTICAI_DEFAULT: "${AIRFLOW_CONN_PYDANTICAI_DEFAULT:-}"
       # No login, and that is a deliberate choice for a demo rather than an

@@ -465,11 +465,11 @@ def _fingerprint(name: str) -> tuple:
 def is_safe_name(name: str) -> bool:
     """Whether a string can name a file in a folder rather than reach out of it.
 
-    One path segment: non-empty, no separator in either dialect, not ``.`` or
-    ``..``, and not starting with a dot. Every name this project builds a path
-    from goes through here - a domain, and a draft version in
-    :mod:`ptm.proposal` - because the two are the same check and they were not
-    the same code.
+    One path segment: non-empty, no separator in either dialect, no drive
+    letter, not ``.`` or ``..``, and not starting with a dot. Every name this
+    project builds a path from goes through here - a domain, and a draft version
+    in :mod:`ptm.proposal` - because the two are the same check and they were
+    not the same code.
 
     A domain reaches :func:`load_domain` from an Airflow path parameter, from a
     ``--conf`` blob and from five CLIs, and until this existed it went straight
@@ -479,10 +479,26 @@ def is_safe_name(name: str) -> bool:
     happily matches one and Windows reads it as a separator. Nothing was
     exploitable in the shipped Linux demo, which is exactly the kind of thing
     that stops being true when somebody deploys it somewhere else.
+
+    **And a colon is the same argument one character further on.** Rejecting
+    both separators left the drive-relative form, which needs neither::
+
+        >>> Path("include/domains") / "C:pwned.yaml"
+        WindowsPath('C:pwned.yaml')
+
+    pathlib does not join that, it *replaces* - the base directory this whole
+    function exists to keep a name inside is discarded without a word, and
+    ``C:pwned.yaml`` resolves against whatever the process's working directory
+    on drive C happens to be. It reached :func:`load_domain` as an arbitrary
+    YAML read, :func:`ptm.proposal.materialise` as an arbitrary write, and
+    :func:`ptm.proposal.discard` as an arbitrary ``unlink`` - which is precisely
+    what that function's docstring says it exists to prevent. A colon cannot
+    appear in a legitimate filename on Windows anyway, so refusing it costs
+    nothing on either platform.
     """
     name = (name or "").strip()
     return bool(name) and name not in {".", ".."} and not (
-        set(name) & set("/\\") or name.startswith("."))
+        set(name) & set("/\\:") or name.startswith("."))
 
 
 def load_domain(name: str) -> DomainConfig:

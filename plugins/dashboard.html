@@ -12,6 +12,7 @@ input{min-width:170px}
 .status{margin-left:auto;color:var(--dim);font-size:12px}
 main{padding:28px 24px;max-width:1248px;margin:auto}
 .hero{margin:0 0 22px;color:var(--dim);max-width:720px}
+.exported{margin:0;padding:10px 22px;background:#2a2113;border-bottom:1px solid #5d4a1f;color:#e8cf95;font-size:13px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:24px}
 .tile{background:linear-gradient(145deg,#17223a,#11192c);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 10px 24px #0000001c}
 .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
@@ -181,6 +182,7 @@ a{color:var(--accent)}
   <span class=status id=status></span>
   <span class=dl><a id=dlcsv download>CSV</a><a id=dljson download>JSON</a></span>
 </header>
+<p class=exported id=exported hidden></p>
 <main>
   <section class=intro>
     <span class=eyebrow data-t="story.eyebrow"></span>
@@ -363,7 +365,33 @@ const pct = n => (Number(n || 0) * 100).toFixed(1) + "%";
 // the panel just comes back empty with no clue why. The query parameters below
 // were already encoded; the path was the half nobody had looked at.
 const seg = s => encodeURIComponent(String(s ?? ""));
+// True when this page is an exported file rather than one the plugin is
+// serving. Read once, at the top, because the controls that have to respect it
+// are re-enabled by a renderer three panels away - a flag set in boot() alone
+// was simply overwritten the first time the thresholds panel drew itself.
+const EXPORTED = typeof window !== "undefined" && !!window.PTM_BUNDLE;
+
+// One chokepoint, and now two possible sources behind it.
+//
+// `python -m ptm.report <domain> <version> --html` writes this same page with
+// every read model it needs inlined above this script as PTM_BUNDLE. That is
+// deliberately a branch *here* rather than a second copy of the page: a forked
+// renderer is a renderer that drifts, and the one thing an exported file must
+// never do is show a different story from the live Explorer it was taken from.
+//
+// Keyed without the query string. Everything the initial load asks for is
+// determined by the domain and version in the path; the panels that take
+// arguments a reader types - the sweep, the grid, a version comparison, a case
+// search - are recomputed per request and cannot be enumerated in advance, so
+// they are absent rather than wrong, and say so.
 const api = async path => {
+  if (window.PTM_BUNDLE) {
+    const key = path.split("?")[0];
+    if (key in window.PTM_BUNDLE.responses) return window.PTM_BUNDLE.responses[key];
+    const offline = new Error("not in this export");
+    offline.exported = true;
+    throw offline;
+  }
   const r = await fetch("/ptm" + path);
   if (!r.ok) throw new Error(r.status);
   return r.json();
@@ -380,6 +408,8 @@ const api = async path => {
 // carry markup, and nothing from the API is interpolated without esc() first.
 const I18N = {
 en: {
+  "export.banner": "Exported snapshot of {domain}/{version}, taken {at} UTC. Everything shown was computed then; the panels that answer a question you type - the threshold sweep, the grid, a version comparison, a case search - need the live Explorer.",
+  "export.needslive": "Recomputed per request, so it is not in an exported file.",
   "story.eyebrow": "A rehearsal for your next rule change",
   "guess.title": "Place your prediction",
   "guess.hint": "Before you scroll: what percentage of recorded decisions will get a different answer?",
@@ -802,6 +832,8 @@ en: {
   "fail.nodomains": "No policy domains are configured yet.",
 },
 zh: {
+  "export.banner": "{domain}/{version} \u7684\u5bfc\u51fa\u5feb\u7167\uff0c\u751f\u6210\u4e8e {at} UTC\u3002\u6240\u793a\u5185\u5bb9\u5747\u4e3a\u5f53\u65f6\u8ba1\u7b97\u7ed3\u679c\uff1b\u9700\u8981\u73b0\u573a\u8f93\u5165\u7684\u9762\u677f\uff08\u9608\u503c\u626b\u63cf\u3001\u7f51\u683c\u3001\u7248\u672c\u5bf9\u6bd4\u3001\u6848\u4f8b\u641c\u7d22\uff09\u9700\u8981\u8fde\u63a5\u5b9e\u65f6 Explorer\u3002",
+  "export.needslive": "\u6bcf\u6b21\u8bf7\u6c42\u91cd\u65b0\u8ba1\u7b97\uff0c\u56e0\u6b64\u4e0d\u5305\u542b\u5728\u5bfc\u51fa\u6587\u4ef6\u4e2d\u3002",
   "story.eyebrow": "\u4e3a\u4e0b\u4e00\u6b21\u89c4\u5219\u53d8\u66f4\u9884\u6f14",
   "guess.title": "先来猜一猜",
   "guess.hint": "向下滚动前，猜猜有多少比例的历史决定会得到不同答案？",
@@ -1252,9 +1284,27 @@ const dir = d => (I18N[LANG] || I18N.en)["dir." + d] || I18N.en["dir." + d] || S
 
 //: Static markup carries its key in `data-t`. Re-reading the attributes is how
 //: a language switch reaches the parts of the page no renderer owns.
+// An export names the one domain and version it was taken for, and the reader
+// is told so before they wonder why the sweep will not run. Said in a banner
+// rather than by removing the controls: a control that has quietly vanished is
+// a feature the reader concludes this tool does not have.
+function renderExportNote() {
+  const note = $("#exported");
+  if (!EXPORTED) { note.hidden = true; return; }
+  note.textContent = t("export.banner", {
+    domain: window.PTM_BUNDLE.domain, version: window.PTM_BUNDLE.version,
+    at: String(window.PTM_BUNDLE.generated_at || "").slice(0, 16).replace("T", " "),
+  });
+  note.hidden = false;
+  for (const id of ["#swgo", "#swgo2", "#search", "#cmpleft", "#cmpright"]) {
+    $(id).title = t("export.needslive");
+  }
+}
+
 function applyStatic() {
   document.documentElement.lang = LANG === "zh" ? "zh-Hans" : "en";
   document.title = t("app.title");
+  renderExportNote();
   document.querySelectorAll("[data-t]").forEach(el => {
     const key = el.dataset.t;
     // A heading with a nested note owns only its own text node; replacing
@@ -1750,7 +1800,7 @@ function renderDials(allDials) {
     $("#sweepgrid").innerHTML = `<div class=empty>${t("dials.nosweep")}</div>`;
     return;
   }
-  select.disabled = $("#swgo").disabled = false;
+  select.disabled = $("#swgo").disabled = EXPORTED;
   // Same field in two clauses is two different dials; label them as such.
   select.innerHTML = dials.map(d => dialOption(d)).join("");
   const first = dials[0].value;
@@ -1768,7 +1818,7 @@ function renderDials(allDials) {
     $("#sweepgrid").innerHTML = `<div class=empty>${t("dials.nosecond")}</div>`;
     return;
   }
-  second.disabled = $("#swgo2").disabled = false;
+  second.disabled = $("#swgo2").disabled = EXPORTED;
   second.innerHTML = others.map(d => dialOption(d)).join("");
   const preferred = others.find(d => d.field !== dials[0].field) || others[0];
   second.value = dialKey(preferred);
@@ -2760,6 +2810,15 @@ function onDomainChange() {
 }
 
 async function boot() {
+  // An export names the one domain and version it was taken for, and the
+  // reader is told so before they wonder why the sweep will not run. Said in
+  // the banner rather than by removing the controls: a control that has quietly
+  // vanished is a feature the reader concludes this tool does not have.
+  if (EXPORTED) {
+    for (const id of ["#swgo", "#swgo2", "#search", "#cmpleft", "#cmpright"]) {
+      $(id).disabled = true;
+    }
+  }
   try { DOMAINS = await api("/api/domains"); }
   catch (e) {
     fail(t("fail.boot"));

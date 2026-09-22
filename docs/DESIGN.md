@@ -1168,7 +1168,7 @@ scripts/build_charts.py         the README's six figures, drawn from a real
 docs/*.gif                      the README's clips, captured from the real tool
 docs/charts/*.svg               the figures, checked byte for byte by the suite
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1428 tests; the engine's 1247 need nothing but Python
+tests/                          1531 tests; the engine's 1350 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did
@@ -1377,7 +1377,7 @@ Built and run against `apache/airflow:3.1.0` with
   broken DAG module and are nothing of the kind. They now skip with that reason
   attached. The skip is *not* allowed to hide anything in CI: `PTM_REQUIRE_AIRFLOW`
   turns it back into a hard error, and CI runs on Linux where the alarm exists,
-  so a skip there means something has genuinely changed. The engine's 1247 tests,
+  so a skip there means something has genuinely changed. The engine's 1350 tests,
   the lint, the style gate and the whole end-to-end loop need none of this and
   run on a Windows checkout unchanged — which is what `make dev && make test` is
   for, and why the Makefile picks the interpreter per platform.
@@ -1592,6 +1592,18 @@ Built and run against `apache/airflow:3.1.0` with
 - `include/drafts/` is written by a DAG task, so a multi-worker deployment needs
   it on shared storage. The single-container demo and the compose file already
   mount it.
+- **Fencing the case record bounds prompt injection; it does not end it.** Both
+  shipped domains render free text written by the party with an interest in the
+  answer, and `ptm.judge.fence` wraps that record in a marker derived from the
+  case, so the payload cannot forge the prompt's own structure - closing the
+  fence early would mean embedding a digest of text containing that digest.
+  What it does *not* claim is anything about how a model treats hostile text
+  inside a fence it respects; nobody can make that claim, so this does not.
+  `ptm.injection` is the reporting half and is a report rather than a defence:
+  it names the cases whose text impersonates the machinery, and deliberately
+  says nothing about a claimant citing a clause the policy really has, which is
+  an appeal rather than an attack. Offline the question does not arise at all -
+  the rules never read a free-text field.
 
 
 

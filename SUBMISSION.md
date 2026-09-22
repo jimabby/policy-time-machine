@@ -260,7 +260,7 @@ printed once into the logs.
 
 ---
 
-**Verified:** 1428 tests (1247 need nothing but Python), `ruff` clean, all eleven
+**Verified:** 1531 tests (1350 need nothing but Python), `ruff` clean, all eleven
 DAGs parsing under a real Airflow in both offline and LLM-backed configurations,
 the plugin's routes driven through a real client, and the Diff Explorer loaded in
 Chromium and clicked through — failing on any console error or any panel that

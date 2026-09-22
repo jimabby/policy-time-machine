@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style storyboard charts charts-check rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune
+.PHONY: help up down seed logs demo reset test lint unit style storyboard charts charts-check rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune explorer tampering
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -252,6 +252,20 @@ grid:      ## Move two thresholds together - one curve cannot show them interact
 export:    ## Everything the Explorer shows, as one file, without starting Airflow
 	$(ENV) $(PY) -m ptm.report expenses v2 -o ptm-expenses-v2.json
 	$(ENV) $(PY) -m ptm.report expenses v2 --csv -o ptm-expenses-v2-flips.csv
+
+# The half of `export` that somebody can actually read. The JSON has always
+# carried its caveats out of the dashboard; opening it still meant starting a
+# scheduler, which the person being asked to approve the change is the least
+# likely person in the building to do.
+explorer:  ## The whole Diff Explorer as one file you can email. No server needed
+	$(ENV) $(PY) -m ptm.report expenses v2 --html -o ptm-expenses-v2.html
+	@echo "open ptm-expenses-v2.html"
+
+# Free, and it reads the cases already on file. A case arguing with the judge
+# rather than with the policy is worth a human's attention whether or not the
+# fence in ptm.judge held - which it does, and silently.
+tampering: ## Which recorded cases contain text aimed at the judge, not the policy
+	$(ENV) $(PY) -m ptm.injection expenses v2
 
 prune:     ## Drop cache and sample rows that have stopped earning their disk
 	$(ENV) $(PY) -m ptm.prune --dry-run

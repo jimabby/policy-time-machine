@@ -154,7 +154,7 @@ jobs:
         run: |
           for m in preflight calibration rules lint prune sweep report proposal \
                    selftest seed pit_check gate precedents stability crosscheck \
-                   disparity ingest provenance replay; do
+                   disparity ingest provenance replay injection __main__; do
             python -m ptm.$m --help > /dev/null
           done
           # And the two inputs that are now refused rather than believed. Both
@@ -226,6 +226,71 @@ jobs:
             python -c "import json,sys; d=json.load(sys.stdin); \
               assert d['code'] == 0 and d['passed'], d['headline']; \
               print(len(d['violations']), 'reversal(s),', len(d['introduced']), 'introduced')"
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # A case cannot write its own verdict, and somebody is told when one
+      # tries. The fence in ptm.judge needs nobody to run anything - it is in
+      # every prompt the replay builds - so what runs here is the reporting
+      # half, gated: a shipped fixture containing text that impersonates the
+      # prompt's own structure would be a fixture nobody should be measuring.
+      # Zero findings is the assertion, which is also what makes the check
+      # worth having on real history: one that fired on the demo is one nobody
+      # would read.
+      - name: No case is arguing with the judge
+        run: |
+          python -m ptm.injection expenses v2 --gate fail
+          python -m ptm.injection refunds v2 --gate fail
+          python -m ptm.injection expenses v2 --json 2>/dev/null |
+            python -c "import json,sys; d=json.load(sys.stdin);               assert d['ran'] and d['code'] == 0, d;               assert d['errors'] == 0, d['cases'];               print('scanned', d['scanned'], 'case(s), nothing forged')"
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The bundle's reading half. `export` has always been able to write the
+      # numbers out with their caveats attached; opening them required an
+      # Airflow. Asserted as markup rather than as a string that contains the
+      # right words - the whole point of the file is that a browser parses it -
+      # and on the figure the README leads with, so a page that exports cleanly
+      # and says something else fails here.
+      - name: The Explorer as one file
+        run: |
+          python -m ptm.report expenses v2 --html -o /tmp/explorer.html
+          python - <<'PY'
+          import json, re
+          page = open('/tmp/explorer.html', encoding='utf-8').read()
+          assert page.count('<script>') == page.count('</script>'), 'unbalanced script tags'
+          body = re.search(r"<script>window\.PTM_BUNDLE = (.*?);</script>", page, re.S)
+          assert body, 'no bundle was spliced in'
+          bundle = json.loads(body.group(1).replace(r'<\/', '</'))
+          summary = bundle['responses']['/api/summary/expenses/v2']
+          assert (summary['cases'], summary['flips']) == (600, 147), summary
+          print(len(bundle['responses']), 'read model(s) inlined,', len(page), 'bytes')
+          PY
+        env:
+          PTM_INCLUDE_DIR: ./include
+          PTM_DB: ./include/ptm.db
+          PTM_OFFLINE: "1"
+
+      # The console script the package now installs. `pip install -e .` made ptm
+      # importable and put nothing on PATH, so this proves the thing a reader
+      # following the README would actually type.
+      - name: The installed command works
+        run: |
+          pip install -e .
+          ptm > /dev/null
+          ptm preflight expenses v2
+          ptm gate expenses v2 --introduced-only
+          # And the two options that let an installed copy point at a database
+          # that is not the demo's - which is manage.py's whole reason for
+          # existing. Run with no PTM_* in the environment at all, because an
+          # option that only works when the variable is already set is not an
+          # option, and the env block above would have hidden that.
+          env -u PTM_INCLUDE_DIR -u PTM_DB             ptm --include ./include --db ./include/ptm.db preflight expenses v2
+          ! ptm nosuchcommand
         env:
           PTM_INCLUDE_DIR: ./include
           PTM_DB: ./include/ptm.db

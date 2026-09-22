@@ -39,6 +39,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.16"]
 
+# The thing an installed package was missing. `pip install -e .` made `ptm`
+# importable and put nothing on PATH, so every command in the README had to be
+# spelled `python -m ptm.<module>` - which works in a checkout and reads, to
+# anybody who actually installed this, like a package with no commands in it.
+# One console script rather than twenty: ptm/__main__.py dispatches to each
+# module's own main, so the two spellings cannot drift apart.
+[project.scripts]
+ptm = "ptm.__main__:main"
+
 [tool.setuptools]
 # Named rather than discovered. Automatic discovery would sweep up `dags`,
 # `plugins` and `tests`, none of which is an importable part of this package:
@@ -61,7 +70,7 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# A ratchet, not an aspiration. The suite measures 91.4% over ptm/ today with
+# A ratchet, not an aspiration. The suite measures 91.7% over ptm/ today with
 # `branch = true` above - which is the stricter question, and several points
 # below the line-only figure, so it is the one worth holding. The floor sits
 # far enough under that an ordinary refactor does not redden a build and close

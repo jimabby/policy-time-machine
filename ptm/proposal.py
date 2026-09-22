@@ -495,7 +495,23 @@ def materialise(domain_name: str, draft_version: str, markdown: str,
     draft would return the most generous outcome for every case and look like a
     wildly permissive policy, which is the single most misleading thing this
     module could produce - so a caller that has rules should always pass them.
+
+    The version is checked the way :func:`discard` checks it, and it was the
+    half that had no check at all. ``discard`` argued carefully that a name
+    building a path must name one path segment, and then this function - the one
+    that *creates* the file - took whatever it was handed and wrote there. The
+    name is not always a person's: ``propose_<domain>`` has a model name the
+    draft, and :func:`next_version` derives it from a version string that
+    arrives in a DAG ``--conf`` blob.
     """
+    if not _is_draft_name(draft_version):
+        raise LookupError(
+            f"{draft_version!r} is not a draft version name. A draft is one path "
+            f"segment - no slashes, no drive letter, no '..' - because this writes "
+            f"files, and the only files it may write are in "
+            f"include/{DRAFTS_DIR}/{domain_name}/.")
+    if not config.is_safe_name(domain_name):
+        raise LookupError(f"{domain_name!r} is not a domain name.")
     folder = config.INCLUDE_DIR / DRAFTS_DIR / domain_name
     folder.mkdir(parents=True, exist_ok=True)
     policy_path = folder / f"{draft_version}.md"
@@ -531,8 +547,9 @@ def discard(domain_name: str, draft_version: str) -> list[str]:
     if not _is_draft_name(draft_version):
         raise LookupError(
             f"{draft_version!r} is not a draft version name. A draft is one path "
-            f"segment - no slashes, no '..' - because this deletes files, and the "
-            f"only files it may delete are in include/{DRAFTS_DIR}/{domain_name}/.")
+            f"segment - no slashes, no drive letter, no '..' - because this deletes "
+            f"files, and the only files it may delete are in "
+            f"include/{DRAFTS_DIR}/{domain_name}/.")
     # Both halves of the path, not just the version. The sentence above says the
     # only files this may delete are the ones under include/drafts/<domain>/,
     # and that promise is only worth as much as the weaker of the two segments.

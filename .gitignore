@@ -40,3 +40,10 @@ video_assets/clips/
 # only wants to watch it.
 video_assets/shots/
 video_assets/subtitles.srt
+
+# Build metadata from `pip install -e .`, which the README now tells people to
+# run and which the CI proves works. setuptools writes it beside the source
+# rather than into the venv, so it appears in a checkout the moment anybody
+# follows those instructions - and it is generated, machine-specific and
+# regenerated on every install.
+*.egg-info/

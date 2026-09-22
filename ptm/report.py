@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime
@@ -441,6 +442,101 @@ def export_bundle(domain: str, version: str, limit: int = 5000) -> dict:
             "than it is not a finding, whichever direction it points in.",
         ],
     }
+
+
+# ------------------------------------------------- the bundle, with a reader
+
+#: The Explorer page, which the HTML export fills in and hands over.
+#:
+#: Read from ``plugins/`` rather than from inside this package, and not copied
+#: into one either. The plugin serves this exact file and the export ships this
+#: exact file, so a panel that changes in one changed in the other - the moment
+#: there are two copies, the interesting half of this feature (that what leaves
+#: the building is what was on screen) stops being true and nothing says so.
+#: ``PTM_DASHBOARD`` overrides the location for a deployment that has moved it.
+PAGE = pathlib.Path(os.environ.get("PTM_DASHBOARD")
+                    or pathlib.Path(__file__).resolve().parent.parent
+                    / "plugins" / "dashboard.html")
+
+#: Where the bundle is spliced in: immediately before the page's only script,
+#: so ``window.PTM_BUNDLE`` exists by the time anything reads it.
+SPLICE = "<script>"
+
+
+def export_responses(domain: str, version: str, limit: int = 5000) -> dict:
+    """Every API response the Explorer's initial load asks for, keyed by its path.
+
+    Keyed by the path with no query string, which is how :func:`api` in the page
+    looks them up. What is deliberately *not* here is everything that takes an
+    argument a reader types - the sweep, the grid, a version comparison, a case
+    search. Those are recomputed per request over a range nobody can enumerate,
+    and an export that answered them with one frozen combination would be
+    answering a question the reader did not ask, which is worse than the panel
+    saying it needs the live Explorer.
+    """
+    d, v = domain, version
+    return {
+        "/api/domains": domains(),
+        f"/api/summary/{d}/{v}": summary(d, v),
+        f"/api/flip-page/{d}/{v}": flip_page(d, v, limit=limit),
+        f"/api/precedents/{d}": precedents(d),
+        f"/api/clauses/{d}/{v}": clauses(d, v),
+        f"/api/segments/{d}/{v}": segments(d, v),
+        f"/api/conflicts/{d}": conflicts(d),
+        f"/api/cost/{d}/{v}": cost_report(d, v),
+        f"/api/deviations/{d}/{v}": deviations(d, v),
+        f"/api/precedent-check/{d}/{v}": precedent_check(d, v),
+        f"/api/stability/{d}/{v}": stability(d, v),
+        f"/api/thresholds/{d}/{v}": thresholds(d, v),
+        f"/api/calibration/{d}/{v}": calibration(d, v),
+        f"/api/disparity/{d}/{v}": disparity(d, v),
+        f"/api/preflight/{d}/{v}": preflight(d, v),
+        f"/api/rules/{d}/{v}": rule_agreement(d, v),
+        f"/api/cross-check/{d}/{v}": cross_check(d, v),
+        f"/api/drafts/{d}": drafts(d),
+        f"/api/history/{d}": history(d),
+        f"/api/precedent-history/{d}": precedent_history(d),
+        f"/api/power/{d}/{v}": power(d, v),
+        f"/api/coverage/{d}/{v}": coverage(d, v),
+        f"/api/runs/{d}/{v}": replay_runs(d, v),
+    }
+
+
+def export_html(domain: str, version: str, limit: int = 5000) -> str:
+    """The whole Explorer as one file that opens with no Airflow and no server.
+
+    The JSON bundle could always leave the dashboard; the *reading* of it could
+    not. Somebody had to stand up a scheduler to look at evidence about a
+    decision they were being asked to approve, which is the one person in this
+    whole workflow least likely to do it - so the bundle got pasted into a slide
+    instead, which is exactly the caveat-stripping :func:`export_bundle` was
+    written to prevent.
+
+    This is the same page the plugin serves, with the read models it would have
+    fetched inlined ahead of it. Double-click it and the story is there, in
+    either language, with every caveat still attached to the number it belongs
+    to.
+    """
+    _checked(domain, version)
+    if not PAGE.is_file():
+        raise LookupError(
+            f"cannot find the Explorer page at {PAGE}. The HTML export ships the "
+            f"same file the Airflow plugin serves; set PTM_DASHBOARD to its path "
+            f"if this deployment keeps it somewhere else.")
+    page = PAGE.read_text(encoding="utf-8")
+    bundle = {
+        "domain": domain, "version": version,
+        "generated_at": store.now_utc().isoformat(timespec="seconds"),
+        "responses": export_responses(domain, version, limit),
+    }
+    # `</script>` inside a string literal ends the element as far as an HTML
+    # parser is concerned, whatever JSON thinks - and a case rationale or a
+    # reviewer's note is free text somebody else wrote. Escaping the sequence
+    # keeps it a string; `\/` is the same character to JSON and invisible to
+    # the parser. Same argument as the ampersand in ptm.plugin's filename().
+    payload = json.dumps(bundle, default=str).replace("</", r"<\/")
+    script = f"<script>window.PTM_BUNDLE = {payload};</script>\n"
+    return page.replace(SPLICE, script + SPLICE, 1)
 
 
 def flips(domain: str, version: str, limit: int = 200,
@@ -1259,9 +1355,10 @@ def describe_history(result: dict, digits: int = 1) -> str:
 
 
 USAGE = """usage:
-  python -m ptm.report <domain> <version> [--csv] [-o FILE]
+  python -m ptm.report <domain> <version> [--csv] [--html] [-o FILE]
         Everything the Diff Explorer shows, as one JSON bundle with the
-        caveats attached - or --csv for the flip set alone.
+        caveats attached - or --csv for the flip set alone, or --html for the
+        whole Explorer as a single file that opens with no server.
 
   python -m ptm.report <domain> <version> --power [--target RATE]
         How big a change this much history could actually detect, and how
@@ -1318,6 +1415,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     as_csv = "--csv" in args
+    as_html = "--html" in args
     as_power = "--power" in args
     as_history = "--history" in args
     as_json = "--json" in args
@@ -1356,6 +1454,13 @@ def main(argv: list[str] | None = None) -> int:
     if out_path == "":
         print(f"ERROR -o needs a file to write to\n\n{USAGE}", file=sys.stderr)
         return 2
+    if as_html and not out_path:
+        # Every other body here is something somebody might legitimately pipe.
+        # This one is a 200KB page whose only use is being opened, and spilling
+        # it into a terminal is never what was meant.
+        print(f"ERROR --html needs -o FILE; it writes a page to open, not a stream "
+              f"to pipe\n\n{USAGE}", file=sys.stderr)
+        return 2
     positional, skip = [], False
     for arg in args:
         if skip:
@@ -1365,8 +1470,8 @@ def main(argv: list[str] | None = None) -> int:
             skip = True
             continue
         # --target's value is popped above, so only the flag itself is left.
-        if arg in {"--csv", "--power", "--target", "--history", "--json", "--compare",
-                   "--runs", "--rerun"}:
+        if arg in {"--csv", "--html", "--power", "--target", "--history", "--json",
+                   "--compare", "--runs", "--rerun"}:
             continue
         if arg.startswith("-"):
             print(f"ERROR unknown option {arg!r}\n\n{USAGE}", file=sys.stderr)
@@ -1434,6 +1539,8 @@ def main(argv: list[str] | None = None) -> int:
                 body += "\n  " + result["caveat"]
         elif as_csv:
             body = flips_csv(domain, version)
+        elif as_html:
+            body = export_html(domain, version)
         else:
             body = json.dumps(export_bundle(domain, version), indent=2, default=str)
     except LookupError as exc:

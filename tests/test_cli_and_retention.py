@@ -36,6 +36,7 @@ import re
 
 import pytest
 
+from ptm import __main__ as dispatcher
 from ptm import (
     calibration,
     cli,
@@ -43,6 +44,7 @@ from ptm import (
     disparity,
     gate,
     ingest,
+    injection,
     lint,
     pit_check,
     precedents,
@@ -91,6 +93,15 @@ ENTRY_POINTS = [
     ("ptm.stability", stability.main),
     ("ptm.crosscheck", crosscheck.main),
     ("ptm.disparity", disparity.main),
+    # Which recorded cases are aimed at the judge rather than at the policy.
+    # The fence in ptm.judge is the defence and needs nobody to run anything;
+    # this is the half that says who tried, and it is here rather than only in
+    # a DAG for the same reason as the three above.
+    ("ptm.injection", injection.main),
+    # The dispatcher behind the `ptm` console script. An entry point like any
+    # other - it answers --help, it exits 0 doing it, and if it ever stopped
+    # this list would say so.
+    ("ptm.__main__", dispatcher.main),
 ]
 ENTRY_IDS = [name for name, _ in ENTRY_POINTS]
 
