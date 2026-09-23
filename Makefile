@@ -1,4 +1,4 @@
-.PHONY: help up down seed logs demo reset test lint unit style storyboard charts charts-check rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune explorer tampering
+.PHONY: help up down seed logs demo reset test lint unit style storyboard video charts charts-check rule stability confirm cost sweep grid dev preflight calibrate rules propose drafts readjudicate draft crosscheck export prune vacuum retain adopt discard gate rulings power tour coverage noise confirmed second blast versions compare adopt-plan reruns history-export history-rulings history-resolve history-prune explorer tampering
 
 # A venv puts the interpreter in Scripts/ on Windows and bin/ everywhere else,
 # and the bootstrap command is python3 on one and python on the other. Both are
@@ -137,6 +137,15 @@ lint:      ## Check every domain YAML against the policies it claims to implemen
 # after a mismatch plays under the wrong sentence.
 storyboard: ## Check the demo video's shot timings against its narration
 	$(PY) scripts/storyboard.py
+
+# The whole video, rebuilt: 2x stills from the dashboard, the narration (one
+# neural-voice line per shot, with word timings), then every frame drawn and
+# muxed with burned-in subtitles. Needs Chrome, the network for the voice, and
+# `pip install -r requirements-video.txt`.
+video:     ## Rebuild policy_time_machine_demo.mp4 from the storyboard
+	$(PY) scripts/build_shots.py
+	$(PY) scripts/generate_audio.py
+	$(PY) scripts/assemble_video.py
 
 # The README's and the demo script's figures, drawn from a real offline replay
 # of the shipped fixture. `charts-check` is what CI runs: it never writes, and

@@ -55,14 +55,13 @@ def storyboard():
 
 
 def narration(storyboard) -> str:
-    """Every word spoken in the video, with the synthesiser's pauses removed.
+    """Every word spoken in the video, with the pause directives removed.
 
-    ``[[slnc 1200]]`` is macOS ``say``'s pause directive and carries a number
-    that has nothing to do with the fixture. Left in, it is four digits sitting
-    in the text for any check that scans for integers.
+    ``[[pause 0.4]]`` carries a number that has nothing to do with the fixture.
+    Left in, it is a figure sitting in the text for any check that scans for
+    integers.
     """
-    spoken = " ".join(scene["narration"] for scene in storyboard.SCENES)
-    return re.sub(r"\[\[[^\]]*\]\]", " ", spoken)
+    return storyboard.spoken(" ".join(scene["narration"] for scene in storyboard.SCENES))
 
 
 @pytest.fixture(scope="module")
@@ -129,8 +128,20 @@ class TestTheStoryboardReconciles:
         in the shipped video: eighteen seconds of one still, under narration
         describing the sweep being computed and then the curve it produced.
         """
-        directives = [shot["sc"] for shot in storyboard.SHOTS]
+        directives = [shot["sc"] for shot in storyboard.captures()]
         assert len(set(directives)) == len(directives)
+
+    def test_every_line_is_spoken_over_its_own_shot(self, storyboard):
+        """The voice belongs to the shot, so the picture cannot lag the words.
+
+        The first cut had one paragraph per scene, time-stretched to fill it,
+        and a picture could change halfway through the sentence about it.
+        """
+        for shot in storyboard.SHOTS:
+            assert storyboard.spoken(shot.get("say", "")), f"{shot['id']} is silent"
+        for scene in storyboard.SCENES:
+            assert scene["narration"] == " ".join(
+                shot["say"] for shot in storyboard.scene_shots(scene["id"]))
 
     def test_the_scripts_all_read_this_one_table(self):
         """None of the three carries a shot list or a duration of its own."""
@@ -197,6 +208,21 @@ class TestTheNarrationQuotesTheFixture:
         expected = words.get(load_domain("expenses").review.max_reviews)
         assert expected, "the review queue size is outside the range this test can spell"
         assert expected in narration(storyboard).lower()
+
+    def test_the_cards_figures_are_the_fixture_s(self, storyboard):
+        """The two figures the cards draw that ``story`` does not carry.
+
+        "39 wrong" is drawn on the scene-three card and "8" on the scene-five
+        one; both are pictures of numbers, checked here against what computes
+        them rather than trusted.
+        """
+        from ptm import pit_check
+        from ptm.config import load_domain
+
+        assert int(storyboard.NAIVE_WRONG) == pit_check.compare("expenses", "v2")["naive_wrong"]
+        assert int(storyboard.REVIEWS) == load_domain("expenses").review.max_reviews
+        spoken = narration(storyboard)
+        assert re.search(rf"\b{storyboard.NAIVE_WRONG}\b", spoken)
 
     def test_the_rendered_templates_agree_with_the_voiceover(self, story):
         """The figures printed on screen, not merely spoken over it.

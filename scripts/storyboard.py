@@ -14,174 +14,210 @@ So the storyboard is stated once here and the three scripts read it.
 ``tests/test_video.py`` runs it, which is what turns "they agree today" into
 something a build can say.
 
-**The numbers in the narration are the fixture's.** "147 out of 600", "48
-changes", "38 of the 147", "39 wrong": every one is a figure the replay
-computes, quoted in prose that cannot recompute it. ``tests/test_docs.py``
-exists because exactly this went stale in the README - see its docstring - and
-the video is the same claim in a form nobody can grep while watching. So the
-narration is checked against the fixture by the same test, and the figures are
-named in :data:`FIXTURE_FIGURES` so the check knows what it is looking at
-rather than scanning for loose integers.
+**The voice belongs to the shot, not the scene.** The first cut gave each scene
+one paragraph of narration and stretched the synthesised audio to fill the
+scene with ffmpeg's ``atempo`` - which is why it sounded smeared, and why a
+picture could change halfway through the sentence describing it. Now every
+shot carries the words spoken over it (``say``), each shot's audio is placed at
+the start of its own shot at the voice's natural speed, and
+:mod:`generate_audio` refuses a line that does not fit its shot rather than
+squeezing it. A scene's narration is derived from its shots, so there is still
+exactly one copy of every word.
+
+**Two kinds of shot.** A shot with ``sc`` is a still of the real dashboard,
+captured by :mod:`build_shots` and slowly zoomed from ``zoom[0]`` to
+``zoom[1]`` - boxes ``(x, y, width)`` as fractions of the frame, height
+following from 16:9. A shot with ``card`` is an animated title card drawn by
+:mod:`assemble_video`: the one idea the scene is about, in numbers big enough
+to read on a phone.
+
+**The numbers in the narration are the fixture's.** "147 out of 600", "38 of
+the 147", "39 wrong": every one is a figure the replay computes, quoted in
+prose that cannot recompute it. ``tests/test_docs.py`` exists because exactly
+this went stale in the README - see its docstring - and the video is the same
+claim in a form nobody can grep while watching. So the narration is checked
+against the fixture by the same test, the figures are named in
+:data:`FIXTURE_FIGURES` so the check knows what it is looking at rather than
+scanning for loose integers, and the cards draw their numbers from those same
+names rather than typing them again.
 """
 
 from __future__ import annotations
 
-#: The seven scenes, in order: how long each runs and what is said over it.
-#:
-#: ``narration`` is fed to the speech synthesiser. ``[[slnc N]]`` is macOS
-#: ``say``'s pause directive and is stripped before the text is checked for the
-#: figures below, so a pause never hides a number.
-SCENES: list[dict] = [
-    {
-        "id": "scene1",
-        "name": "The Bet",
-        "duration": 25.0,
-        "narration": (
-            "We're thinking about changing our expense rules. Before we announce "
-            "anything: how many old decisions do you think would get a different "
-            "answer? Ten? Fifty? Half of them? [[slnc 1200]] In this demo, 147 out of "
-            "600. Almost one in four. That small rule change just became a much more "
-            "interesting conversation."
-        ),
-    },
-    {
-        "id": "scene2",
-        "name": "The Plot Twist",
-        "duration": 30.0,
-        "narration": (
-            "Which sentence did it? This receipt clause accounts for 48 changes. But "
-            "there's a twist: 38 of the 147 differences also disagree with the old "
-            "rulebook. [[slnc 1000]] The proposal didn't create those differences. In "
-            "the flips table, we can inspect each case's historical facts, candidate "
-            "clauses, and human rulings."
-        ),
-    },
-    {
-        "id": "scene3",
-        "name": "No Spoilers from the Future",
-        "duration": 25.0,
-        "narration": (
-            "Imagine someone was promoted last year. Should today's seniority change "
-            "what they were entitled to two years ago? [[slnc 1000]] This replay uses "
-            "what was known on the day. Using today's facts gets 39 of these 600 cases "
-            "wrong. [[slnc 1500]] Point in time replay protects you from tomorrow's "
-            "bias."
-        ),
-    },
-    {
-        "id": "scene4",
-        "name": "Open the Machine",
-        "duration": 30.0,
-        "narration": (
-            "Bring back the old facts. Try both rulebooks. Ask a person about selected "
-            "changes. Save their answer so the next proposal has to face it too. "
-            "[[slnc 1000]] Airflow coordinates those steps. The machine stores the "
-            "evidence in one shared memory, and this screen reads it back so we can "
-            "discuss it together."
-        ),
-    },
-    {
-        "id": "scene5",
-        "name": "The Person Gets a Say",
-        "duration": 30.0,
-        "narration": (
-            "We don't ask someone to read 600 cases. The demo selects eight. Each "
-            "answer becomes an example future rules are checked against. If a proposal "
-            "reverses one, the check fails and somebody has to resolve it. [[slnc "
-            "1200]] And we still ask whether the old policy already made the same "
-            "reversal. A red result needs an explanation, not a convenient scapegoat."
-        ),
-    },
-    {
-        "id": "scene6",
-        "name": "Let the Room Choose",
-        "duration": 25.0,
-        "narration": (
-            "What would you choose: 50, 100, or 150 pounds? We can compare the "
-            "consequences before we pick. [[slnc 1200]] These results use the offline "
-            "rules; they show trade-offs, not a recommendation."
-        ),
-    },
-    {
-        "id": "scene7",
-        "name": "Pay Off the Opening Question",
-        "duration": 15.0,
-        "narration": (
-            "Would you ship this rule? Now we can discuss who it affects, what it "
-            "costs, and which human decisions it must respect. [[slnc 600]] Try "
-            "tomorrow's rules on yesterday's decisions, before tomorrow becomes a "
-            "surprise."
-        ),
-    },
-]
+import re
 
-#: Every shot, in play order. ``scene`` ties it to :data:`SCENES`, ``sc`` is the
-#: capture directive :mod:`build_shots` hands the page, and ``title`` is what
-#: the shot is *of* - which is also the claim the test suite checks against the
-#: capture, because a title saying one thing over a frame showing another is how
-#: seventeen seconds of this video came to hold a single repeated image.
-SHOTS: list[dict] = [
-    {"id": "s1_shot1", "scene": "scene1", "dur": 8.0, "sc": "s1_1",
-     "title": "The Bet: Place your prediction"},
-    {"id": "s1_shot2", "scene": "scene1", "dur": 5.0, "sc": "s1_2",
-     "title": "The Bet: Moving slider to 20%"},
-    {"id": "s1_shot3", "scene": "scene1", "dur": 5.0, "sc": "s1_3",
-     "title": "The Bet: Guess comparison reveal"},
-    {"id": "s1_shot4", "scene": "scene1", "dur": 7.0, "sc": "s1_4",
-     "title": "The Bet: 147 flips impact chart & coverage"},
-
-    {"id": "s2_shot1", "scene": "scene2", "dur": 7.0, "sc": "s2_1",
-     "title": "The Plot Twist: Clauses overview"},
-    {"id": "s2_shot2", "scene": "scene2", "dur": 8.0, "sc": "s2_2",
-     "title": "The Plot Twist: Clause 1.1 (48 changes)"},
-    {"id": "s2_shot3", "scene": "scene2", "dur": 7.0, "sc": "s2_3",
-     "title": "The Plot Twist: 38 pre-existing deviations"},
-    {"id": "s2_shot4", "scene": "scene2", "dur": 8.0, "sc": "s2_4",
-     "title": "The Evidence: Case review dialog & historical facts"},
-
-    {"id": "s3_shot1", "scene": "scene3", "dur": 8.0, "sc": "term_1",
-     "title": "Terminal: pit_check command & replay"},
-    {"id": "s3_shot2", "scene": "scene3", "dur": 9.0, "sc": "term_2",
-     "title": "Terminal: 39 naive replay errors & future bias"},
-    {"id": "s3_shot3", "scene": "scene3", "dur": 8.0, "sc": "term_3",
-     "title": "Terminal: manage.py coverage & provenance"},
-
-    {"id": "s4_shot1", "scene": "scene4", "dur": 8.0, "sc": "s4_1",
-     "title": "Under the Hood: Four core steps"},
-    {"id": "s4_shot2", "scene": "scene4", "dur": 12.0, "sc": "s4_2",
-     "title": "Engine Room: Architecture diagram"},
-    {"id": "s4_shot3", "scene": "scene4", "dur": 10.0, "sc": "dag_view",
-     "title": "Orchestration: Airflow DAG code"},
-
-    {"id": "s5_shot1", "scene": "scene5", "dur": 10.0, "sc": "s5_1",
-     "title": "Human Decisions: 8 Precedents"},
-    {"id": "s5_shot2", "scene": "scene5", "dur": 10.0, "sc": "s5_2",
-     "title": "Precedent Gate: Baseline comparison"},
-    {"id": "s5_shot3", "scene": "scene5", "dur": 10.0, "sc": "s5_3",
-     "title": "Human Rationale: Resolution details"},
-
-    {"id": "s6_shot1", "scene": "scene6", "dur": 7.0, "sc": "s6_1",
-     "title": "Sweep: Threshold dial selection"},
-    {"id": "s6_shot2", "scene": "scene6", "dur": 10.0, "sc": "s6_2",
-     "title": "Sweep: Computing trade-offs"},
-    {"id": "s6_shot3", "scene": "scene6", "dur": 8.0, "sc": "s6_3",
-     "title": "Sweep: 25, 50, 75, 100, 150 GBP curve"},
-
-    {"id": "s7_shot1", "scene": "scene7", "dur": 7.0, "sc": "s7_1",
-     "title": "Summary: Would you ship this rule?"},
-    {"id": "s7_shot2", "scene": "scene7", "dur": 8.0, "sc": "s7_2",
-     "title": "Payoff: Final metrics & quickstart"},
-]
-
-#: The fixture figures the narration quotes, mapped to the key
-#: ``ptm.report.story`` returns them under. ``tests/test_docs.py`` reads this
-#: and checks each one against a live replay of the shipped fixture, so a
-#: change to the demo data cannot leave the video saying the old number.
+#: The fixture figures the narration quotes and the cards draw, mapped to the
+#: key ``ptm.report.story`` returns them under. ``tests/test_video.py`` checks
+#: each one against a live replay of the shipped fixture, so a change to the
+#: demo data cannot leave the video saying the old number.
 FIXTURE_FIGURES: dict[str, str] = {
     "cases": "600",
     "flips": "147",
+    "policy_driven": "109",
     "deviations": "38",
 }
+
+#: How many cases the naive (today's-facts) replay gets wrong. Checked against
+#: ``ptm.pit_check`` by the test suite, like the terminal template that prints it.
+NAIVE_WRONG = "39"
+
+#: How many cases the demo routes to a person. Checked against the expenses
+#: domain's ``review.max_reviews``.
+REVIEWS = "8"
+
+#: The voice. A neural voice at its natural pace; the pace is not adjusted to
+#: fit a slot, because that adjustment is what made the first cut hard to follow.
+VOICE = "en-US-AndrewNeural"
+
+#: Seconds of quiet at the head of each shot before its line starts, so a cut
+#: lands before the sentence about it rather than on top of its first word.
+LEAD_IN = 0.35
+
+#: Seconds a line must finish before its shot ends, so the last word is not
+#: clipped by the crossfade into the next shot.
+TAIL = 0.25
+
+#: The seven scenes, in order. ``narration`` is filled in from the shots below.
+SCENES: list[dict] = [
+    {"id": "scene1", "name": "The Bet", "duration": 25.0},
+    {"id": "scene2", "name": "The Plot Twist", "duration": 30.0},
+    {"id": "scene3", "name": "No Spoilers from the Future", "duration": 25.0},
+    {"id": "scene4", "name": "Open the Machine", "duration": 30.0},
+    {"id": "scene5", "name": "The Person Gets a Say", "duration": 30.0},
+    {"id": "scene6", "name": "Let the Room Choose", "duration": 25.0},
+    {"id": "scene7", "name": "Would You Ship It?", "duration": 15.0},
+]
+
+#: Every shot, in play order. ``title`` is what the shot is *of*; ``say`` is
+#: what is spoken over it, where ``[[pause N]]`` is N seconds of silence.
+SHOTS: list[dict] = [
+    # -- 1 · The bet -----------------------------------------------------------
+    {"id": "s1_hook", "scene": "scene1", "dur": 6.0, "card": "hook",
+     "title": "What if you could try tomorrow's rules on yesterday?",
+     "say": "What if you could test a new rule on the past, before it goes live?"},
+    {"id": "s1_shot1", "scene": "scene1", "dur": 9.0, "sc": "s1_1",
+     "zoom": ((0.12, 0.05, 0.76), (0.13, 0.22, 0.64)),
+     "title": "The Bet: Place your prediction",
+     "say": "We want to change our expense rules. So, a quick bet: out of 600 past "
+            "decisions, how many would now get a different answer?"},
+    {"id": "s1_reveal", "scene": "scene1", "dur": 10.0, "card": "reveal",
+     "title": "The Bet: 147 of 600 decisions change",
+     "say": "The answer: 147 out of 600. [[pause 0.5]] Almost one in four. "
+            "[[pause 0.4]] A small rule change, with a big footprint."},
+
+    # -- 2 · The plot twist ----------------------------------------------------
+    {"id": "s2_shot2", "scene": "scene2", "dur": 8.0, "sc": "s2_2",
+     "zoom": ((0.12, 0.04, 0.76), (0.13, 0.08, 0.52)),
+     "title": "The Plot Twist: Clause 1.1 (48 changes)",
+     "say": "So which sentence did it? One clause, the receipt rule, "
+            "accounts for 48 of those changes."},
+    {"id": "s2_split", "scene": "scene2", "dur": 12.0, "card": "split",
+     "title": "The Plot Twist: 109 caused by the proposal, 38 already there",
+     "say": "But here's the twist. 38 of the 147 already broke the old rulebook. "
+            "[[pause 0.4]] The new rule didn't cause them. Only 109 are its doing."},
+    {"id": "s2_shot4", "scene": "scene2", "dur": 10.0, "sc": "s2_4",
+     "zoom": ((0.22, 0.08, 0.56), (0.24, 0.34, 0.52)),
+     "title": "The Evidence: Case review dialog & historical facts",
+     "say": "And every change is one click from its evidence: the facts on the day, "
+            "and what each rulebook said."},
+
+    # -- 3 · No spoilers from the future ---------------------------------------
+    {"id": "s3_promo", "scene": "scene3", "dur": 7.0, "card": "promotion",
+     "title": "No spoilers: the promotion question",
+     "say": "Someone was promoted last year. Should that change what they could "
+            "claim two years ago?"},
+    {"id": "s3_shot2", "scene": "scene3", "dur": 10.0, "sc": "term_2",
+     "zoom": ((0.14, 0.14, 0.72), (0.17, 0.26, 0.46)),
+     "title": "Terminal: 39 naive replay errors & future bias",
+     "say": "Of course not. So the replay only uses what was known on the day. "
+            "Use today's facts instead, and 39 answers come out wrong."},
+    {"id": "s3_wrong", "scene": "scene3", "dur": 8.0, "card": "wrong",
+     "title": "No spoilers: 39 wrong with today's facts",
+     "say": "Point-in-time replay keeps tomorrow's knowledge out of yesterday's "
+            "decisions."},
+
+    # -- 4 · Open the machine --------------------------------------------------
+    {"id": "s4_loop", "scene": "scene4", "dur": 15.0, "card": "loop",
+     "title": "Under the Hood: Four core steps",
+     "say": "The whole machine is four steps. [[pause 0.3]] Remember the old facts. "
+            "[[pause 0.3]] Replay both rulebooks. [[pause 0.3]] Ask a person about "
+            "the cases that matter. [[pause 0.3]] Then check every future rule "
+            "against their answers."},
+    {"id": "s4_shot3", "scene": "scene4", "dur": 6.0, "sc": "dag_view",
+     "zoom": ((0.14, 0.12, 0.72), (0.17, 0.30, 0.50)),
+     "title": "Orchestration: Airflow DAG code",
+     "say": "Airflow runs each step as a scheduled workflow."},
+    {"id": "s4_shot2", "scene": "scene4", "dur": 9.0, "sc": "s4_2",
+     "zoom": ((0.12, 0.08, 0.76), (0.22, 0.44, 0.56)),
+     "title": "Engine Room: Architecture diagram",
+     "say": "The evidence lands in one shared database, and this dashboard reads "
+            "it back."},
+
+    # -- 5 · The person gets a say ---------------------------------------------
+    {"id": "s5_eight", "scene": "scene5", "dur": 8.0, "card": "eight",
+     "title": "Human Decisions: 8 cases, not 600",
+     "say": "Nobody has to read 600 cases. The demo picks just eight for a person "
+            "to judge."},
+    {"id": "s5_shot1", "scene": "scene5", "dur": 11.0, "sc": "s5_1",
+     "zoom": ((0.12, 0.06, 0.76), (0.30, 0.14, 0.58)),
+     "title": "Human Decisions: 8 Precedents",
+     "say": "Each answer becomes a precedent: a test every future rule must pass. "
+            "Reverse one, and the check fails until somebody explains why."},
+    {"id": "s5_shot2", "scene": "scene5", "dur": 11.0, "sc": "s5_2",
+     "zoom": ((0.12, 0.06, 0.76), (0.13, 0.07, 0.40)),
+     "title": "Precedent Gate: Baseline comparison",
+     "say": "And it's fair. If the old policy already broke that precedent, "
+            "the new rule doesn't take the blame. A red result needs a real reason, "
+            "not a scapegoat."},
+
+    # -- 6 · Let the room choose -----------------------------------------------
+    {"id": "s6_shot1", "scene": "scene6", "dur": 7.0, "sc": "s6_1",
+     "zoom": ((0.12, 0.07, 0.42), (0.13, 0.08, 0.34)),
+     "title": "Sweep: Threshold dial selection",
+     "say": "Still arguing about the limit? 50 pounds? 100? 150?"},
+    {"id": "s6_shot3", "scene": "scene6", "dur": 9.0, "sc": "s6_3",
+     "zoom": ((0.12, 0.06, 0.76), (0.12, 0.10, 0.64)),
+     "title": "Sweep: 25, 50, 75, 100, 150 GBP curve",
+     "say": "Sweep them all at once. Each row shows how many decisions would "
+            "change, and what it costs."},
+    {"id": "s6_choice", "scene": "scene6", "dur": 9.0, "card": "tradeoff",
+     "title": "Sweep: trade-offs, not a recommendation",
+     "say": "These use the offline rules. They show the trade-offs, not a "
+            "recommendation. The choice stays with you."},
+
+    # -- 7 · Would you ship it? ------------------------------------------------
+    {"id": "s7_shot2", "scene": "scene7", "dur": 9.0, "sc": "s7_2",
+     "zoom": ((0.10, 0.10, 0.80), (0.18, 0.20, 0.64)),
+     "title": "Payoff: Would you ship this rule?",
+     "say": "So, would you ship this rule? Now you know who it affects, what it "
+            "costs, and which decisions it must respect."},
+    {"id": "s7_end", "scene": "scene7", "dur": 6.0, "card": "end",
+     "title": "Policy Time Machine",
+     "say": "Policy Time Machine. Try tomorrow's rules on yesterday's decisions."},
+]
+
+#: The pause directive inside ``say``: ``[[pause 0.4]]`` is 0.4 s of silence.
+PAUSE = re.compile(r"\[\[pause ([0-9.]+)\]\]")
+
+#: The cards :mod:`assemble_video` knows how to draw.
+CARDS = ("hook", "reveal", "split", "promotion", "wrong", "loop", "eight",
+         "tradeoff", "end")
+
+
+def spoken(text: str) -> str:
+    """A line with its pause directives removed: what is actually said."""
+    return re.sub(r"\s+", " ", PAUSE.sub(" ", text)).strip()
+
+
+def scene_shots(scene_id: str) -> list[dict]:
+    """The shots belonging to one scene, in play order."""
+    return [shot for shot in SHOTS if shot["scene"] == scene_id]
+
+
+# A scene's narration is its shots' lines, joined: derived, so the words exist
+# once. Kept on the scene because the tests and DEMO_SCRIPT read it per scene.
+for _scene in SCENES:
+    _scene["narration"] = " ".join(shot["say"] for shot in scene_shots(_scene["id"]))
 
 #: The total the mux trims to. Derived rather than typed: it was written out as
 #: ``180.0`` in the ffmpeg call, which is a fourth copy of the same contract and
@@ -189,9 +225,18 @@ FIXTURE_FIGURES: dict[str, str] = {
 TOTAL_SECONDS: float = sum(scene["duration"] for scene in SCENES)
 
 
-def scene_shots(scene_id: str) -> list[dict]:
-    """The shots belonging to one scene, in play order."""
-    return [shot for shot in SHOTS if shot["scene"] == scene_id]
+def shot_starts() -> dict[str, float]:
+    """When each shot begins on the video's clock, in seconds."""
+    out, cursor = {}, 0.0
+    for shot in SHOTS:
+        out[shot["id"]] = cursor
+        cursor += shot["dur"]
+    return out
+
+
+def captures() -> list[dict]:
+    """The shots that are stills of the dashboard, which build_shots renders."""
+    return [shot for shot in SHOTS if "sc" in shot]
 
 
 def check() -> list[str]:
@@ -208,24 +253,39 @@ def check() -> list[str]:
     if len(set(shot_ids)) != len(shot_ids):
         problems.append("two shots share an id")
 
+    for shot in SHOTS:
+        if shot["scene"] not in scene_ids:
+            problems.append(f"{shot['id']} belongs to unknown scene {shot['scene']!r}")
+        if ("sc" in shot) == ("card" in shot):
+            problems.append(f"{shot['id']} must be exactly one of a capture (sc) or a card")
+        if "card" in shot and shot["card"] not in CARDS:
+            problems.append(f"{shot['id']} asks for unknown card {shot['card']!r}")
+        if "sc" in shot:
+            zoom = shot.get("zoom")
+            if not zoom or len(zoom) != 2:
+                problems.append(f"{shot['id']} is a capture without a start and end zoom")
+            else:
+                for x, y, w in zoom:
+                    if not (0 <= x and 0 <= y and 0 < w <= 1
+                            and x + w <= 1 + 1e-9 and y + w <= 1 + 1e-9):
+                        problems.append(f"{shot['id']} zooms outside the frame: {(x, y, w)}")
+        if not spoken(shot.get("say", "")):
+            problems.append(f"{shot['id']} has nothing said over it")
+
     # Every capture directive is distinct. Two shots asking the page for the
     # same state render the same frame, which is how s6_shot2 and s6_shot3
     # became one image played twice under two different pieces of narration.
-    directives = [shot["sc"] for shot in SHOTS]
+    directives = [shot["sc"] for shot in captures()]
     duplicated = sorted({d for d in directives if directives.count(d) > 1})
     if duplicated:
         problems.append(
             f"capture directive(s) {duplicated} are used by more than one shot, so "
             f"those shots render identical frames")
 
-    for shot in SHOTS:
-        if shot["scene"] not in scene_ids:
-            problems.append(f"{shot['id']} belongs to unknown scene {shot['scene']!r}")
-
-    # The reconciliation this module exists for: the pictures and the voice have
-    # to add up to the same number, per scene and not merely overall. A total
-    # that matches while two scenes are wrong in opposite directions is the
-    # failure that looks fine in a summary line.
+    # The reconciliation this module exists for: the pictures have to add up to
+    # the scene's running time, per scene and not merely overall. A total that
+    # matches while two scenes are wrong in opposite directions is the failure
+    # that looks fine in a summary line.
     for scene in SCENES:
         shots = sum(shot["dur"] for shot in scene_shots(scene["id"]))
         if not shots:
@@ -233,8 +293,7 @@ def check() -> list[str]:
         elif abs(shots - scene["duration"]) > 1e-9:
             problems.append(
                 f"scene {scene['id']} ({scene['name']}) has {shots}s of shots against "
-                f"{scene['duration']}s of narration; the voice and the pictures would "
-                f"drift apart from here on")
+                f"a {scene['duration']}s scene; everything after it would start late")
     return problems
 
 
@@ -244,5 +303,6 @@ if __name__ == "__main__":  # pragma: no cover
     found = check()
     for line in found:
         print(f"ERROR {line}", file=sys.stderr)
-    print(f"{len(SCENES)} scene(s), {len(SHOTS)} shot(s), {TOTAL_SECONDS}s total")
+    print(f"{len(SCENES)} scene(s), {len(SHOTS)} shot(s) "
+          f"({len(captures())} captured), {TOTAL_SECONDS}s total")
     raise SystemExit(1 if found else 0)

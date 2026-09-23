@@ -1,135 +1,239 @@
 1
-00:00:00,500 --> 00:00:04,500
-We're thinking about changing our expense rules.
+00:00:00,370 --> 00:00:01,962
+What if you could test a new rule
 
 2
-00:00:04,500 --> 00:00:10,500
-Before we announce anything: how many old decisions do you think would get a different answer?
+00:00:01,895 --> 00:00:04,338
+on the past, before it goes live?
 
 3
-00:00:10,500 --> 00:00:14,000
-Ten? Fifty? Half of them?
+00:00:06,370 --> 00:00:08,312
+We want to change our expense rules.
 
 4
-00:00:15,000 --> 00:00:19,500
-In this demo, 147 out of 600. Almost one in four.
+00:00:08,332 --> 00:00:10,200
+So, a quick bet:
 
 5
-00:00:19,500 --> 00:00:24,500
-That small rule change just became a much more interesting conversation.
+00:00:10,220 --> 00:00:12,350
+out of 600 past decisions,
 
 6
-00:00:25,500 --> 00:00:28,500
-Which sentence did it?
+00:00:12,370 --> 00:00:14,688
+how many would now get a different answer?
 
 7
-00:00:28,500 --> 00:00:32,500
-This receipt clause accounts for 48 changes.
+00:00:15,383 --> 00:00:18,775
+The answer: 147 out of 600.
 
 8
-00:00:32,500 --> 00:00:38,500
-But there's a twist: 38 of the 147 differences also disagree with the old rulebook.
+00:00:19,206 --> 00:00:20,698
+Almost one in four.
 
 9
-00:00:39,500 --> 00:00:43,500
-The proposal didn't create those differences.
+00:00:21,478 --> 00:00:24,396
+A small rule change, with a big footprint.
 
 10
-00:00:43,500 --> 00:00:53,500
-In the flips table, we can inspect each case's historical facts, candidate clauses, and human rulings.
+00:00:25,383 --> 00:00:26,750
+So which sentence did it?
 
 11
-00:00:55,500 --> 00:00:59,500
-Imagine someone was promoted last year.
+00:00:26,770 --> 00:00:28,850
+One clause, the receipt rule,
 
 12
-00:00:59,500 --> 00:01:05,500
-Should today's seniority change what they were entitled to two years ago?
+00:00:28,870 --> 00:00:31,450
+accounts for 48 of those changes.
 
 13
-00:01:06,500 --> 00:01:10,000
-This replay uses what was known on the day.
+00:00:33,382 --> 00:00:34,737
+But here's the twist.
 
 14
-00:01:10,000 --> 00:01:14,500
-Using today's facts gets 39 of these 600 cases wrong.
+00:00:34,757 --> 00:00:39,200
+38 of the 147 already broke the old rulebook.
 
 15
-00:01:15,500 --> 00:01:21,000
-Point in time replay protects you from tomorrow's bias.
+00:00:39,554 --> 00:00:41,172
+The new rule didn't cause them.
 
 16
-00:01:21,500 --> 00:01:25,000
-Bring back the old facts. Try both rulebooks.
+00:00:41,192 --> 00:00:43,184
+Only 109 are its doing.
 
 17
-00:01:25,000 --> 00:01:28,500
-Ask a person about selected changes.
+00:00:45,370 --> 00:00:48,225
+And every change is one click from its evidence:
 
 18
-00:01:28,500 --> 00:01:34,000
-Save their answer so the next proposal has to face it too.
+00:00:48,245 --> 00:00:51,450
+the facts on the day, and what each rulebook said.
 
 19
-00:01:34,500 --> 00:01:38,000
-Airflow coordinates those steps.
+00:00:55,370 --> 00:00:57,188
+Someone was promoted last year.
 
 20
-00:01:38,000 --> 00:01:42,500
-The machine stores the evidence in one shared memory,
+00:00:57,208 --> 00:00:58,150
+Should that change what they
 
 21
-00:01:42,500 --> 00:01:48,000
-and this screen reads it back so we can discuss it together.
+00:00:58,083 --> 00:00:59,825
+could claim two years ago?
 
 22
-00:01:50,500 --> 00:01:54,500
-We don't ask someone to read 600 cases.
+00:01:02,370 --> 00:01:03,400
+Of course not.
 
 23
-00:01:54,500 --> 00:01:58,000
-The demo selects eight.
+00:01:03,420 --> 00:01:06,375
+So the replay only uses what was known on the day.
 
 24
-00:01:58,000 --> 00:02:04,500
-Each answer becomes an example future rules are checked against.
+00:01:06,395 --> 00:01:08,137
+Use today's facts instead,
 
 25
-00:02:04,500 --> 00:02:09,500
-If a proposal reverses one, the check fails and somebody has to resolve it.
+00:01:08,157 --> 00:01:10,425
+and 39 answers come out wrong.
 
 26
-00:02:10,500 --> 00:02:15,000
-And we still ask whether the old policy already made the same reversal.
+00:01:12,407 --> 00:01:14,612
+Point-in-time replay keeps tomorrow's
 
 27
-00:02:15,000 --> 00:02:20,000
-A red result needs an explanation, not a convenient scapegoat.
+00:01:14,545 --> 00:01:17,175
+knowledge out of yesterday's decisions.
 
 28
-00:02:21,000 --> 00:02:26,000
-What would you choose: 50, 100, or 150 pounds?
+00:01:20,382 --> 00:01:22,550
+The whole machine is four steps.
 
 29
-00:02:26,000 --> 00:02:30,500
-We can compare the consequences before we pick.
+00:01:22,782 --> 00:01:24,487
+Remember the old facts.
 
 30
-00:02:31,500 --> 00:02:36,000
-These results use the offline rules;
+00:01:24,954 --> 00:01:26,772
+Replay both rulebooks.
 
 31
-00:02:36,000 --> 00:02:41,500
-they show trade-offs, not a recommendation.
+00:01:27,114 --> 00:01:29,593
+Ask a person about the cases that matter.
 
 32
-00:02:45,500 --> 00:02:47,500
-Would you ship this rule?
+00:01:29,838 --> 00:01:31,194
+Then check every future
 
 33
-00:02:47,500 --> 00:02:53,000
-Now we can discuss who it affects, what it costs, and which human decisions it must respect.
+00:01:31,126 --> 00:01:32,993
+rule against their answers.
 
 34
-00:02:53,500 --> 00:03:00,000
-Try tomorrow's rules on yesterday's decisions, before tomorrow becomes a surprise.
+00:01:35,370 --> 00:01:38,675
+Airflow runs each step as a scheduled workflow.
+
+35
+00:01:41,370 --> 00:01:44,175
+The evidence lands in one shared database,
+
+36
+00:01:44,195 --> 00:01:46,487
+and this dashboard reads it back.
+
+37
+00:01:50,370 --> 00:01:52,987
+Nobody has to read 600 cases.
+
+38
+00:01:53,007 --> 00:01:56,262
+The demo picks just eight for a person to judge.
+
+39
+00:01:58,370 --> 00:02:00,150
+Each answer becomes a precedent:
+
+40
+00:02:00,170 --> 00:02:03,100
+a test every future rule must pass.
+
+41
+00:02:03,120 --> 00:02:04,125
+Reverse one,
+
+42
+00:02:04,145 --> 00:02:07,000
+and the check fails until somebody explains why.
+
+43
+00:02:09,370 --> 00:02:10,375
+And it's fair.
+
+44
+00:02:10,395 --> 00:02:13,062
+If the old policy already broke that precedent,
+
+45
+00:02:13,082 --> 00:02:15,338
+the new rule doesn't take the blame.
+
+46
+00:02:15,358 --> 00:02:17,575
+A red result needs a real reason,
+
+47
+00:02:17,595 --> 00:02:18,937
+not a scapegoat.
+
+48
+00:02:20,370 --> 00:02:22,187
+Still arguing about the limit?
+
+49
+00:02:22,207 --> 00:02:25,500
+50 pounds? 100? 150?
+
+50
+00:02:27,370 --> 00:02:28,962
+Sweep them all at once.
+
+51
+00:02:28,982 --> 00:02:30,787
+Each row shows how many decisions
+
+52
+00:02:30,720 --> 00:02:32,950
+would change, and what it costs.
+
+53
+00:02:36,383 --> 00:02:38,250
+These use the offline rules.
+
+54
+00:02:38,270 --> 00:02:41,025
+They show the trade-offs, not a recommendation.
+
+55
+00:02:41,045 --> 00:02:42,562
+The choice stays with you.
+
+56
+00:02:45,370 --> 00:02:46,800
+So, would you ship this rule?
+
+57
+00:02:46,820 --> 00:02:49,475
+Now you know who it affects, what it costs,
+
+58
+00:02:49,495 --> 00:02:51,850
+and which decisions it must respect.
+
+59
+00:02:54,383 --> 00:02:55,725
+Policy Time Machine.
+
+60
+00:02:55,745 --> 00:02:58,625
+Try tomorrow's rules on yesterday's decisions.

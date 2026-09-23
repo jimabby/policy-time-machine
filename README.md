@@ -510,6 +510,7 @@ make vacuum    # drop the rows that stopped earning their disk, and shrink the f
 make adopt-plan V=v2-draft1 BY="your name"  # what adopting would do, without doing it
 make adopt V=v2-draft1 BY="your name"   # promote a draft into the policy set
 make storyboard # the demo video's shot timings against its narration
+make video     # rebuild the demo video (pip install -r requirements-video.txt)
 make charts    # redraw the figures in this README from the fixture
 ```
 

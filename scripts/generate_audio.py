@@ -1,41 +1,135 @@
 #!/usr/bin/env python3
-"""Synthesise the narration, one wav per scene, then one for the whole video.
+"""Synthesise the narration: one line per shot, laid on the video's clock.
 
-**macOS only, and deliberately so.** ``say`` is the synthesiser and it ships
-with the system; the ``[[slnc N]]`` pauses in the narration are its markup too.
-:mod:`build_shots` used to read as though it were macOS-only as well, which was
-an accident and is fixed; this one is a real constraint, so it is stated here
-rather than discovered as a FileNotFoundError.
+The first cut used macOS ``say`` and then ran each scene's audio through
+ffmpeg's ``atempo`` until it filled the scene - a robotic voice, time-stretched,
+under hand-typed subtitle timings that drifted from what was actually said. It
+was hard to hear and harder to follow.
 
-The text and the per-scene durations are :mod:`storyboard`'s. They were a
-second copy here, next to a third copy of the shot timings in
-:mod:`assemble_video`, all three describing one contract.
+Now the voice is a neural one (Microsoft's, through ``edge-tts``) at its own
+natural pace, and nothing stretches it. Each shot's line is synthesised on its
+own and placed :data:`storyboard.LEAD_IN` seconds after that shot starts, so the
+picture always changes just before the sentence about it. A line that does not
+fit its shot is refused, with the overrun named, rather than squeezed: shorten
+the line or lengthen the shot in ``storyboard.py``.
+
+The synthesiser also reports when each word is spoken. Those timings are
+written beside the audio (``video_assets/words.json``) and are what the
+subtitles are cut from, so a subtitle cannot run ahead of or behind the voice.
+
+Needs network access (the voice is a web service) and ``pip install edge-tts
+imageio-ffmpeg``. Synthesised lines are cached under ``scratch/audio`` by their
+text, so rebuilding after changing one line re-synthesises only that line.
 """
 
 from __future__ import annotations
 
-import os
-import shutil
+import asyncio
+import hashlib
+import json
 import subprocess
 import sys
+import wave
+from pathlib import Path
 
+import numpy as np
 import storyboard
-from storyboard import SCENES
+from media import RATE, decode, ffmpeg
+from storyboard import LEAD_IN, PAUSE, SHOTS, TAIL, TOTAL_SECONDS, VOICE
 
-#: ffmpeg's ``atempo`` takes 0.5-2.0 per instance. A scene whose synthesised
-#: narration overruns its slot by more than double is a storyboard problem
-#: rather than something to fix with a filter, and passing the filter a value
-#: it rejects fails with ffmpeg's own message about a slot nobody has mentioned.
-MAX_TEMPO = 2.0
+CACHE = Path("scratch/audio")
+OUT_WAV = Path("video_assets/full_narration.wav")
+OUT_WORDS = Path("video_assets/words.json")
+
+#: Integrated loudness of the finished narration, in LUFS. -16 is the level
+#: web video players and podcasts are mastered to: loud enough to hear over a
+#: laptop fan without anyone reaching for the volume.
+LOUDNESS = -16
 
 
-def get_audio_duration(file_path):
-    cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", file_path
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return float(res.stdout.strip())
+async def _synthesise(text: str) -> tuple[bytes, list[dict]]:
+    import edge_tts
+
+    audio = bytearray()
+    words: list[dict] = []
+    stream = edge_tts.Communicate(text, VOICE, boundary="WordBoundary")
+    async for chunk in stream.stream():
+        if chunk["type"] == "audio":
+            audio.extend(chunk["data"])
+        elif chunk["type"] == "WordBoundary":
+            start = chunk["offset"] / 1e7
+            words.append({"start": start, "end": start + chunk["duration"] / 1e7,
+                          "text": chunk["text"]})
+    return bytes(audio), words
+
+
+def synthesise(text: str) -> tuple[np.ndarray, list[dict]]:
+    """One phrase as samples, and when each of its words is spoken. Cached."""
+    key = hashlib.sha256(f"{VOICE}\n{text}".encode()).hexdigest()[:20]
+    mp3, meta = CACHE / f"{key}.mp3", CACHE / f"{key}.json"
+    if not (mp3.exists() and meta.exists()):
+        audio, words = asyncio.run(_synthesise(text))
+        if not audio:
+            raise SystemExit(f"the voice service returned no audio for {text!r}")
+        mp3.write_bytes(audio)
+        meta.write_text(json.dumps(words), encoding="utf-8")
+    return decode(mp3.read_bytes()), json.loads(meta.read_text(encoding="utf-8"))
+
+
+def attach_punctuation(text: str, words: list[dict]) -> list[dict]:
+    """The synthesiser's words, as they are written in the line.
+
+    It reports "147" for "147." and "Point-in-time" for "Point-in-time", which
+    is right for timing and wrong for a subtitle. Each reported word is found
+    in the line from where the last one ended, and widened to the whitespace
+    around it so the punctuation comes along.
+    """
+    out, cursor = [], 0
+    for word in words:
+        at = text.find(word["text"], cursor)
+        if at < 0:  # The service normalised something; keep its spelling.
+            out.append(word)
+            continue
+        end = at + len(word["text"])
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        start = at
+        while start > cursor and not text[start - 1].isspace():
+            start -= 1
+        out.append({**word, "text": text[start:end]})
+        cursor = end
+    return out
+
+
+def shot_line(shot: dict) -> tuple[np.ndarray, list[dict]]:
+    """A shot's whole line, its pauses included, starting at time zero."""
+    pieces: list[np.ndarray] = []
+    words: list[dict] = []
+    cursor = 0.0
+    parts = PAUSE.split(shot["say"])
+    # split() alternates text, pause, text, pause, ...
+    for i, part in enumerate(parts):
+        if i % 2:
+            silence = np.zeros(int(float(part) * RATE), dtype=np.float32)
+            pieces.append(silence)
+            cursor += len(silence) / RATE
+            continue
+        text = " ".join(part.split())
+        if not text:
+            continue
+        samples, timed = synthesise(text)
+        for word in attach_punctuation(text, timed):
+            words.append({**word, "start": word["start"] + cursor,
+                          "end": word["end"] + cursor})
+        pieces.append(samples)
+        cursor += len(samples) / RATE
+    line = np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
+    # Trim the synthesiser's trailing silence, so the fit check below is
+    # measured against the last word rather than the padding after it.
+    loud = np.nonzero(np.abs(line) > 1e-3)[0]
+    if len(loud):
+        line = line[: loud[-1] + int(0.05 * RATE)]
+    return line, words
 
 
 def main() -> int:
@@ -44,86 +138,53 @@ def main() -> int:
         for line in problems:
             print(f"ERROR {line}", file=sys.stderr)
         return 1
-    for tool in ("say", "ffmpeg", "ffprobe"):
-        if not shutil.which(tool):
-            print(f"ERROR {tool!r} is not on PATH. This script is macOS-only: the "
-                  f"narration is synthesised with the system `say` voice.",
+    CACHE.mkdir(parents=True, exist_ok=True)
+    OUT_WAV.parent.mkdir(parents=True, exist_ok=True)
+
+    track = np.zeros(int(TOTAL_SECONDS * RATE), dtype=np.float32)
+    all_words: list[dict] = []
+    starts = storyboard.shot_starts()
+    overruns: list[str] = []
+    for shot in SHOTS:
+        line, words = shot_line(shot)
+        length = len(line) / RATE
+        room = shot["dur"] - LEAD_IN - TAIL
+        print(f"{shot['id']:<10} {length:5.2f}s spoken in a {room:5.2f}s window")
+        if length > room:
+            overruns.append(f"{shot['id']} says {length:.2f}s of narration in a "
+                            f"{shot['dur']}s shot with room for {room:.2f}s")
+            continue
+        at = starts[shot["id"]] + LEAD_IN
+        begin = int(at * RATE)
+        track[begin:begin + len(line)] += line
+        all_words += [{**w, "start": round(w["start"] + at, 3),
+                       "end": round(w["end"] + at, 3), "shot": shot["id"]}
+                      for w in words]
+    if overruns:
+        # Refused rather than squeezed: speeding a line up to fit is what made
+        # the first cut hard to follow.
+        for line in overruns:
+            print(f"ERROR {line}. Shorten the line or lengthen the shot.",
                   file=sys.stderr)
-            return 1
+        return 1
 
-    os.makedirs("scratch/audio", exist_ok=True)
-    os.makedirs("video_assets", exist_ok=True)
+    raw = CACHE / "narration_raw.wav"
+    with wave.open(str(raw), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(RATE)
+        out.writeframes((np.clip(track, -1, 1) * 32767).astype("<i2").tobytes())
+    # A gentle high-pass to take out rumble, then loudness normalisation, so
+    # the voice is at a level people can hear without turning it up.
+    subprocess.run(
+        [ffmpeg(), "-v", "error", "-y", "-i", str(raw),
+         "-af", f"highpass=f=70,loudnorm=I={LOUDNESS}:TP=-1.5:LRA=11",
+         "-ar", str(RATE), "-ac", "2", str(OUT_WAV)], check=True)
+    OUT_WORDS.write_text(json.dumps(all_words, indent=1), encoding="utf-8")
+    print(f"\nWrote {OUT_WAV} ({TOTAL_SECONDS:.1f}s) and {len(all_words)} word "
+          f"timings to {OUT_WORDS}")
+    return 0
 
-    total_target = sum(s["duration"] for s in SCENES)
-    print(f"Total target video duration: {total_target}s ({total_target/60:.2f} mins)")
-
-    scene_wavs = []
-
-    for i, seg in enumerate(SCENES, 1):
-        raw_aiff = f"scratch/audio/{seg['id']}_raw.aiff"
-        final_wav = f"scratch/audio/{seg['id']}_timed.wav"
-
-        # Synthesize with say using Daniel
-        # -r rate: standard is ~175. We can test around 165 for very clear narration
-        cmd = ["say", "-v", "Daniel", "-r", "165", "-o", raw_aiff, seg["narration"]]
-        subprocess.run(cmd, check=True)
-
-        raw_dur = get_audio_duration(raw_aiff)
-        target_dur = seg["duration"]
-        print(f"Scene {i} ({seg['name']}): raw duration {raw_dur:.2f}s -> target {target_dur:.2f}s")
-
-        # Pad with silence or slight tempo adjust to exactly match target duration
-        if raw_dur < target_dur:
-            pad_needed = target_dur - raw_dur
-            # apad to pad silence at the end
-            cmd = [
-                "ffmpeg", "-y", "-i", raw_aiff,
-                "-af", f"apad=pad_dur={pad_needed}",
-                "-ar", "44100", "-ac", "2",
-                "-t", str(target_dur),
-                final_wav
-            ]
-        else:
-            # Need slight speedup (atempo)
-            tempo = raw_dur / (target_dur - 0.5)
-            if tempo > MAX_TEMPO:
-                # Refused rather than clamped. Clamping would produce a scene
-                # that overruns its slot and pushes every later scene out of
-                # step with its pictures - silently, which is the one failure
-                # this pipeline is now arranged to make noisy. Shorten the
-                # narration or lengthen the scene in storyboard.py.
-                print(f"ERROR scene {seg['id']} synthesises to {raw_dur:.2f}s against a "
-                      f"{target_dur:.2f}s slot, which needs a tempo of {tempo:.2f} - past "
-                      f"the {MAX_TEMPO} ffmpeg's atempo accepts, and past what stays "
-                      f"listenable. Shorten the narration or lengthen the scene.",
-                      file=sys.stderr)
-                return 1
-            cmd = [
-                "ffmpeg", "-y", "-i", raw_aiff,
-                "-af", f"atempo={tempo},apad=whole_dur={target_dur}",
-                "-ar", "44100", "-ac", "2",
-                "-t", str(target_dur),
-                final_wav
-            ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        final_dur = get_audio_duration(final_wav)
-        print(f"  -> Generated {final_wav}: {final_dur:.2f}s")
-        scene_wavs.append(final_wav)
-
-    # Concatenate all into full_audio.wav
-    concat_list_file = "scratch/audio/concat_list.txt"
-    with open(concat_list_file, "w", encoding="utf-8") as f:
-        for w in scene_wavs:
-            f.write(f"file '{os.path.abspath(w)}'\n")
-
-    full_wav = "video_assets/full_narration.wav"
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_list_file, "-c", "copy", full_wav
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-
-    total_dur = get_audio_duration(full_wav)
-    print(f"\nSuccessfully generated full narration: {full_wav} (Duration: {total_dur:.2f}s / {total_dur/60:.2f} min)")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

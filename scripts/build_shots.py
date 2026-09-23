@@ -28,11 +28,16 @@ import urllib.request
 from pathlib import Path
 
 import storyboard
-from storyboard import SHOTS
+from storyboard import SHOTS, captures
 
 #: Where the capture server listens. Local only - it serves the demo database.
 PORT = 8089
 HOST = "127.0.0.1"
+
+#: Device pixel ratio of every capture. The video zooms into each still, and a
+#: 1080p still zoomed to twice its size is a blur of the small text the shot is
+#: about; captured at 2x, the zoom lands on real pixels.
+SCALE = 2
 
 #: How long to wait for that server before giving up, in seconds. Polled rather
 #: than slept through: a fixed `time.sleep(2)` is either slower than it needs to
@@ -218,7 +223,10 @@ def capture_page(sc: str = ''):
         }}
 
         if (sc === 's1_1') {{
+            // Only the question: the bet is asked over this frame, so the
+            // answer card below the slider must not be on it.
             setView('plain');
+            hideExcept('section.intro', '#prediction');
             const g = document.getElementById('guess');
             if (g) {{ g.value = 50; document.getElementById('guess-value').textContent = '50%'; }}
             window.scrollTo(0, 0);
@@ -368,9 +376,11 @@ if __name__ == '__main__':
             "s7_2": payoff_html.as_uri(),
         }
 
-        for i, shot in enumerate(SHOTS, 1):
+        # Cards are drawn by assemble_video, not captured; only stills are here.
+        shots = captures()
+        for i, shot in enumerate(shots, 1):
             shot_file = out_dir / f"{shot['id']}.png"
-            print(f"[{i}/{len(SHOTS)}] Rendering {shot['id']}: {shot['title']}...")
+            print(f"[{i}/{len(shots)}] Rendering {shot['id']}: {shot['title']}...")
 
             target_url = standalone.get(
                 shot["sc"],
@@ -381,6 +391,8 @@ if __name__ == '__main__':
                 "--headless=new",
                 "--virtual-time-budget=3800",
                 "--window-size=1920,1080",
+                f"--force-device-scale-factor={SCALE}",
+                "--hide-scrollbars",
                 f"--screenshot={shot_file.resolve()}",
                 target_url,
             ]
@@ -421,7 +433,7 @@ def _identical_frames(out_dir: Path) -> list[tuple[str, str]]:
 
     seen: dict[str, str] = {}
     found: list[tuple[str, str]] = []
-    for shot in SHOTS:
+    for shot in captures():
         path = out_dir / f"{shot['id']}.png"
         if not path.exists():
             continue

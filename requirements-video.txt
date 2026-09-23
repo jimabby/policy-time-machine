@@ -1,0 +1,7 @@
+# Only for rebuilding the demo video (`make video`), not for the engine or CI.
+# edge-tts is the narration voice (a web service, so it needs the network);
+# imageio-ffmpeg bundles an ffmpeg, so nothing has to be installed system-wide.
+edge-tts>=7.0
+imageio-ffmpeg>=0.5
+pillow>=10.1
+numpy>=1.24
