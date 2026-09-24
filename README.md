@@ -6,6 +6,8 @@
 Take it for a spin first: rewind the past, compare the answers, and ask people
 to settle selected cases. Their rulings become checks for the next proposal.
 
+https://github.com/user-attachments/assets/93870756-8642-46f8-986e-765f95867299
+
 ## The 30-second story
 
 | In the included demo | What it means |
@@ -52,7 +54,7 @@ Follow **Find the cause** for the reveal. Under **Look under the hood**, open
 the engine room to see how the workflows, shared memory and charts connect.
 The prediction is just an audience activity; it does not change the replay.
 
-**Choose your route:** [Watch the three minutes](policy_time_machine_demo.mp4) ·
+**Choose your route:** [Watch the three minutes](https://github.com/user-attachments/assets/93870756-8642-46f8-986e-765f95867299) ·
 [Present it yourself](DEMO_SCRIPT.md) · [Architecture](#architecture) ·
 [Technical background](docs/DESIGN.md)
 
