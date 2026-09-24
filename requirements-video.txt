@@ -5,3 +5,5 @@ edge-tts>=7.0
 imageio-ffmpeg>=0.5
 pillow>=10.1
 numpy>=1.24
+# Drives the Airflow UI for the two stills of Airflow itself (build_airflow_shots).
+playwright>=1.40

@@ -224,8 +224,8 @@ class TestTheReviewerIsNamedAndTheClockIsNot:
 
     def test_the_queue_carries_its_rails(self):
         source = (DAG_PKG / "adjudicate.py").read_text(encoding="utf-8")
-        review = source[source.index("HITLOperator.partial("):]
-        review = review[:review.index(".expand(")]
+        review = source[source.index("ReviewOperator.partial("):]
+        review = review[:review.index(".expand_kwargs(")]
         for rail in ("assigned_users=", "response_timeout=", "notifiers="):
             assert rail in review
 

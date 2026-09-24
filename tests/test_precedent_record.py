@@ -36,8 +36,8 @@ class TestTheReasonIsKept:
 
         source = (pathlib.Path(__file__).resolve().parents[1]
                   / "ptm_dags" / "adjudicate.py").read_text(encoding="utf-8")
-        review = source[source.index("HITLOperator.partial("):]
-        review = review[:review.index(".expand(")]
+        review = source[source.index("ReviewOperator.partial("):]
+        review = review[:review.index(".expand_kwargs(")]
         assert '"note"' in review, \
             "the reviewer cannot record a reason the operator never asks for"
 

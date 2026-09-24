@@ -194,8 +194,8 @@ class TestStatic:
         the operator does not declare the parameter, every precedent on file
         carries an empty note and nobody notices."""
         source = builder("adjudicate")
-        review = source[source.index("HITLOperator.partial("):]
-        review = review[:review.index(".expand(")]
+        review = source[source.index("ReviewOperator.partial("):]
+        review = review[:review.index(".expand_kwargs(")]
         assert "params=" in review and '"note"' in review
 
     def test_the_precedent_records_what_it_was_a_ruling_about(self):
@@ -319,6 +319,40 @@ class TestParses:
                            "propose"):
                 assert f"{prefix}_{name}" in dagbag.dags
 
+
+    def test_one_review_per_contested_case(self, dagbag, seeded):
+        """The review queue maps over pairs, not over two lists.
+
+        ``expand(subject=..., body=...)`` is a cross product: eight contested
+        cases became sixty-four review tasks, most showing one case's question
+        over another case's evidence, and ``record`` refused every run because
+        sixty-four responses cannot be matched to eight cases. So nothing a
+        reviewer answered in Airflow ever became precedent. Only a real run
+        showed it - every parse, and every test here, passed throughout.
+        """
+        from ptm.config import available_domains
+
+        for name in available_domains():
+            review = dagbag.dags[f"adjudicate_{name}"].get_task("review")
+            assert type(review.expand_input).__name__ == "ListOfDictsExpandInput", \
+                "review must be mapped with expand_kwargs over (subject, body) pairs"
+            assert "prompts" in review.upstream_task_ids
+
+    def test_the_review_form_holds_only_the_reviewers_fields(self, dagbag):
+        """A task's params include its DAG's, and Airflow 3.1.0 has no filter
+        for them - so the reviewer's form carried the DAG's own settings as
+        required, editable fields beside the case being ruled on."""
+        import pendulum
+        from airflow.sdk import DAG, Param
+
+        from ptm_dags.adjudicate import ReviewOperator
+
+        with DAG("form_probe", start_date=pendulum.datetime(2024, 1, 1),
+                 schedule=None, params={"policy_version": "v2", "target": "flips"}):
+            op = ReviewOperator(task_id="review", subject="s", options=["a", "b"],
+                                 params={"note": Param("", type="string")})
+        assert {"policy_version", "target"} <= set(op.params)
+        assert set(op.serialized_params) == {"note"}
 
     def test_retention_runs_on_a_schedule_rather_than_by_hand(self, dagbag):
         """The chore that was left outside Airflow.

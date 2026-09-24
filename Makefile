@@ -109,14 +109,18 @@ logs:      ## Tail the Airflow logs
 
 demo:      ## Replay two years of history through the backfill engine
 	# New DAGs start paused, and a paused DAG's backfill runs sit queued
-	# forever. Unpause the replay and the two DAGs its assets wake.
-	docker compose exec airflow airflow dags unpause replay_expenses
+	# forever - so everything is unpaused, but the replay only *after* its
+	# backfill exists. The demo's metadata database is SQLite, which takes one
+	# writer at a time: unpaused first, the replay's early months start running
+	# while the command is still inserting the later ones, and it dies partway
+	# with "database is locked", leaving a backfill with months missing.
 	docker compose exec airflow airflow dags unpause adjudicate_expenses
 	docker compose exec airflow airflow dags unpause precedent_gate_expenses
 	docker compose exec airflow airflow backfill create \
 		--dag-id replay_expenses \
 		--from-date 2024-09-01 --to-date 2026-09-01 \
 		--run-backwards
+	docker compose exec airflow airflow dags unpause replay_expenses
 
 stability: ## Measure how often the judge contradicts itself
 	docker compose exec airflow airflow dags trigger judge_stability_expenses
@@ -143,13 +147,17 @@ lint:      ## Check every domain YAML against the policies it claims to implemen
 storyboard: ## Check the demo video's shot timings against its narration
 	$(PY) scripts/storyboard.py
 
-# The whole video, rebuilt: 2x stills from the dashboard, the narration (one
-# neural-voice line per shot, with word timings), then every frame drawn and
-# muxed with burned-in subtitles. Needs Chrome, the network for the voice, and
+# The whole video, rebuilt: 2x stills from the dashboard, two stills of Airflow
+# itself (the backfill's runs and a waiting review - so `make up`, `make demo`
+# and a review queued first), the narration (one neural-voice line per shot,
+# with word timings), the music bed, then every frame drawn and muxed with
+# burned-in subtitles. Needs Chrome, the network for the voice, and
 # `pip install -r requirements-video.txt`.
 video:     ## Rebuild policy_time_machine_demo.mp4 from the storyboard
 	$(PY) scripts/build_shots.py
+	$(PY) scripts/build_airflow_shots.py
 	$(PY) scripts/generate_audio.py
+	$(PY) scripts/generate_music.py
 	$(PY) scripts/assemble_video.py
 
 # The README's and the demo script's figures, drawn from a real offline replay

@@ -116,7 +116,7 @@ SHOTS: list[dict] = [
      "say": "But here's the twist. 38 of the 147 already broke the old rulebook. "
             "[[pause 0.4]] The new rule didn't cause them. Only 109 are its doing."},
     {"id": "s2_shot4", "scene": "scene2", "dur": 10.0, "sc": "s2_4",
-     "zoom": ((0.22, 0.08, 0.56), (0.24, 0.34, 0.52)),
+     "zoom": ((0.22, 0.08, 0.56), (0.24, 0.42, 0.52)),
      "title": "The Evidence: Case review dialog & historical facts",
      "say": "And every change is one click from its evidence: the facts on the day, "
             "and what each rulebook said."},
@@ -143,9 +143,9 @@ SHOTS: list[dict] = [
             "[[pause 0.3]] Replay both rulebooks. [[pause 0.3]] Ask a person about "
             "the cases that matter. [[pause 0.3]] Then check every future rule "
             "against their answers."},
-    {"id": "s4_shot3", "scene": "scene4", "dur": 6.0, "sc": "dag_view",
-     "zoom": ((0.14, 0.12, 0.72), (0.17, 0.30, 0.50)),
-     "title": "Orchestration: Airflow DAG code",
+    {"id": "s4_shot3", "scene": "scene4", "dur": 6.0, "sc": "af_runs",
+     "zoom": ((0.02, 0.00, 0.98), (0.11, 0.10, 0.66)),
+     "title": "Orchestration: the monthly backfill runs in Airflow",
      "say": "Airflow runs each step as a scheduled workflow."},
     {"id": "s4_shot2", "scene": "scene4", "dur": 9.0, "sc": "s4_2",
      "zoom": ((0.12, 0.08, 0.76), (0.22, 0.44, 0.56)),
@@ -158,9 +158,9 @@ SHOTS: list[dict] = [
      "title": "Human Decisions: 8 cases, not 600",
      "say": "Nobody has to read 600 cases. The demo picks just eight for a person "
             "to judge."},
-    {"id": "s5_shot1", "scene": "scene5", "dur": 11.0, "sc": "s5_1",
-     "zoom": ((0.12, 0.06, 0.76), (0.30, 0.14, 0.58)),
-     "title": "Human Decisions: 8 Precedents",
+    {"id": "s5_shot1", "scene": "scene5", "dur": 11.0, "sc": "af_review",
+     "zoom": ((0.00, 0.00, 1.00), (0.35, 0.22, 0.64)),
+     "title": "Human Decisions: a reviewer rules in Airflow",
      "say": "Each answer becomes a precedent: a test every future rule must pass. "
             "Reverse one, and the check fails until somebody explains why."},
     {"id": "s5_shot2", "scene": "scene5", "dur": 11.0, "sc": "s5_2",
@@ -177,7 +177,7 @@ SHOTS: list[dict] = [
      "say": "Still arguing about the limit? 50 pounds? 100? 150?"},
     {"id": "s6_shot3", "scene": "scene6", "dur": 9.0, "sc": "s6_3",
      "zoom": ((0.12, 0.06, 0.76), (0.12, 0.10, 0.64)),
-     "title": "Sweep: 25, 50, 75, 100, 150 GBP curve",
+     "title": "Sweep: receipt limit at 50, 75, 100, 150 GBP",
      "say": "Sweep them all at once. Each row shows how many decisions would "
             "change, and what it costs."},
     {"id": "s6_choice", "scene": "scene6", "dur": 9.0, "card": "tradeoff",
@@ -235,8 +235,20 @@ def shot_starts() -> dict[str, float]:
 
 
 def captures() -> list[dict]:
-    """The shots that are stills of the dashboard, which build_shots renders."""
+    """Every still, whichever script captures it."""
     return [shot for shot in SHOTS if "sc" in shot]
+
+
+#: Capture directives taken from a running Airflow rather than from the
+#: dashboard. The video's claim is that Airflow does the work, so two of its
+#: stills are Airflow itself - the backfill's runs and a reviewer's form - and
+#: those only exist once a stack has replayed and queued a review.
+#: :mod:`build_airflow_shots` captures them; :mod:`build_shots` leaves them be.
+AIRFLOW_PREFIX = "af_"
+
+
+def is_airflow(shot: dict) -> bool:
+    return shot.get("sc", "").startswith(AIRFLOW_PREFIX)
 
 
 def check() -> list[str]:

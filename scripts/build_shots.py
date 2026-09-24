@@ -282,41 +282,38 @@ def capture_page(sc: str = ''):
             hideExcept('#architecture');
             document.querySelector('.machine-map').open = true;
             window.scrollTo(0, 0);
-        }} else if (sc === 's5_1' || sc === 's5_3') {{
-            setView('detail');
-            hideExcept('#detail', 'h2[data-t="h.precedents"]', '#precedents');
-            if (sc === 's5_3') {{
-                const rows = document.querySelectorAll('#precedents tr');
-                if (rows.length > 2) rows[1].classList.add('highlight-box');
-            }}
-            window.scrollTo(0, 0);
         }} else if (sc === 's5_2') {{
             setView('plain');
             hideExcept('#plain', '#gatecard', 'h2[data-t="p.gate"]');
             window.scrollTo(0, 0);
-        }} else if (sc === 's6_1') {{
-            // The dials, with nothing chosen yet. s6_2 is this with the
-            // candidate thresholds typed in and s6_3 is the answer, so the
-            // three frames are three states of one panel rather than - as
-            // s6_2 and s6_3 were, sharing a branch - one picture shown twice
-            // under two different sentences of narration.
+        }} else if (sc === 's6_1' || sc === 's6_2' || sc === 's6_3') {{
+            // The dials, empty (s6_1), with the candidate limits typed in
+            // (s6_2), and answered (s6_3): three states of one panel.
+            //
+            // The narration asks about "the limit" - 50, 100 or 150 pounds -
+            // which is the receipt threshold in clause 1.1 (75 in force). The
+            // menu's first dial is clause 5.1's director-approval threshold at
+            // 1000, so leaving the default selected swept the wrong rule under
+            // that sentence. Only the first control row is kept: the second
+            // axis and the version comparison under it put a second set of
+            // numbers (days_notice, "111 differ") beside the 147 the rest of
+            // the video uses, with nothing said about either.
             setView('detail');
-            hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp');
-            document.getElementById('swvalues').value = '';
-            window.scrollTo(0, 0);
-        }} else if (sc === 's6_2') {{
-            setView('detail');
-            hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp');
+            hideExcept('#detail', 'h2[data-t="h.sweep"]', '.cmp:has(#swdial)',
+                       ...(sc === 's6_3' ? ['#sweep'] : []));
+            const dial = document.getElementById('swdial');
+            const receipt = [...dial.options].find(o =>
+                o.textContent.includes('clause 1.1 ') && o.textContent.includes('amount_gbp'));
+            if (!receipt) throw new Error('no clause 1.1 amount_gbp dial to sweep');
+            dial.value = receipt.value;
+            dial.dispatchEvent(new Event('change'));
             const v = document.getElementById('swvalues');
-            v.value = '25,50,75,100,150';
-            v.classList.add('highlight-box');
-            window.scrollTo(0, 0);
-        }} else if (sc === 's6_3') {{
-            setView('detail');
-            hideExcept('#detail', 'h2[data-t="h.sweep"]', '#swbanded', '.cmp', '#sweep');
-            document.getElementById('swvalues').value = '25,50,75,100,150';
-            document.getElementById('swgo').click();
-            await new Promise(r => setTimeout(r, 1200));
+            v.value = sc === 's6_1' ? '' : '50,75,100,150';
+            if (sc === 's6_2') v.classList.add('highlight-box');
+            if (sc === 's6_3') {{
+                document.getElementById('swgo').click();
+                await new Promise(r => setTimeout(r, 1200));
+            }}
             window.scrollTo(0, 0);
         }} else if (sc === 's7_1') {{
             // The summary the closing question is asked over. Without the
@@ -362,7 +359,6 @@ if __name__ == '__main__':
         wait_for_server(f"{base}/ptm/api/domains", server_proc, SERVER_TIMEOUT)
 
         term_html = Path("scripts/templates/term_scene.html").resolve()
-        dag_html = Path("scripts/templates/dag_scene.html").resolve()
         payoff_html = Path("scripts/templates/payoff_scene.html").resolve()
         # as_uri() rather than an f-string: a Windows path is C:\... and
         # "file://C:\..." is not a URL, so the query string on the terminal
@@ -372,12 +368,13 @@ if __name__ == '__main__':
             "term_1": f"{term_html.as_uri()}?step=1",
             "term_2": f"{term_html.as_uri()}?step=2",
             "term_3": f"{term_html.as_uri()}?step=3",
-            "dag_view": dag_html.as_uri(),
             "s7_2": payoff_html.as_uri(),
         }
 
         # Cards are drawn by assemble_video, not captured; only stills are here.
-        shots = captures()
+        # Airflow's own screens come from a running stack and are captured by
+        # build_airflow_shots, so they are left exactly as that script wrote them.
+        shots = [shot for shot in captures() if not storyboard.is_airflow(shot)]
         for i, shot in enumerate(shots, 1):
             shot_file = out_dir / f"{shot['id']}.png"
             print(f"[{i}/{len(shots)}] Rendering {shot['id']}: {shot['title']}...")

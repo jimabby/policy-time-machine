@@ -39,7 +39,7 @@ from pathlib import Path
 
 import storyboard
 from media import ffmpeg
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 from storyboard import FIXTURE_FIGURES, NAIVE_WRONG, REVIEWS, SCENES, SHOTS, TOTAL_SECONDS
 
 W, H = 1920, 1080
@@ -50,6 +50,7 @@ CROSSFADE = 0.35
 SHOTS_DIR = Path("video_assets/shots")
 WORDS = Path("video_assets/words.json")
 AUDIO = Path("video_assets/full_narration.wav")
+MUSIC = Path("video_assets/music.wav")
 SRT = Path("video_assets/subtitles.srt")
 CHUNKS = Path("scratch/video")
 OUTPUT = Path("policy_time_machine_demo.mp4")
@@ -217,6 +218,28 @@ def top_shade() -> Image.Image:
     return mask.point(lambda v: int(v * 0.85))
 
 
+#: Pixels at the foot of the frame kept clear of a still's content, for the
+#: subtitles. A still filled the whole frame, so wherever its page had text in
+#: the bottom sixth - the evidence cards, the terminal's notes, the summary's
+#: steps - the subtitle pill sat on top of it and one of the two went unread.
+SUBTITLE_BAND = 170
+
+#: Pixels over which a still's edges fade into the backdrop, so the smaller
+#: picture reads as framed rather than pasted.
+FEATHER = 36
+
+
+@lru_cache(maxsize=1)
+def feather_mask(w: int, h: int) -> Image.Image:
+    """Opaque in the middle, fading to clear over FEATHER pixels at every edge."""
+    def ramp(n: int) -> list[int]:
+        return [int(255 * min(1.0, (min(i, n - 1 - i) + 1) / FEATHER)) for i in range(n)]
+    across, down = Image.new("L", (w, 1)), Image.new("L", (1, h))
+    across.putdata(ramp(w))
+    down.putdata(ramp(h))
+    return ImageChops.multiply(across.resize((w, h)), down.resize((w, h)))
+
+
 def render_still(shot: dict, local: float, shade: float = 1.0) -> Image.Image:
     img = still(shot["id"])
     iw, ih = img.size
@@ -224,7 +247,13 @@ def render_still(shot: dict, local: float, shade: float = 1.0) -> Image.Image:
     k = ease(local / shot["dur"])
     x, y, w = x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, w0 + (w1 - w0) * k
     box = (x * iw, y * ih, (x + w) * iw, (y + w) * ih)
-    frame_img = img.resize((W, H), Image.BICUBIC, box=box)
+    # Scaled into the area above the subtitle band rather than cropped to it,
+    # so each shot keeps the framing its zoom was chosen for.
+    ch = H - SUBTITLE_BAND
+    cw = round(W * ch / H)
+    picture = img.resize((cw, ch), Image.BICUBIC, box=box)
+    frame_img = backdrop().copy()
+    frame_img.paste(picture, ((W - cw) // 2, 0), feather_mask(cw, ch))
     if shade > 0:
         frame_img.paste(BG, (0, 0, W, 130),
                         top_shade().point(lambda v: int(v * shade)))
@@ -329,8 +358,11 @@ def card_promotion(d, t, tl, shot):
     draw_len = ease_out(t / 1.2)
     x0, x1 = 300, 1620
     d.line([(x0, y), (x0 + (x1 - x0) * draw_len, y)], fill=rgba(EDGE, 1), width=6)
-    marks = [(520, "Two years ago", "Expense claim", "grade 3", BLUE, 0.3),
-             (1060, "Last year", "Promoted", "grade 5", AMBER, 0.9),
+    # Grade 2 to 3 because 3 is where the proposal's receipt exemption starts
+    # (clause 6.1: grade 3 and above). Promoted from 3 to 5, the claim was
+    # already exempt and the example would change nothing.
+    marks = [(520, "Two years ago", "Expense claim", "grade 2", BLUE, 0.3),
+             (1060, "Last year", "Promoted", "grade 3", AMBER, 0.9),
              (1480, "Today", "The replay", "", GREEN, 1.5)]
     for x, when, what, sub, color, at in marks:
         a = appear(t, at, 0.4)
@@ -632,6 +664,22 @@ def frame(t: float, tl: Timeline, cue_list: list[dict]) -> Image.Image:
 
 # -- encoding ------------------------------------------------------------------
 
+#: Narration over the music bed, then the whole mix brought to -14 LUFS.
+#:
+#: The voice alone averaged -21 dB, which YouTube and LinkedIn play back
+#: noticeably quieter than the videos around it; -14 LUFS integrated, peaks
+#: under -1.5 dBTP, is what those platforms normalise to, so it plays at the
+#: level it was mixed at. The music sits low and is pushed down further
+#: whenever the voice speaks (sidechain compression keyed on the narration), so
+#: it fills the pauses without ever competing with a sentence.
+AUDIO_MIX = (
+    "[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[voice][key];"
+    "[2:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=0.22[bed];"
+    "[bed][key]sidechaincompress=threshold=0.015:ratio=6:attack=15:release=450[ducked];"
+    "[voice][ducked]amix=inputs=2:duration=first:normalize=0,"
+    "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[mix]"
+)
+
 def encode_chunk(args) -> str:
     index, first, last = args
     words = json.loads(WORDS.read_text(encoding="utf-8"))
@@ -660,11 +708,12 @@ def main(argv: list[str]) -> int:
         for line in problems:
             print(f"ERROR {line}", file=sys.stderr)
         return 1
-    missing = [str(p) for p in (WORDS, AUDIO) if not p.exists()]
+    missing = [str(p) for p in (WORDS, AUDIO, MUSIC) if not p.exists()]
     missing += [str(SHOTS_DIR / f"{s['id']}.png") for s in storyboard.captures()
                 if not (SHOTS_DIR / f"{s['id']}.png").exists()]
     if missing:
-        print("ERROR missing inputs - run build_shots.py and generate_audio.py first: "
+        print("ERROR missing inputs - run build_shots.py, build_airflow_shots.py, "
+              "generate_audio.py and generate_music.py first: "
               + ", ".join(missing), file=sys.stderr)
         return 1
 
@@ -694,12 +743,13 @@ def main(argv: list[str]) -> int:
     listing = CHUNKS / "concat.txt"
     listing.write_text("".join(f"file '{Path(p).resolve().as_posix()}'\n" for p in parts),
                        encoding="utf-8")
-    print("Muxing picture, narration and subtitles...")
+    print("Muxing picture, narration, music and subtitles...")
     subprocess.run(
         [ffmpeg(), "-v", "error", "-y",
          "-f", "concat", "-safe", "0", "-i", str(listing),
-         "-i", str(AUDIO), "-i", str(SRT),
-         "-map", "0:v", "-map", "1:a", "-map", "2:s",
+         "-i", str(AUDIO), "-i", str(MUSIC), "-i", str(SRT),
+         "-filter_complex", AUDIO_MIX,
+         "-map", "0:v", "-map", "[mix]", "-map", "3:s",
          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
          "-metadata:s:s:0", "language=eng",
          # The storyboard's total, not a number typed here: a typed total is

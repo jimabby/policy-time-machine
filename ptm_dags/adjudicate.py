@@ -29,6 +29,26 @@ from ptm_dags.common import (
 )
 
 
+class ReviewOperator(HITLOperator):
+    """HITLOperator whose form holds the reviewer's fields and nothing else.
+
+    A task's params include its DAG's. The provider strips the DAG-level ones
+    from the form only where ``ParamsDict.filter_params_by_source`` exists, and
+    Airflow 3.1.0's SDK does not have it - so every reviewer was shown
+    ``policy_version``, ``target`` and ``max_reviews`` as required, editable
+    fields under the case they were asked to rule on. Every place the operator
+    builds or validates the form reads ``serialized_params``, so narrowing it
+    here narrows the form, the stored request and the response check together.
+    """
+
+    FORM_FIELDS = ("note",)
+
+    @property
+    def serialized_params(self) -> dict[str, dict]:
+        return {k: v for k, v in super().serialized_params.items()
+                if k in self.FORM_FIELDS}
+
+
 def build(ctx: DomainDags) -> None:
     """Build ``adjudicate_{domain}``: queue the contested flips, record rulings.
 
@@ -129,21 +149,32 @@ def build(ctx: DomainDags) -> None:
             version = ctx["params"]["policy_version"]
             if (ctx["params"].get("target") or "flips").strip() == "stale":
                 return _stale_queue(version, int(ctx["params"].get("max_reviews") or 0))
-            rows = store.flips_for_policy(domain_name, version)
+            rows = [r for r in store.flips_for_policy(domain_name, version)
+                    if not r["reviewed"]]
             import json as _json
+            # The case as the judge saw it: hydrated with the facts known on its
+            # decision date. flips_for_policy joins the raw case record, which
+            # carries none of the slowly-changing subject facts - so a reviewer
+            # was shown every hydrated field of the case template as blank,
+            # which is exactly the fields point-in-time replay exists to get
+            # right, and asked to rule anyway.
+            hydrated = {c.case_id: c.payload for c in store.load_cases(
+                domain_name, until=pendulum.now("UTC"),
+                case_ids=[r["case_id"] for r in rows])}
             flips = [
                 diff.Flip(
                     case_id=r["case_id"], decided_at=pendulum.parse(r["decided_at"]),
                     actual_outcome=r["actual_outcome"], new_outcome=r["new_outcome"],
                     rationale=r["rationale"], confidence=r["confidence"],
                     policy_clause=r["policy_clause"] or "", impact=r["impact"],
-                    payload=_json.loads(r["payload"]), direction=r["direction"],
+                    payload=hydrated.get(r["case_id"]) or _json.loads(r["payload"]),
+                    direction=r["direction"],
                     segments=_json.loads(r["segments"] or "{}"),
                     attribution=r["attribution"] or "",
                     baseline_outcome=r["baseline_outcome"] or "",
                     stability=r.get("stability") or "",
                 )
-                for r in rows if not r["reviewed"]
+                for r in rows
             ]
             return [f.model_dump(mode="json") for f in diff.select_for_review(flips, domain)]
 
@@ -227,10 +258,23 @@ def build(ctx: DomainDags) -> None:
                     "The earlier ruling is kept either way."))
             return out
 
+        @task
+        def prompts(subjects: list[str], bodies: list[str]) -> list[dict]:
+            """One review per case: its question paired with its own evidence.
+
+            ``.expand(subject=..., body=...)`` maps over the *cross product* of
+            its arguments, not their zip, so eight contested cases became
+            sixty-four review tasks - each case's question shown over every
+            other case's details - and ``record`` then refused the run, because
+            sixty-four responses cannot be matched to eight cases. Pairing them
+            here and mapping with ``expand_kwargs`` is one task per case.
+            """
+            return [{"subject": s, "body": b} for s, b in zip(subjects, bodies, strict=True)]
+
         flips = contested()
         held_back = unconfirmed()
 
-        reviews = HITLOperator.partial(
+        reviews = ReviewOperator.partial(
             task_id="review",
             options=domain.outcomes,
             defaults=[domain.outcomes[0]],
@@ -262,7 +306,7 @@ def build(ctx: DomainDags) -> None:
                             "this one, and given to the drafter that writes the next "
                             "version of the policy.")},
             task_display_name="Adjudicate contested case",
-        ).expand(subject=subjects(flips), body=bodies(flips))
+        ).expand_kwargs(prompts(subjects(flips), bodies(flips)))
 
         @task(outlets=[precedents_asset], trigger_rule="all_done")
         def record(flips: list[dict], responses: list, held_back: list[dict],

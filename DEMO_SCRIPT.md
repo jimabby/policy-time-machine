@@ -55,14 +55,16 @@ time, then `python demo.py --step` for rehearsals. It writes offline results to
 `include/ptm.db`; the compose setup mounts that directory for the dashboard too.
 
 To show Airflow doing the replay itself, run this beforehand and wait for completion.
-New DAGs start paused, and a paused DAG's backfill runs stay queued, so unpause first
-(`make demo` does both):
+New DAGs start paused, and a paused DAG's backfill runs stay queued, so everything is
+unpaused - the replay last, once its backfill exists, because the demo's SQLite
+metadata database cannot take the backfill's inserts while runs are already writing
+(`make demo` does all of it):
 
 ```bash
-docker compose exec airflow airflow dags unpause replay_expenses
 docker compose exec airflow airflow dags unpause adjudicate_expenses
 docker compose exec airflow airflow dags unpause precedent_gate_expenses
 docker compose exec airflow airflow backfill create --dag-id replay_expenses --from-date 2024-09-01 --to-date 2026-09-01 --run-backwards
+docker compose exec airflow airflow dags unpause replay_expenses
 ```
 
 Keep expenses / v2 selected in Plain summary, a terminal ready, and browser zoom comfortable for

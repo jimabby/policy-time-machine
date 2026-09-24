@@ -1168,7 +1168,7 @@ scripts/build_charts.py         the README's six figures, drawn from a real
 docs/*.gif                      the README's clips, captured from the real tool
 docs/charts/*.svg               the figures, checked byte for byte by the suite
 ruff.toml                       the style gate, and why each rule is on
-tests/                          1534 tests; the engine's 1352 need nothing but Python
+tests/                          1536 tests; the engine's 1352 need nothing but Python
 include/domains/*.yaml          the only domain knowledge in the project
 include/drafts/<domain>/        policy versions a model wrote, never mixed in with
                                 the ones a person did

@@ -305,13 +305,17 @@ def main(argv: list[str] | None = None) -> int:
     say("  1. Start Docker" + (" Desktop" if os.name == "nt" else ""))
     say("  2. docker compose up --build -d")
     say("  3. http://localhost:8080/ptm/   (the Diff Explorer; no login)")
-    say(f"  4. docker compose exec airflow airflow dags unpause replay_{args.domain}"
+    say(f"  4. docker compose exec airflow airflow dags unpause adjudicate_{args.domain}"
         f"   (new DAGs start paused;")
-    say(f"     do the same for adjudicate_{args.domain} and "
-        f"precedent_gate_{args.domain})")
+    say(f"     do the same for precedent_gate_{args.domain})")
     say(f"  5. docker compose exec airflow airflow backfill create "
         f"--dag-id replay_{args.domain} \\")
     say("       --from-date 2024-09-01 --to-date 2026-09-01 --run-backwards")
+    say(f"  6. docker compose exec airflow airflow dags unpause replay_{args.domain}"
+        f"   (last: the backfill has")
+    say("     to exist first, or its inserts race the runs for the SQLite lock)")
+    say(f"  7. answer the review tasks: Browse > Required Actions, or the "
+        f"adjudicate_{args.domain} run")
     say("")
     return 0
 
