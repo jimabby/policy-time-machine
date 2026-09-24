@@ -27,7 +27,7 @@ from pathlib import Path
 
 from airflow.plugins_manager import AirflowPlugin
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from ptm import report
 
@@ -345,6 +345,29 @@ def dashboard() -> str:
     return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
 
 
+# The nav entry's icon. Airflow 3 renders an external view's ``icon`` as an
+# ``<img src>``, so it must be a URL - the Font Awesome class name this used to
+# carry drew a broken image in the sidebar. A clock turning back, drawn once
+# per theme because an <img> cannot inherit the sidebar's text colour. It sits
+# behind require_user with every other route: the sidebar is only shown to a
+# signed-in user, whose cookie the <img> request carries.
+_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="{colour}" stroke-width="2" stroke-linecap="round" '
+    'stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/>'
+    '<path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>'
+)
+_ICON_COLOURS = {"light": "#1f2937", "dark": "#e5e7eb"}
+
+
+@app.get("/icon-{theme}.svg")
+def icon(theme: str) -> Response:
+    if theme not in _ICON_COLOURS:
+        raise HTTPException(status_code=404)
+    return Response(_ICON_SVG.format(colour=_ICON_COLOURS[theme]),
+                    media_type="image/svg+xml")
+
+
 class PolicyTimeMachinePlugin(AirflowPlugin):
     name = "policy_time_machine"
     fastapi_apps = [
@@ -355,7 +378,8 @@ class PolicyTimeMachinePlugin(AirflowPlugin):
             "name": "Policy Time Machine",
             "href": "/ptm/",
             "destination": "nav",
-            "icon": "fa-solid fa-clock-rotate-left",
+            "icon": "/ptm/icon-light.svg",
+            "icon_dark_mode": "/ptm/icon-dark.svg",
             "url_route": "policy-time-machine",
         },
     ]

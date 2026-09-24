@@ -388,6 +388,17 @@ class TestPluginRegistration:
         assert view["href"] == "/ptm/"
         assert view["destination"] == "nav"
 
+    def test_the_nav_icons_are_urls_this_app_serves(self):
+        """Airflow 3 puts ``icon`` in an <img src>. A Font Awesome class name
+        there rendered as a broken image in the sidebar."""
+        module = load_plugin()
+        [view] = module.PolicyTimeMachinePlugin.external_views
+        paths = {r.path for r in module.app.routes}
+        assert "/icon-{theme}.svg" in paths
+        for key in ("icon", "icon_dark_mode"):
+            theme = view[key].removeprefix("/ptm/icon-").removesuffix(".svg")
+            assert theme in module._ICON_COLOURS, view[key]
+
     def test_the_dashboard_fetches_through_that_same_prefix(self):
         """A mismatch here serves a page whose every request 404s."""
         html = DASHBOARD.read_text(encoding="utf-8")

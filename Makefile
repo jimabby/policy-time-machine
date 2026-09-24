@@ -108,6 +108,11 @@ logs:      ## Tail the Airflow logs
 	docker compose logs -f airflow
 
 demo:      ## Replay two years of history through the backfill engine
+	# New DAGs start paused, and a paused DAG's backfill runs sit queued
+	# forever. Unpause the replay and the two DAGs its assets wake.
+	docker compose exec airflow airflow dags unpause replay_expenses
+	docker compose exec airflow airflow dags unpause adjudicate_expenses
+	docker compose exec airflow airflow dags unpause precedent_gate_expenses
 	docker compose exec airflow airflow backfill create \
 		--dag-id replay_expenses \
 		--from-date 2024-09-01 --to-date 2026-09-01 \

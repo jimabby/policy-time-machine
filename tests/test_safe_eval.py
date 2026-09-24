@@ -216,9 +216,14 @@ class TestNestingIsBounded:
         which is the threat model this module was rewritten for. Built with
         ``chr()`` because a source file holding a lone surrogate cannot itself
         be saved as UTF-8, which is its own small demonstration of the point.
+
+        Python 3.14 reports the null byte as a ``SyntaxError`` instead, so it
+        arrives through the ordinary "does not parse" branch. Either wording is
+        a refusal, which is the property under test.
         """
         problems = safe_eval.check_expression(expression)
-        assert problems and "cannot be parsed" in problems[0], why
+        assert problems and ("cannot be parsed" in problems[0]
+                             or "does not parse" in problems[0]), why
         with pytest.raises(safe_eval.RuleError):
             safe_eval.evaluate(expression, {})
 
