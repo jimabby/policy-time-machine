@@ -20,3 +20,10 @@ PyYAML>=6.0
 # and only a clean install exposed this. Airflow's own constraints file for
 # 3.1.0 pins 25.4.0.
 structlog<25.5
+
+# The same failure a second time: SQLAlchemy 2.1.0 renamed
+# orm.attributes.ScalarAttributeImpl to _ScalarAttributeImpl, and the
+# sqlalchemy-utils Airflow imports still subclasses the old name - so a clean
+# resolve takes 2.1 and every DAG import fails inside airflow.models. 2.0.54 is
+# what the last green run installed.
+sqlalchemy<2.1
