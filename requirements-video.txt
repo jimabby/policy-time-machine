@@ -2,7 +2,7 @@
 # edge-tts is the narration voice (a web service, so it needs the network);
 # imageio-ffmpeg bundles an ffmpeg, so nothing has to be installed system-wide.
 edge-tts>=7.0
-imageio-ffmpeg>=0.5
+imageio-ffmpeg>=0.6.0
 pillow>=10.1
 numpy>=1.24
 # Drives the Airflow UI for the two stills of Airflow itself (build_airflow_shots).
