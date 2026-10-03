@@ -3,7 +3,7 @@
 # imageio-ffmpeg bundles an ffmpeg, so nothing has to be installed system-wide.
 edge-tts>=7.2.8
 imageio-ffmpeg>=0.6.0
-pillow>=10.1
+pillow>=12.3.0
 numpy>=2.2.6
 # Drives the Airflow UI for the two stills of Airflow itself (build_airflow_shots).
 playwright>=1.63.0
